@@ -47,7 +47,9 @@ def testing_blocks(profile: dict) -> list[dict]:
     """Return reusable testing blocks, migrating v0.2 data without data loss."""
     tests=profile.get("tests",{})
     blocks=tests.get("testing_blocks") or []
-    return blocks if blocks else [_legacy_block(tests)]
+    if blocks: return blocks
+    legacy=_legacy_block(tests)
+    return [legacy] if legacy["performance_tests"] else []
 
 def _tests_by_protocol(block: dict) -> dict[str, dict]:
     return {t.get("protocol"):t for t in block.get("performance_tests",[]) if t.get("protocol") in PROTOCOLS}

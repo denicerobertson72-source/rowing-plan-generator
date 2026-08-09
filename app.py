@@ -4,7 +4,7 @@ import json
 import csv
 from io import StringIO
 from pathlib import Path
-from datetime import date
+from datetime import date, timedelta
 import streamlit as st
 from rowing_plan.intensity import build_intensity_profile
 from rowing_plan.power_profile import build_power_profile
@@ -16,8 +16,11 @@ from rowing_plan.workbook import build_workbook
 ROOT=Path(__file__).parent
 CONFIG=json.loads((ROOT/"config/defaults.json").read_text())
 SAMPLE=json.loads((ROOT/"data/sample_athlete.json").read_text())
+def blank_profile():
+    weekdays=["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
+    return {"profile_version":"0.3","athlete":{"display_name":"","age_band":"30-39","experience_level":"intermediate","boat_classes":[],"medical_review_required":False,"coach_review_requested":False},"season":{"start_date":date.today().isoformat(),"end_date":(date.today()+timedelta(days=120)).isoformat(),"current_weekly_endurance_minutes":0,"target_peak_weekly_endurance_minutes":0},"goals":[],"tests":{"multi_duration_power_tests":{},"testing_blocks":[],"power_profile_settings":{"mode":"anchors_only","allow_provisional_low_intensity_watts_from_sustained_test":False}},"weekly_availability":[{"weekday":day,"available":False,"fixed_rest":False,"max_training_minutes":60,"max_sessions":1,"heavy_lifting":False,"lifting_minutes":0,"alternate_ut2_allowed":False,"alternate_ut2_modes":["elliptical"],"row_on_lifting_day":True,"fixed_coached_row":False,"expected_coached_intensity":"unknown","rowing_modes":[],"notes":""} for day in weekdays],"races":[],"preferences":{"terminology":"UT","erg_primary_display":"both","broken_aerobic_preferred":True,"fixed_rest_weekdays":[],"workbook_detail_level":"detailed","include_sources_sheet":True},"locked_weeks":[]}
 def get_profile():
-    if "profile" not in st.session_state: st.session_state.profile=SAMPLE
+    if "profile" not in st.session_state: st.session_state.profile=blank_profile()
     return st.session_state.profile
 def set_nested(obj,path,value):
     for part in path[:-1]: obj=obj.setdefault(part,{})
@@ -94,7 +97,16 @@ st.title("Intensity Guidance")
 st.caption("Your practical heart-rate, power, and stroke-rate guidance for each training zone.")
 profile=get_profile()
 with st.sidebar:
-    st.caption("Optional: save or restore your entries as a JSON file.")
+    st.caption("Your plan starts blank. You can optionally load an example or restore your saved entries.")
+    if st.button("Load example plan"):
+        st.session_state.profile=json.loads(json.dumps(SAMPLE))
+        st.session_state.pop("plan",None)
+        st.rerun()
+    if st.button("Start a new blank plan"):
+        st.session_state.profile=blank_profile()
+        st.session_state.pop("plan",None)
+        st.session_state.pop("locked_sessions",None)
+        st.rerun()
     up=st.file_uploader("Restore saved profile",type="json")
     if up:
         try: st.session_state.profile=load_profile(up.getvalue()); profile=get_profile(); st.success("Profile loaded.")
