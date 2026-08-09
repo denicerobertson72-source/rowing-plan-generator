@@ -45,7 +45,7 @@ def schedule_csv(rows):
 def section_intro(title, text, tone="teal"):
     st.markdown(f'<div class="section-intro {tone}"><div class="section-title">{title}</div><div>{text}</div></div>', unsafe_allow_html=True)
 
-st.set_page_config(page_title="Intensity Guidance",layout="wide")
+st.set_page_config(page_title="Rowing Plan Generator",layout="wide")
 st.markdown("""
 <style>
     :root {
@@ -107,8 +107,8 @@ st.markdown("""
     .section-title { color: #0a6975; font-size: 1.08rem; font-weight: 750; margin-bottom: .2rem; }
 </style>
 """, unsafe_allow_html=True)
-st.title("Intensity Guidance")
-st.caption("Your practical heart-rate, power, and stroke-rate guidance for each training zone.")
+st.title("Rowing Plan Generator")
+st.caption("Build a clear season around your life, training, and race goals.")
 profile=get_profile()
 with st.sidebar:
     st.caption("Your plan starts blank. You can optionally load an example or restore your saved entries.")
