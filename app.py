@@ -67,6 +67,16 @@ st.markdown("""
     }
     [data-testid="stSidebar"] * { color: #f8ffff; }
     [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.5); }
+    [data-testid="stSidebar"] .stButton > button {
+        background: #e9e1f7;
+        color: #3f315b !important;
+        border: 1px solid #d1c2ec;
+    }
+    [data-testid="stSidebar"] .stDownloadButton > button {
+        background: #d9f3ed;
+        color: #135f63 !important;
+        border: 1px solid #a8dbd1;
+    }
     h1 { color: #076875; letter-spacing: -.035em; font-weight: 750; }
     h2, h3 { color: #226876; }
     .stTabs [data-baseweb="tab-list"] { gap: .35rem; border-bottom: 2px solid #cce8e4; }
