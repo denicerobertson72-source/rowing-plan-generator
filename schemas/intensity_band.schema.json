@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "intensity_band.schema.json",
+  "title": "IntensityBand",
+  "type": "object",
+  "required": [
+    "name",
+    "domain",
+    "method",
+    "confidence"
+  ],
+  "properties": {
+    "name": {
+      "enum": [
+        "UT3",
+        "UT2",
+        "UT1",
+        "AT",
+        "TR",
+        "AN",
+        "PP"
+      ]
+    },
+    "domain": {
+      "enum": [
+        "low",
+        "moderate",
+        "high",
+        "anaerobic",
+        "peak"
+      ]
+    },
+    "hr_low": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "hr_high": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "watts_low": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "watts_high": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "spm_low": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "spm_high": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "effort_low": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 10
+    },
+    "effort_high": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 10
+    },
+    "method": {
+      "enum": [
+        "measured_threshold",
+        "coach_defined",
+        "2k_config",
+        "hrr_fallback",
+        "measured_duration_test",
+        "hybrid_hrr_power_profile"
+      ]
+    },
+    "confidence": {
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ]
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

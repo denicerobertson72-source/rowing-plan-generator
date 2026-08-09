@@ -1,0 +1,86 @@
+[
+  {
+    "path": "CODEX_PROMPT.md",
+    "bytes": 8081
+  },
+  {
+    "path": "CODEX_UPDATE_PROMPT.md",
+    "bytes": 3116
+  },
+  {
+    "path": "README.md",
+    "bytes": 3595
+  },
+  {
+    "path": "ROWING_PLAN_APP_CODEX_HANDOFF.md",
+    "bytes": 98790
+  },
+  {
+    "path": "config/defaults.json",
+    "bytes": 3396
+  },
+  {
+    "path": "data/sample_athlete.json",
+    "bytes": 8128
+  },
+  {
+    "path": "data/session_library.json",
+    "bytes": 27251
+  },
+  {
+    "path": "docs/COPYRIGHT_AND_SOURCE_POLICY.md",
+    "bytes": 5106
+  },
+  {
+    "path": "docs/DECISIONS_AND_OPEN_QUESTIONS.md",
+    "bytes": 2812
+  },
+  {
+    "path": "docs/DOMAIN_RULES.md",
+    "bytes": 7744
+  },
+  {
+    "path": "docs/POWER_PROFILE_SPEC.md",
+    "bytes": 10407
+  },
+  {
+    "path": "docs/PRODUCT_REQUIREMENTS.md",
+    "bytes": 5811
+  },
+  {
+    "path": "docs/WORKBOOK_SPEC.md",
+    "bytes": 3193
+  },
+  {
+    "path": "reference/OUTPUT_WORKBOOK_MAP.md",
+    "bytes": 855
+  },
+  {
+    "path": "schemas/athlete_profile.schema.json",
+    "bytes": 16240
+  },
+  {
+    "path": "schemas/generated_plan.schema.json",
+    "bytes": 1810
+  },
+  {
+    "path": "schemas/intensity_band.schema.json",
+    "bytes": 1724
+  },
+  {
+    "path": "schemas/power_profile.schema.json",
+    "bytes": 4447
+  },
+  {
+    "path": "schemas/race.schema.json",
+    "bytes": 1308
+  },
+  {
+    "path": "sources/source_register.csv",
+    "bytes": 9190
+  },
+  {
+    "path": "tests/ACCEPTANCE_TESTS.md",
+    "bytes": 5125
+  }
+]

@@ -1,0 +1,1010 @@
+{
+  "library_version": "0.1",
+  "sessions": [
+    {
+      "session_id": "REC-01",
+      "title": "Easy recovery and movement quality",
+      "rights_status": "original_app_template",
+      "bands": [
+        "UT3"
+      ],
+      "phase_tags": [
+        "all"
+      ],
+      "race_type_tags": [
+        "all"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        25,
+        45
+      ],
+      "work_structure": "Continuous or 3–5 short blocks with relaxed rowing.",
+      "recovery_structure": "Easy movement between blocks as needed.",
+      "spm_guidance": {
+        "low": 16,
+        "high": 18
+      },
+      "recovery_cost": "low",
+      "purpose": "Restore movement quality without creating training stress.",
+      "technical_cues": [
+        "Light grip; quiet recovery; stop before technique deteriorates."
+      ],
+      "source_basis_ids": [
+        "S010",
+        "S018",
+        "S019"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "TECH-01",
+      "title": "Technique blocks with aerobic consolidation",
+      "rights_status": "original_app_template",
+      "bands": [
+        "UT3",
+        "UT2"
+      ],
+      "phase_tags": [
+        "transition",
+        "general_preparation"
+      ],
+      "race_type_tags": [
+        "all"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        40,
+        70
+      ],
+      "work_structure": "Four to six technique blocks followed by three controlled aerobic pieces.",
+      "recovery_structure": "1–2 minutes easy between pieces.",
+      "spm_guidance": {
+        "low": 16,
+        "high": 20
+      },
+      "recovery_cost": "low",
+      "purpose": "Practice one technical theme, then hold it under steady pressure.",
+      "technical_cues": [
+        "Choose one cue only; preserve posture and connection."
+      ],
+      "source_basis_ids": [
+        "S010",
+        "S018"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "UT2-01",
+      "title": "Three-part aerobic row",
+      "rights_status": "original_app_template",
+      "bands": [
+        "UT2"
+      ],
+      "phase_tags": [
+        "transition",
+        "general_preparation",
+        "specific_preparation"
+      ],
+      "race_type_tags": [
+        "all"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        45,
+        70
+      ],
+      "work_structure": "3 × 12–20 minutes.",
+      "recovery_structure": "2–3 minutes very easy.",
+      "spm_guidance": {
+        "low": 18,
+        "high": 20
+      },
+      "recovery_cost": "low",
+      "purpose": "Accumulate low-intensity time in manageable pieces.",
+      "technical_cues": [
+        "Even pressure; controlled breathing; no late threshold drift."
+      ],
+      "source_basis_ids": [
+        "S010",
+        "S011",
+        "S018"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "UT2-02",
+      "title": "Five-part aerobic row",
+      "rights_status": "original_app_template",
+      "bands": [
+        "UT2"
+      ],
+      "phase_tags": [
+        "transition",
+        "general_preparation"
+      ],
+      "race_type_tags": [
+        "all"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        45,
+        65
+      ],
+      "work_structure": "5 × 8–12 minutes.",
+      "recovery_structure": "90 seconds to 2 minutes easy.",
+      "spm_guidance": {
+        "low": 18,
+        "high": 20
+      },
+      "recovery_cost": "low",
+      "purpose": "Provide frequent technical resets while preserving aerobic volume.",
+      "technical_cues": [
+        "Restart each piece with precise first strokes."
+      ],
+      "source_basis_ids": [
+        "S010",
+        "S018"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "UT2-03",
+      "title": "Aerobic rate-control progression",
+      "rights_status": "original_app_template",
+      "bands": [
+        "UT2"
+      ],
+      "phase_tags": [
+        "general_preparation",
+        "specific_preparation"
+      ],
+      "race_type_tags": [
+        "head_5k",
+        "sprint_1k",
+        "erg_2k"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        45,
+        70
+      ],
+      "work_structure": "4 × 10–15 minutes; alternate lower and upper end of the allowed rate range without changing band.",
+      "recovery_structure": "2 minutes easy.",
+      "spm_guidance": {
+        "low": 18,
+        "high": 22
+      },
+      "recovery_cost": "low",
+      "purpose": "Separate rate from effort and improve efficiency.",
+      "technical_cues": [
+        "Raise rate through quicker recovery rhythm, not shortened drive."
+      ],
+      "source_basis_ids": [
+        "S010",
+        "S018"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "XL-UT2-01",
+      "title": "Post-lifting alternate UT2",
+      "rights_status": "original_app_template",
+      "bands": [
+        "UT2"
+      ],
+      "phase_tags": [
+        "all"
+      ],
+      "race_type_tags": [
+        "all"
+      ],
+      "modes": [
+        "treadmill_walk_jog",
+        "elliptical",
+        "bike"
+      ],
+      "total_minutes_range": [
+        20,
+        50
+      ],
+      "work_structure": "Continuous easy-to-steady cross-training after lifting.",
+      "recovery_structure": "None required; reduce duration after unusually demanding lower-body lifting.",
+      "spm_guidance": {
+        "low": null,
+        "high": null
+      },
+      "recovery_cost": "medium",
+      "purpose": "Add cardiovascular low-intensity volume when rowing is not possible on lifting days.",
+      "technical_cues": [
+        "Keep breathing controlled; do not turn the session into threshold work."
+      ],
+      "source_basis_ids": [
+        "S017"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "UT1-01",
+      "title": "Firm aerobic repetitions",
+      "rights_status": "original_app_template",
+      "bands": [
+        "UT1"
+      ],
+      "phase_tags": [
+        "general_preparation",
+        "specific_preparation"
+      ],
+      "race_type_tags": [
+        "head_5k",
+        "erg_2k"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        40,
+        65
+      ],
+      "work_structure": "4 × 8–12 minutes.",
+      "recovery_structure": "2–3 minutes easy.",
+      "spm_guidance": {
+        "low": 20,
+        "high": 22
+      },
+      "recovery_cost": "medium",
+      "purpose": "Develop sustainable pressure above ordinary UT2 while remaining repeatable.",
+      "technical_cues": [
+        "Match first and last piece quality; no early over-pacing."
+      ],
+      "source_basis_ids": [
+        "S010",
+        "S020"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "UT1-02",
+      "title": "Long firm aerobic blocks",
+      "rights_status": "original_app_template",
+      "bands": [
+        "UT1"
+      ],
+      "phase_tags": [
+        "specific_preparation"
+      ],
+      "race_type_tags": [
+        "head_5k",
+        "erg_2k"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        45,
+        70
+      ],
+      "work_structure": "3 × 10–15 minutes.",
+      "recovery_structure": "3 minutes easy.",
+      "spm_guidance": {
+        "low": 20,
+        "high": 24
+      },
+      "recovery_cost": "medium",
+      "purpose": "Extend time at firm aerobic pressure.",
+      "technical_cues": [
+        "Keep rating and pressure consistent."
+      ],
+      "source_basis_ids": [
+        "S010",
+        "S020"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "AT-01",
+      "title": "Controlled threshold intervals",
+      "rights_status": "original_app_template",
+      "bands": [
+        "AT"
+      ],
+      "phase_tags": [
+        "general_preparation",
+        "specific_preparation",
+        "race_build"
+      ],
+      "race_type_tags": [
+        "head_5k",
+        "erg_2k"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        35,
+        60
+      ],
+      "work_structure": "4 × 5–8 minutes.",
+      "recovery_structure": "3 minutes easy.",
+      "spm_guidance": {
+        "low": 24,
+        "high": 28
+      },
+      "recovery_cost": "high",
+      "purpose": "Develop repeatable threshold work without a continuous grind.",
+      "technical_cues": [
+        "Finish with the same technical length used at the start."
+      ],
+      "source_basis_ids": [
+        "S010",
+        "S020"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "AT-02",
+      "title": "Threshold pairs",
+      "rights_status": "original_app_template",
+      "bands": [
+        "AT"
+      ],
+      "phase_tags": [
+        "specific_preparation",
+        "race_build"
+      ],
+      "race_type_tags": [
+        "head_5k",
+        "erg_2k"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        35,
+        60
+      ],
+      "work_structure": "2 sets of 2 × 6–8 minutes.",
+      "recovery_structure": "2–3 minutes inside the set; 5 minutes between sets.",
+      "spm_guidance": {
+        "low": 24,
+        "high": 28
+      },
+      "recovery_cost": "high",
+      "purpose": "Practice re-establishing threshold rhythm after a longer reset.",
+      "technical_cues": [
+        "Do not chase HR during the first minutes; use output and effort."
+      ],
+      "source_basis_ids": [
+        "S020",
+        "S019"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "TR-01",
+      "title": "Aerobic-power intervals",
+      "rights_status": "original_app_template",
+      "bands": [
+        "TR"
+      ],
+      "phase_tags": [
+        "specific_preparation",
+        "race_build"
+      ],
+      "race_type_tags": [
+        "head_5k",
+        "erg_2k"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        35,
+        55
+      ],
+      "work_structure": "5–7 × 2.5–3.5 minutes.",
+      "recovery_structure": "Approximately equal easy recovery.",
+      "spm_guidance": {
+        "low": 28,
+        "high": 32
+      },
+      "recovery_cost": "high",
+      "purpose": "Build aerobic power and race-relevant rhythm.",
+      "technical_cues": [
+        "Keep power repeatable; stop before major technical failure."
+      ],
+      "source_basis_ids": [
+        "S014",
+        "S015"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "TR-02",
+      "title": "Long race-rhythm intervals",
+      "rights_status": "original_app_template",
+      "bands": [
+        "TR"
+      ],
+      "phase_tags": [
+        "race_build"
+      ],
+      "race_type_tags": [
+        "head_5k"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        35,
+        60
+      ],
+      "work_structure": "4–5 × 4–5 minutes.",
+      "recovery_structure": "3–5 minutes easy.",
+      "spm_guidance": {
+        "low": 28,
+        "high": 32
+      },
+      "recovery_cost": "high",
+      "purpose": "Increase time near head-race rhythm.",
+      "technical_cues": [
+        "Set rhythm before increasing pressure."
+      ],
+      "source_basis_ids": [
+        "S014",
+        "S015"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "TR-03",
+      "title": "Short transport repetitions",
+      "rights_status": "original_app_template",
+      "bands": [
+        "TR"
+      ],
+      "phase_tags": [
+        "specific_preparation",
+        "race_build",
+        "sharpen"
+      ],
+      "race_type_tags": [
+        "head_5k",
+        "sprint_1k",
+        "erg_2k"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        30,
+        50
+      ],
+      "work_structure": "7–10 × 90 seconds to 2 minutes.",
+      "recovery_structure": "1.5–3 minutes easy.",
+      "spm_guidance": {
+        "low": 28,
+        "high": 33
+      },
+      "recovery_cost": "high",
+      "purpose": "Add high-quality work with lower total repetition duration.",
+      "technical_cues": [
+        "Heart rate will lag; prescribe by output, rate, and effort."
+      ],
+      "source_basis_ids": [
+        "S014",
+        "S019"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "AN-01",
+      "title": "Thirty-second power repetitions",
+      "rights_status": "original_app_template",
+      "bands": [
+        "AN"
+      ],
+      "phase_tags": [
+        "specific_preparation",
+        "race_build",
+        "sharpen"
+      ],
+      "race_type_tags": [
+        "sprint_1k",
+        "erg_2k"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        30,
+        50
+      ],
+      "work_structure": "6–10 × 30 seconds.",
+      "recovery_structure": "3–4 minutes easy.",
+      "spm_guidance": {
+        "low": 34,
+        "high": 38
+      },
+      "recovery_cost": "very_high",
+      "purpose": "Develop repeatable short anaerobic power.",
+      "technical_cues": [
+        "Full technical strokes; end the set when output falls outside the allowed drop."
+      ],
+      "source_basis_ids": [
+        "S016"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "AN-02",
+      "title": "Forty-five-second power repetitions",
+      "rights_status": "original_app_template",
+      "bands": [
+        "AN"
+      ],
+      "phase_tags": [
+        "race_build"
+      ],
+      "race_type_tags": [
+        "sprint_1k"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        35,
+        55
+      ],
+      "work_structure": "5–7 × 45 seconds.",
+      "recovery_structure": "4–5 minutes easy.",
+      "spm_guidance": {
+        "low": 34,
+        "high": 37
+      },
+      "recovery_cost": "very_high",
+      "purpose": "Bridge short power and 1k-specific tolerance.",
+      "technical_cues": [
+        "Do not shorten prematurely; rate target is secondary to effective strokes."
+      ],
+      "source_basis_ids": [
+        "S016"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "AN-03",
+      "title": "One-minute controlled maximum repetitions",
+      "rights_status": "original_app_template",
+      "bands": [
+        "AN"
+      ],
+      "phase_tags": [
+        "race_build"
+      ],
+      "race_type_tags": [
+        "sprint_1k"
+      ],
+      "modes": [
+        "erg"
+      ],
+      "total_minutes_range": [
+        35,
+        60
+      ],
+      "work_structure": "4–6 × 60 seconds at a repeatable high output, not an opening all-out sprint.",
+      "recovery_structure": "5–7 minutes easy.",
+      "spm_guidance": {
+        "low": 34,
+        "high": 38
+      },
+      "recovery_cost": "very_high",
+      "purpose": "Develop high-intensity repeatability for sprint racing.",
+      "technical_cues": [
+        "Aim for the smallest practical power fade across repetitions."
+      ],
+      "source_basis_ids": [
+        "S016"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "PP-01",
+      "title": "Peak-power stroke clusters",
+      "rights_status": "original_app_template",
+      "bands": [
+        "PP"
+      ],
+      "phase_tags": [
+        "general_preparation",
+        "specific_preparation",
+        "sharpen"
+      ],
+      "race_type_tags": [
+        "sprint_1k",
+        "erg_2k"
+      ],
+      "modes": [
+        "erg",
+        "on_water"
+      ],
+      "total_minutes_range": [
+        25,
+        45
+      ],
+      "work_structure": "3 sets of 3–5 repetitions of 5–8 maximal strokes.",
+      "recovery_structure": "60–90 seconds between repetitions; 4–6 minutes between sets.",
+      "spm_guidance": {
+        "low": 38,
+        "high": 46
+      },
+      "recovery_cost": "very_high",
+      "purpose": "Practice starts and peak force with full recovery.",
+      "technical_cues": [
+        "Quality only; stop when peak output or coordination falls."
+      ],
+      "source_basis_ids": [
+        "S012",
+        "S013"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "HEAD-01",
+      "title": "Head-race rate introduction",
+      "rights_status": "original_app_template",
+      "bands": [
+        "AT",
+        "TR"
+      ],
+      "phase_tags": [
+        "specific_preparation"
+      ],
+      "race_type_tags": [
+        "head_5k"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        40,
+        60
+      ],
+      "work_structure": "4 × 6 minutes: mostly 26–28 spm with the final 1–2 minutes at the athlete’s lower race-rate target.",
+      "recovery_structure": "3 minutes easy.",
+      "spm_guidance": {
+        "low": 26,
+        "high": 32
+      },
+      "recovery_cost": "high",
+      "purpose": "Introduce race rate without requiring full race duration.",
+      "technical_cues": [
+        "Rate rises through rhythm and connection, not rushed slides."
+      ],
+      "source_basis_ids": [
+        "S010",
+        "S015"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "HEAD-02",
+      "title": "Progressive head-race rhythm",
+      "rights_status": "original_app_template",
+      "bands": [
+        "AT",
+        "TR"
+      ],
+      "phase_tags": [
+        "race_build"
+      ],
+      "race_type_tags": [
+        "head_5k"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        40,
+        65
+      ],
+      "work_structure": "3 × 8–10 minutes; each piece progresses through three rate steps ending near goal rate.",
+      "recovery_structure": "4 minutes easy.",
+      "spm_guidance": {
+        "low": 26,
+        "high": 32
+      },
+      "recovery_cost": "high",
+      "purpose": "Extend technical control as rating approaches race rhythm.",
+      "technical_cues": [
+        "Use the same finish and hand speed at every rate."
+      ],
+      "source_basis_ids": [
+        "S010",
+        "S015"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "HEAD-03",
+      "title": "Race rhythm with surges",
+      "rights_status": "original_app_template",
+      "bands": [
+        "TR"
+      ],
+      "phase_tags": [
+        "race_build",
+        "sharpen"
+      ],
+      "race_type_tags": [
+        "head_5k"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        35,
+        55
+      ],
+      "work_structure": "2–3 × 8–12 minutes near race rhythm with 3–5 short controlled surges embedded in each piece.",
+      "recovery_structure": "5 minutes easy.",
+      "spm_guidance": {
+        "low": 28,
+        "high": 34
+      },
+      "recovery_cost": "high",
+      "purpose": "Practice passing, turns, or changes in race demand without losing base rhythm.",
+      "technical_cues": [
+        "Return smoothly to base rhythm after each surge."
+      ],
+      "source_basis_ids": [
+        "S015"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "HEAD-04",
+      "title": "Benchmark sharpening",
+      "rights_status": "original_app_template",
+      "bands": [
+        "TR"
+      ],
+      "phase_tags": [
+        "sharpen"
+      ],
+      "race_type_tags": [
+        "head_5k"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        25,
+        45
+      ],
+      "work_structure": "3–4 × 3–5 minutes at intended race rhythm.",
+      "recovery_structure": "Full easy recovery.",
+      "spm_guidance": {
+        "low": 30,
+        "high": 32
+      },
+      "recovery_cost": "medium",
+      "purpose": "Preserve race rhythm while reducing total volume.",
+      "technical_cues": [
+        "Finish wanting one more repetition."
+      ],
+      "source_basis_ids": [
+        "S009",
+        "S015"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "SPRINT-01",
+      "title": "Start and settle practice",
+      "rights_status": "original_app_template",
+      "bands": [
+        "PP",
+        "AN"
+      ],
+      "phase_tags": [
+        "specific_preparation",
+        "race_build",
+        "sharpen"
+      ],
+      "race_type_tags": [
+        "sprint_1k"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        30,
+        50
+      ],
+      "work_structure": "8–12 repetitions: short start sequence followed by 10–20 strokes at target sprint rhythm.",
+      "recovery_structure": "2.5–4 minutes easy.",
+      "spm_guidance": {
+        "low": 34,
+        "high": 44
+      },
+      "recovery_cost": "very_high",
+      "purpose": "Connect the start to a sustainable sprint rhythm.",
+      "technical_cues": [
+        "Avoid spinning without connection; define the settle stroke."
+      ],
+      "source_basis_ids": [
+        "S012",
+        "S013"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "SPRINT-02",
+      "title": "Short sprint repeats",
+      "rights_status": "original_app_template",
+      "bands": [
+        "AN"
+      ],
+      "phase_tags": [
+        "race_build"
+      ],
+      "race_type_tags": [
+        "sprint_1k"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        35,
+        60
+      ],
+      "work_structure": "6–8 repetitions lasting about 45–75 seconds or a short fixed distance.",
+      "recovery_structure": "4–6 minutes easy.",
+      "spm_guidance": {
+        "low": 34,
+        "high": 36
+      },
+      "recovery_cost": "very_high",
+      "purpose": "Develop race-rate power and repeatability.",
+      "technical_cues": [
+        "Keep the target rate productive; do not rate up to hide fading power."
+      ],
+      "source_basis_ids": [
+        "S016"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "SPRINT-03",
+      "title": "Long sprint-specific repetitions",
+      "rights_status": "original_app_template",
+      "bands": [
+        "TR",
+        "AN"
+      ],
+      "phase_tags": [
+        "race_build"
+      ],
+      "race_type_tags": [
+        "sprint_1k"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        35,
+        65
+      ],
+      "work_structure": "3–5 repetitions lasting about 90 seconds to 3 minutes with a controlled opening and faster finish.",
+      "recovery_structure": "5–8 minutes easy.",
+      "spm_guidance": {
+        "low": 32,
+        "high": 36
+      },
+      "recovery_cost": "very_high",
+      "purpose": "Build tolerance for the middle and closing phases of a 1k.",
+      "technical_cues": [
+        "Control the first third; finish with technique intact."
+      ],
+      "source_basis_ids": [
+        "S015",
+        "S016"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    },
+    {
+      "session_id": "RACE-REC-01",
+      "title": "Post-race recovery row",
+      "rights_status": "original_app_template",
+      "bands": [
+        "UT3"
+      ],
+      "phase_tags": [
+        "race_recovery"
+      ],
+      "race_type_tags": [
+        "all"
+      ],
+      "modes": [
+        "on_water",
+        "erg"
+      ],
+      "total_minutes_range": [
+        20,
+        40
+      ],
+      "work_structure": "Easy continuous rowing or short relaxed blocks.",
+      "recovery_structure": "As needed.",
+      "spm_guidance": {
+        "low": 16,
+        "high": 18
+      },
+      "recovery_cost": "low",
+      "purpose": "Restore movement after racing without chasing training targets.",
+      "technical_cues": [
+        "No make-up work; stop if soreness changes mechanics."
+      ],
+      "source_basis_ids": [
+        "S009"
+      ],
+      "allowed_parameters": {},
+      "notes": "Intensity is mapped from the athlete's selected band provider. Exact pace/power is not embedded in the template."
+    }
+  ]
+}

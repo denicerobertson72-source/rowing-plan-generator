@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PerformanceTest",
+  "type": "object",
+  "required": ["id", "test_date", "protocol", "valid_for_profile", "source"],
+  "properties": {
+    "id": {"type": "string"},
+    "athlete_id": {"type": ["string", "null"]},
+    "test_date": {"type": "string", "format": "date"},
+    "protocol": {"enum": ["two_k", "seven_stroke_peak", "sixty_second", "twenty_second_optional", "thirty_min_rate_capped_optional", "other"]},
+    "testing_block_id": {"type": ["string", "null"]},
+    "erg_model": {"type": ["string", "null"]},
+    "drag_factor": {"type": ["number", "null"]},
+    "notes": {"type": "string"},
+    "valid_for_profile": {"type": "boolean"},
+    "source": {"enum": ["manual", "imported", "coach_entered"]},
+    "time_seconds": {"type": ["number", "null"]},
+    "average_watts": {"type": ["number", "null"]},
+    "peak_watts": {"type": ["number", "null"]}
+  }
+}

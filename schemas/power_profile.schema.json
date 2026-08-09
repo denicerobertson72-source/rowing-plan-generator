@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "power_profile.schema.json",
+  "title": "MultiDurationRowingPowerProfile",
+  "type": "object",
+  "required": [
+    "algorithm_version",
+    "status",
+    "mode",
+    "metrics",
+    "anchors",
+    "warnings",
+    "assumptions"
+  ],
+  "properties": {
+    "algorithm_version": {
+      "type": "string"
+    },
+    "battery_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "enum": [
+        "2k_only",
+        "2k_plus_peak",
+        "2k_plus_60s",
+        "2k_plus_peak_plus_60s",
+        "short_tests_without_2k",
+        "extended_profile",
+        "unavailable"
+      ]
+    },
+    "mode": {
+      "enum": [
+        "anchors_only",
+        "coach_defined_reference",
+        "research_pilot"
+      ]
+    },
+    "confidence": {
+      "enum": [
+        "high",
+        "medium",
+        "low",
+        "unavailable"
+      ]
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "sixty_to_peak_ratio": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sixty_to_2k_ratio": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "twenty_to_2k_ratio": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "peak_to_2k_ratio": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "r20_to_2k_ratio": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "r20_to_60_ratio": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "anchors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "source_test",
+          "confidence"
+        ],
+        "properties": {
+          "domain": {
+            "enum": [
+              "PP",
+              "AN",
+              "RATE_CAPPED_SUSTAINED",
+              "TWO_K"
+            ]
+          },
+          "source_test": {
+            "enum": [
+              "two_k",
+              "seven_stroke_peak",
+              "sixty_second",
+              "thirty_min_rate_capped",
+              "short_peak",
+              "one_minute",
+              "rate_capped_sustained"
+            ]
+          },
+          "source_watts": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "target_method": {
+            "type": "string"
+          },
+          "name": {"type": "string"},
+          "formula": {"type": "string"},
+          "target_watts_low": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "target_watts_high": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "ceiling_watts": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "confidence": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "assumptions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "interpretations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "domain",
+          "state",
+          "basis",
+          "planning_modifier"
+        ],
+        "properties": {
+          "domain": {
+            "enum": [
+              "short_peak",
+              "one_minute",
+              "rate_capped_sustained",
+              "balanced"
+            ]
+          },
+          "state": {
+            "enum": [
+              "not_classified",
+              "relative_limitation",
+              "relative_strength",
+              "balanced",
+              "insufficient_data"
+            ]
+          },
+          "basis": {
+            "type": "string"
+          },
+          "planning_modifier": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "longitudinal_changes": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "testing_block_id": {"type": ["string", "null"]},
+    "testing_block_label": {"type": ["string", "null"]},
+    "two_k_watts": {"type": ["number", "null"]},
+    "raw_tests": {"type": "object"},
+    "testing_blocks": {"type": "array"},
+    "longitudinal": {"type": "object"},
+    "plan_impacts": {"type": "array", "items": {"type": "string"}},
+    "source_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

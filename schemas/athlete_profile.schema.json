@@ -1,0 +1,674 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "athlete_profile.schema.json",
+  "title": "RowingPlanAthleteProfile",
+  "type": "object",
+  "required": [
+    "profile_version",
+    "athlete",
+    "season",
+    "goals",
+    "weekly_availability",
+    "races",
+    "preferences"
+  ],
+  "properties": {
+    "profile_version": {
+      "const": "0.2"
+    },
+    "athlete": {
+      "type": "object",
+      "required": [
+        "display_name",
+        "age_band",
+        "experience_level"
+      ],
+      "properties": {
+        "display_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "age_band": {
+          "enum": [
+            "18-29",
+            "30-39",
+            "40-49",
+            "50-59",
+            "60-69",
+            "70+"
+          ]
+        },
+        "experience_level": {
+          "enum": [
+            "novice",
+            "intermediate",
+            "experienced",
+            "competitive"
+          ]
+        },
+        "sex_for_optional_reference_equations": {
+          "enum": [
+            "female",
+            "male",
+            "not_provided"
+          ]
+        },
+        "boat_classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "medical_review_required": {
+          "type": "boolean",
+          "default": false
+        },
+        "coach_review_requested": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "season": {
+      "type": "object",
+      "required": [
+        "start_date",
+        "end_date",
+        "current_weekly_endurance_minutes",
+        "target_peak_weekly_endurance_minutes"
+      ],
+      "properties": {
+        "start_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "end_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "current_weekly_endurance_minutes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "target_peak_weekly_endurance_minutes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "default_block_pattern": {
+          "enum": [
+            "3_build_1_deload",
+            "2_build_1_deload",
+            "custom"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "goals": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "goal_type",
+          "priority"
+        ],
+        "properties": {
+          "goal_type": {
+            "enum": [
+              "head_5k",
+              "sprint_1k",
+              "erg_2k",
+              "technique",
+              "general_fitness",
+              "other"
+            ]
+          },
+          "priority": {
+            "enum": [
+              "primary",
+              "secondary"
+            ]
+          },
+          "target_rate_low": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 12,
+            "maximum": 50
+          },
+          "target_rate_high": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 12,
+            "maximum": 50
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "tests": {
+      "type": "object",
+      "properties": {
+        "test_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "resting_hr": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 30,
+          "maximum": 110
+        },
+        "max_hr": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 100,
+          "maximum": 230
+        },
+        "erg_2k_seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 300,
+          "maximum": 1200
+        },
+        "lt1_hr": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lt2_hr": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lt1_watts": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "lt2_watts": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "seven_stroke_peak_watts": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 1,
+          "deprecated": true,
+          "description": "Legacy v0.1 field. Migrate to multi_duration_power_tests."
+        },
+        "sixty_second_avg_watts": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 1,
+          "deprecated": true,
+          "description": "Legacy v0.1 field. Migrate to multi_duration_power_tests."
+        },
+        "thirty_minute_r20_avg_watts": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 1,
+          "deprecated": true,
+          "description": "Legacy v0.1 field. Migrate to multi_duration_power_tests."
+        },
+        "coach_defined_bands": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "intensity_band.schema.json"
+          }
+        },
+        "notes": {
+          "type": "string"
+        },
+        "multi_duration_power_tests": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "battery_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "short_peak": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "properties": {
+                "value_watts": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "protocol": {
+                  "enum": [
+                    "seven_stroke",
+                    "ten_second",
+                    "other_short_peak"
+                  ]
+                },
+                "duration_seconds": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "exclusiveMinimum": 0
+                },
+                "test_date": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date"
+                },
+                "erg_model": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "drag_factor": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 50,
+                  "maximum": 250
+                },
+                "validity": {
+                  "enum": [
+                    "valid",
+                    "questionable",
+                    "invalid",
+                    "unknown"
+                  ]
+                },
+                "notes": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "value_watts",
+                "protocol",
+                "validity"
+              ],
+              "additionalProperties": false
+            },
+            "one_minute": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "properties": {
+                "value_watts": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "duration_seconds": {
+                  "const": 60
+                },
+                "average_rate_spm": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 10,
+                  "maximum": 60
+                },
+                "peak_rate_spm": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 10,
+                  "maximum": 70
+                },
+                "test_date": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date"
+                },
+                "erg_model": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "drag_factor": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 50,
+                  "maximum": 250
+                },
+                "validity": {
+                  "enum": [
+                    "valid",
+                    "questionable",
+                    "invalid",
+                    "unknown"
+                  ]
+                },
+                "notes": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "value_watts",
+                "duration_seconds",
+                "validity"
+              ],
+              "additionalProperties": false
+            },
+            "rate_capped_sustained": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "properties": {
+                "value_watts": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "duration_seconds": {
+                  "type": "integer",
+                  "minimum": 300,
+                  "maximum": 7200
+                },
+                "rate_cap_spm": {
+                  "type": "integer",
+                  "minimum": 14,
+                  "maximum": 30
+                },
+                "average_hr": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 50,
+                  "maximum": 230
+                },
+                "max_hr": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 50,
+                  "maximum": 230
+                },
+                "test_date": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date"
+                },
+                "erg_model": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "drag_factor": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 50,
+                  "maximum": 250
+                },
+                "validity": {
+                  "enum": [
+                    "valid",
+                    "questionable",
+                    "invalid",
+                    "unknown"
+                  ]
+                },
+                "notes": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "value_watts",
+                "duration_seconds",
+                "rate_cap_spm",
+                "validity"
+              ],
+              "additionalProperties": false
+            },
+            "previous_batteries": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "power_profile_settings": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "mode": {
+              "enum": [
+                "anchors_only",
+                "coach_defined_reference",
+                "research_pilot"
+              ]
+            },
+            "allow_provisional_low_intensity_watts_from_sustained_test": {
+              "type": "boolean"
+            },
+            "reference_set_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "coach_reviewed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "mode",
+            "allow_provisional_low_intensity_watts_from_sustained_test",
+            "coach_reviewed"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "weekly_availability": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {
+        "type": "object",
+        "required": [
+          "weekday",
+          "available",
+          "fixed_rest",
+          "max_training_minutes",
+          "max_sessions"
+        ],
+        "properties": {
+          "weekday": {
+            "enum": [
+              "monday",
+              "tuesday",
+              "wednesday",
+              "thursday",
+              "friday",
+              "saturday",
+              "sunday"
+            ]
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "fixed_rest": {
+            "type": "boolean"
+          },
+          "max_training_minutes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 300
+          },
+          "max_sessions": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          },
+          "heavy_lifting": {
+            "type": "boolean"
+          },
+          "lifting_minutes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 180
+          },
+          "alternate_ut2_allowed": {
+            "type": "boolean"
+          },
+          "alternate_ut2_modes": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "treadmill_walk_jog",
+                "elliptical",
+                "bike",
+                "other"
+              ]
+            }
+          },
+          "row_on_lifting_day": {
+            "type": "boolean"
+          },
+          "fixed_coached_row": {
+            "type": "boolean"
+          },
+          "expected_coached_intensity": {
+            "enum": [
+              "unknown",
+              "technique",
+              "ut2",
+              "ut2_ut1",
+              "quality"
+            ]
+          },
+          "rowing_modes": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "on_water",
+                "erg"
+              ]
+            }
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "races": {
+      "type": "array",
+      "items": {
+        "$ref": "race.schema.json"
+      }
+    },
+    "preferences": {
+      "type": "object",
+      "required": [
+        "terminology",
+        "erg_primary_display",
+        "broken_aerobic_preferred"
+      ],
+      "properties": {
+        "terminology": {
+          "enum": [
+            "UT",
+            "three_zone",
+            "custom"
+          ]
+        },
+        "erg_primary_display": {
+          "enum": [
+            "watts",
+            "split",
+            "both"
+          ]
+        },
+        "broken_aerobic_preferred": {
+          "type": "boolean"
+        },
+        "fixed_rest_weekdays": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "workbook_detail_level": {
+          "enum": [
+            "concise",
+            "standard",
+            "detailed"
+          ]
+        },
+        "include_sources_sheet": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "locked_weeks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "date"
+      }
+    }
+  },
+  "additionalProperties": false
+}

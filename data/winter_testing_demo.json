@@ -1,0 +1,10 @@
+{
+  "profile_version": "0.3",
+  "tests": {
+    "testing_blocks": [
+      {"id": "winter-1", "label": "Winter Test Block 1 — January", "start_date": "2026-01-10", "end_date": "2026-01-14", "notes": "Synthetic demo data.", "performance_tests": [{"id":"w1-2k","protocol":"two_k","test_date":"2026-01-10","time_seconds":480,"valid_for_profile":true,"source":"manual"},{"id":"w1-peak","protocol":"seven_stroke_peak","test_date":"2026-01-12","peak_watts":400,"valid_for_profile":true,"source":"manual"},{"id":"w1-60","protocol":"sixty_second","test_date":"2026-01-14","average_watts":300,"valid_for_profile":true,"source":"manual"}]},
+      {"id": "winter-2", "label": "Winter Test Block 2 — February", "start_date": "2026-02-10", "end_date": "2026-02-14", "notes": "Synthetic demo data.", "performance_tests": [{"id":"w2-2k","protocol":"two_k","test_date":"2026-02-10","time_seconds":475,"valid_for_profile":true,"source":"manual"},{"id":"w2-peak","protocol":"seven_stroke_peak","test_date":"2026-02-12","peak_watts":405,"valid_for_profile":true,"source":"manual"},{"id":"w2-60","protocol":"sixty_second","test_date":"2026-02-14","average_watts":302,"valid_for_profile":true,"source":"manual"}]},
+      {"id": "winter-3", "label": "Winter Test Block 3 — March", "start_date": "2026-03-10", "end_date": "2026-03-14", "notes": "Synthetic demo data.", "performance_tests": [{"id":"w3-2k","protocol":"two_k","test_date":"2026-03-10","time_seconds":470,"valid_for_profile":true,"source":"manual"},{"id":"w3-peak","protocol":"seven_stroke_peak","test_date":"2026-03-12","peak_watts":410,"valid_for_profile":true,"source":"manual"},{"id":"w3-60","protocol":"sixty_second","test_date":"2026-03-14","average_watts":307,"valid_for_profile":true,"source":"manual"}]}
+    ]
+  }
+}

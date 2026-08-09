@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "race.schema.json",
+  "title": "RaceEvent",
+  "type": "object",
+  "required": [
+    "event_name",
+    "start_date",
+    "end_date",
+    "race_type",
+    "priority",
+    "expected_races"
+  ],
+  "properties": {
+    "event_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "start_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "end_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "race_type": {
+      "enum": [
+        "head_5k",
+        "sprint_1k",
+        "erg_2k",
+        "other"
+      ]
+    },
+    "distance_m": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 100
+    },
+    "priority": {
+      "enum": [
+        "A",
+        "B",
+        "C"
+      ]
+    },
+    "boat_class": {
+      "type": "string"
+    },
+    "expected_races": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10
+    },
+    "travel_days_before": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 7
+    },
+    "travel_days_after": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 7
+    },
+    "benchmark_for_future_plan": {
+      "type": "boolean"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

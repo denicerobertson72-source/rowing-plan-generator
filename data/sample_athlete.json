@@ -1,0 +1,288 @@
+{
+  "profile_version": "0.2",
+  "athlete": {
+    "display_name": "Sample masters rower",
+    "age_band": "50-59",
+    "experience_level": "competitive",
+    "sex_for_optional_reference_equations": "female",
+    "boat_classes": [
+      "single",
+      "double"
+    ],
+    "medical_review_required": false,
+    "coach_review_requested": false
+  },
+  "season": {
+    "start_date": "2026-08-05",
+    "end_date": "2026-11-15",
+    "current_weekly_endurance_minutes": 260,
+    "target_peak_weekly_endurance_minutes": 330,
+    "default_block_pattern": "3_build_1_deload"
+  },
+  "goals": [
+    {
+      "goal_type": "head_5k",
+      "priority": "primary",
+      "target_rate_low": 30,
+      "target_rate_high": 32,
+      "notes": "Primary fall goal."
+    },
+    {
+      "goal_type": "sprint_1k",
+      "priority": "secondary",
+      "target_rate_low": 34,
+      "target_rate_high": 35,
+      "notes": "Future sprint goal; maintain limited speed exposure."
+    }
+  ],
+  "tests": {
+    "test_date": "2026-07-30",
+    "resting_hr": 58,
+    "max_hr": 177,
+    "erg_2k_seconds": null,
+    "lt1_hr": null,
+    "lt2_hr": null,
+    "lt1_watts": null,
+    "lt2_watts": null,
+    "seven_stroke_peak_watts": 287,
+    "sixty_second_avg_watts": 220,
+    "thirty_minute_r20_avg_watts": 143.8,
+    "coach_defined_bands": null,
+    "notes": "No current 2k. Use HRR/RPE for low-intensity bands. Use the independent multi-duration profile for active PP/AN anchors and sustained-power plausibility checks; do not predict 2k.",
+    "multi_duration_power_tests": {
+      "battery_id": "sample-2026-07",
+      "short_peak": {
+        "value_watts": 287,
+        "protocol": "seven_stroke",
+        "duration_seconds": null,
+        "test_date": "2026-07-30",
+        "erg_model": "Concept2 RowErg",
+        "drag_factor": null,
+        "validity": "valid",
+        "notes": "Athlete-reported best power."
+      },
+      "one_minute": {
+        "value_watts": 220,
+        "duration_seconds": 60,
+        "average_rate_spm": null,
+        "peak_rate_spm": null,
+        "test_date": "2026-07-30",
+        "erg_model": "Concept2 RowErg",
+        "drag_factor": null,
+        "validity": "valid",
+        "notes": "Athlete-reported average power."
+      },
+      "rate_capped_sustained": {
+        "value_watts": 143.8,
+        "duration_seconds": 1800,
+        "rate_cap_spm": 20,
+        "average_hr": null,
+        "max_hr": null,
+        "test_date": "2026-07-30",
+        "erg_model": "Concept2 RowErg",
+        "drag_factor": null,
+        "validity": "valid",
+        "notes": "Thirty-minute average at a 20 spm cap."
+      },
+      "previous_batteries": []
+    },
+    "power_profile_settings": {
+      "mode": "anchors_only",
+      "allow_provisional_low_intensity_watts_from_sustained_test": false,
+      "reference_set_id": null,
+      "coach_reviewed": false
+    }
+  },
+  "weekly_availability": [
+    {
+      "weekday": "monday",
+      "available": true,
+      "fixed_rest": false,
+      "max_training_minutes": 110,
+      "max_sessions": 2,
+      "heavy_lifting": true,
+      "lifting_minutes": 60,
+      "alternate_ut2_allowed": true,
+      "alternate_ut2_modes": [
+        "treadmill_walk_jog",
+        "elliptical"
+      ],
+      "row_on_lifting_day": false,
+      "fixed_coached_row": false,
+      "expected_coached_intensity": "unknown",
+      "rowing_modes": [
+        "on_water",
+        "erg"
+      ],
+      "notes": "Heavy lift then alternate UT2; cannot row."
+    },
+    {
+      "weekday": "tuesday",
+      "available": true,
+      "fixed_rest": false,
+      "max_training_minutes": 90,
+      "max_sessions": 1,
+      "heavy_lifting": false,
+      "lifting_minutes": 0,
+      "alternate_ut2_allowed": false,
+      "alternate_ut2_modes": [],
+      "row_on_lifting_day": true,
+      "fixed_coached_row": false,
+      "expected_coached_intensity": "unknown",
+      "rowing_modes": [
+        "on_water",
+        "erg"
+      ],
+      "notes": "Primary quality row."
+    },
+    {
+      "weekday": "wednesday",
+      "available": true,
+      "fixed_rest": false,
+      "max_training_minutes": 90,
+      "max_sessions": 1,
+      "heavy_lifting": false,
+      "lifting_minutes": 0,
+      "alternate_ut2_allowed": false,
+      "alternate_ut2_modes": [],
+      "row_on_lifting_day": true,
+      "fixed_coached_row": true,
+      "expected_coached_intensity": "ut2_ut1",
+      "rowing_modes": [
+        "on_water"
+      ],
+      "notes": "Private lesson: technique then UT2/UT1 pieces."
+    },
+    {
+      "weekday": "thursday",
+      "available": true,
+      "fixed_rest": false,
+      "max_training_minutes": 70,
+      "max_sessions": 1,
+      "heavy_lifting": false,
+      "lifting_minutes": 0,
+      "alternate_ut2_allowed": false,
+      "alternate_ut2_modes": [],
+      "row_on_lifting_day": true,
+      "fixed_coached_row": false,
+      "expected_coached_intensity": "unknown",
+      "rowing_modes": [
+        "on_water",
+        "erg"
+      ],
+      "notes": "Optional/easy row; first session to drop."
+    },
+    {
+      "weekday": "friday",
+      "available": true,
+      "fixed_rest": false,
+      "max_training_minutes": 110,
+      "max_sessions": 2,
+      "heavy_lifting": true,
+      "lifting_minutes": 60,
+      "alternate_ut2_allowed": true,
+      "alternate_ut2_modes": [
+        "treadmill_walk_jog",
+        "elliptical"
+      ],
+      "row_on_lifting_day": false,
+      "fixed_coached_row": false,
+      "expected_coached_intensity": "unknown",
+      "rowing_modes": [
+        "on_water",
+        "erg"
+      ],
+      "notes": "Heavy lift then alternate UT2; cannot row."
+    },
+    {
+      "weekday": "saturday",
+      "available": false,
+      "fixed_rest": true,
+      "max_training_minutes": 0,
+      "max_sessions": 0,
+      "heavy_lifting": false,
+      "lifting_minutes": 0,
+      "alternate_ut2_allowed": false,
+      "alternate_ut2_modes": [],
+      "row_on_lifting_day": false,
+      "fixed_coached_row": false,
+      "expected_coached_intensity": "unknown",
+      "rowing_modes": [],
+      "notes": "Fixed rest day."
+    },
+    {
+      "weekday": "sunday",
+      "available": true,
+      "fixed_rest": false,
+      "max_training_minutes": 110,
+      "max_sessions": 1,
+      "heavy_lifting": false,
+      "lifting_minutes": 0,
+      "alternate_ut2_allowed": false,
+      "alternate_ut2_modes": [],
+      "row_on_lifting_day": true,
+      "fixed_coached_row": false,
+      "expected_coached_intensity": "unknown",
+      "rowing_modes": [
+        "on_water",
+        "erg"
+      ],
+      "notes": "Longer predominantly UT2 row; avoid routine maximal work before Monday lift."
+    }
+  ],
+  "races": [
+    {
+      "event_name": "September benchmark head race",
+      "start_date": "2026-09-26",
+      "end_date": "2026-09-26",
+      "race_type": "head_5k",
+      "distance_m": 5000,
+      "priority": "C",
+      "boat_class": "single",
+      "expected_races": 1,
+      "travel_days_before": 0,
+      "travel_days_after": 0,
+      "benchmark_for_future_plan": true,
+      "notes": "Minimal taper."
+    },
+    {
+      "event_name": "October rehearsal head race",
+      "start_date": "2026-10-17",
+      "end_date": "2026-10-17",
+      "race_type": "head_5k",
+      "distance_m": 5000,
+      "priority": "B",
+      "boat_class": "single",
+      "expected_races": 1,
+      "travel_days_before": 0,
+      "travel_days_after": 0,
+      "benchmark_for_future_plan": true,
+      "notes": "Moderate taper and pacing rehearsal."
+    },
+    {
+      "event_name": "Primary multi-race head weekend",
+      "start_date": "2026-11-07",
+      "end_date": "2026-11-08",
+      "race_type": "head_5k",
+      "distance_m": 5000,
+      "priority": "A",
+      "boat_class": "multiple",
+      "expected_races": 3,
+      "travel_days_before": 0,
+      "travel_days_after": 0,
+      "benchmark_for_future_plan": true,
+      "notes": "Primary peak; two to three races."
+    }
+  ],
+  "preferences": {
+    "terminology": "UT",
+    "erg_primary_display": "both",
+    "broken_aerobic_preferred": true,
+    "fixed_rest_weekdays": [
+      "saturday"
+    ],
+    "workbook_detail_level": "detailed",
+    "include_sources_sheet": true
+  },
+  "locked_weeks": []
+}

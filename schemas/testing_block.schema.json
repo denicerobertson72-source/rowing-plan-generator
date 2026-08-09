@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TestingBlock",
+  "type": "object",
+  "required": ["id", "label", "performance_tests"],
+  "properties": {
+    "id": {"type": "string"},
+    "athlete_id": {"type": ["string", "null"]},
+    "label": {"type": "string"},
+    "start_date": {"type": ["string", "null"], "format": "date"},
+    "end_date": {"type": ["string", "null"], "format": "date"},
+    "phase_id": {"type": ["string", "null"]},
+    "notes": {"type": "string"},
+    "performance_tests": {"type": "array", "items": {"$ref": "performance_test.schema.json"}}
+  }
+}

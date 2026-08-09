@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "generated_plan.schema.json",
+  "title": "GeneratedRowingPlan",
+  "type": "object",
+  "required": [
+    "plan_version",
+    "profile_id",
+    "generated_at",
+    "intensity_profile",
+    "power_profile",
+    "phases",
+    "sessions",
+    "warnings"
+  ],
+  "properties": {
+    "plan_version": {
+      "type": "string"
+    },
+    "profile_id": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "intensity_profile": {
+      "type": "array",
+      "items": {
+        "$ref": "intensity_band.schema.json"
+      }
+    },
+    "phases": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "sessions": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "weekly_totals": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "source_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "power_profile": {
+      "oneOf": [
+        {
+          "$ref": "power_profile.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "algorithm_versions": {
+      "type": "object",
+      "properties": {
+        "planner": {
+          "type": "string"
+        },
+        "power_profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "config": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "change_summary": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "additionalProperties": false
+}
