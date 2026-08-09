@@ -67,14 +67,18 @@ st.markdown("""
     }
     [data-testid="stSidebar"] * { color: #f8ffff; }
     [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.5); }
+    [data-testid="stSidebar"] button,
+    [data-testid="stSidebar"] button * {
+        color: #000000 !important;
+    }
     [data-testid="stSidebar"] .stButton > button {
-        background: #e9e1f7;
-        color: #3f315b !important;
+        background: #f3edfc;
+        color: #000000 !important;
         border: 1px solid #d1c2ec;
     }
     [data-testid="stSidebar"] .stDownloadButton > button {
-        background: #d9f3ed;
-        color: #135f63 !important;
+        background: #e3f6f1;
+        color: #000000 !important;
         border: 1px solid #a8dbd1;
     }
     h1 { color: #076875; letter-spacing: -.035em; font-weight: 750; }
