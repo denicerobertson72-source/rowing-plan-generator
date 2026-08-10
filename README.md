@@ -53,6 +53,16 @@ python3 -m venv .venv
 
 It opens with `data/sample_athlete.json`, supports JSON profile save/load, produces deterministic plans from the bundled original session library, and exports an app-owned Excel workbook. The implementation intentionally keeps power-profile anchors separate from intensity thresholds and never produces a predicted 2k.
 
+## PWA transition — Milestone 1
+
+The existing Streamlit app remains the live pilot. A new mobile-first, static-export-capable Next.js shell and FastAPI API boundary now live in `apps/web` and `services/api`; the planning engine remains in `rowing_plan`. See [PWA Milestone 1](docs/PWA_MILESTONE_1.md), [native readiness](docs/NATIVE_APP_READINESS.md), and [auth/sync roadmap](docs/AUTH_AND_SYNC_ROADMAP.md) before starting the next milestone.
+
+Milestone 2 adds an API-backed onboarding and mobile Today/Week/Season/Profile flow. See [PWA Milestone 2](docs/PWA_MILESTONE_2.md).
+
+Milestone 3 adds the mobile daily experience, seven-day weekly states, workout detail, and latest-plan offline fallback. See [PWA Milestone 3](docs/PWA_MILESTONE_3.md).
+
+Milestone 4 adds completion logging and a race countdown/season timeline. See [PWA Milestone 4](docs/PWA_MILESTONE_4.md).
+
 ## Package map
 
 - `CODEX_PROMPT.md`: full build prompt

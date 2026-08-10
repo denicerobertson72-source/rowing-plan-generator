@@ -1,0 +1,1 @@
+export default function Offline() { return <main style={{padding:"2rem",fontFamily:"system-ui"}}><h1>You’re offline</h1><p>Your latest Today and Week views remain available once they have been loaded.</p></main>; }

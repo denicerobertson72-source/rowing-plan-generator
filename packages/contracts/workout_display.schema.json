@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkoutDisplayV1",
+  "type": "object",
+  "required": ["session_id", "date", "session_type", "title", "planned_duration_min", "primary_band"],
+  "properties": {
+    "session_id": {"type": "string"},
+    "date": {"type": "string", "format": "date"},
+    "session_type": {"enum": ["row_water", "row_erg", "coached_lesson", "strength", "alternate_ut2", "rest", "race", "cross_training", "testing"]},
+    "title": {"type": "string"},
+    "description": {"type": "string"},
+    "coach_directed": {"type": "boolean"},
+    "planned_duration_min": {"type": "integer", "minimum": 0},
+    "primary_band": {"type": ["string", "null"]},
+    "secondary_bands": {"type": "array", "items": {"type": "string"}},
+    "segments": {"type": "array", "items": {"type": "object"}},
+    "erg_targets": {"type": ["object", "null"]},
+    "water_targets": {"type": ["object", "null"]}
+  }
+}
