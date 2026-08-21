@@ -1,6 +1,7 @@
 """API-first adapter around the preserved deterministic planning engine."""
 from __future__ import annotations
 import json
+import os
 import sys
 from datetime import date, timedelta
 from io import BytesIO
@@ -23,7 +24,8 @@ from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, PlanGener
 
 CONFIG = json.loads((ROOT / "config/defaults.json").read_text())
 app = FastAPI(title="Rowing Plan API", version="0.4.0", openapi_url="/api/v1/openapi.json", docs_url="/docs")
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
+allowed_origins=[origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if origin.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 def build_plan(request: PlanGenerationRequest) -> dict:
     errors = validate_profile(request.athlete_profile)

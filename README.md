@@ -63,6 +63,8 @@ Milestone 3 adds the mobile daily experience, seven-day weekly states, workout d
 
 Milestone 4 adds completion logging and a race countdown/season timeline. See [PWA Milestone 4](docs/PWA_MILESTONE_4.md).
 
+For production deployment on Vercel with Supabase Postgres, follow [Vercel and Supabase deployment](docs/VERCEL_SUPABASE_DEPLOYMENT.md).
+
 ## Package map
 
 - `CODEX_PROMPT.md`: full build prompt
