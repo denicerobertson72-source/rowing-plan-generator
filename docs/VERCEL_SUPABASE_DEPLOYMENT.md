@@ -7,9 +7,8 @@ The app uses two Vercel projects from the same GitHub repository and one Supabas
 Create a second Vercel project from `denicerobertson72-source/rowing-plan-generator` with these settings:
 
 - Project name: `rowing-plan-api`
-- Root Directory: `services/api`
-- Framework Preset: Other
-- Include source files outside of the Root Directory: enabled
+- Root Directory: leave blank (the repository root)
+- Framework Preset: leave it on automatic detection; the included `vercel.json` identifies FastAPI
 
 In Supabase, open **Project Settings → Database → Connect** and copy the **Session pooler** connection string. In the API project's Vercel **Settings → Environment Variables**, add these production, preview, and development variables:
 
