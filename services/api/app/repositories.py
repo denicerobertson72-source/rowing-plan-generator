@@ -130,4 +130,16 @@ class PostgresRepositories:
             cursor.execute("SELECT log_id, session_key, created_at, payload_json FROM workout_logs WHERE plan_id=%s ORDER BY created_at DESC",(plan_id,)); rows=cursor.fetchall()
         return [{"log_id":row["log_id"],"session_key":row["session_key"],"created_at":row["created_at"].isoformat(),"payload":row["payload_json"]} for row in rows]
 
-REPOSITORIES = PostgresRepositories(os.environ["SUPABASE_DB_URL"]) if os.environ.get("SUPABASE_DB_URL") else SQLiteRepositories(Path(__file__).resolve().parents[1] / "data" / "rowing_plan.sqlite3")
+class LazyRepositories:
+    """Avoid opening a database connection during a serverless function import."""
+    def __init__(self) -> None:
+        self._instance: SQLiteRepositories | PostgresRepositories | None = None
+    def _get(self) -> SQLiteRepositories | PostgresRepositories:
+        if self._instance is None:
+            database_url=os.environ.get("SUPABASE_DB_URL")
+            self._instance=PostgresRepositories(database_url) if database_url else SQLiteRepositories(Path(__file__).resolve().parents[1] / "data" / "rowing_plan.sqlite3")
+        return self._instance
+    def __getattr__(self, name: str):
+        return getattr(self._get(), name)
+
+REPOSITORIES = LazyRepositories()
