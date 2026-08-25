@@ -65,6 +65,8 @@ Milestone 4 adds completion logging and a race countdown/season timeline. See [P
 
 For production deployment on Vercel with Supabase Postgres, follow [Vercel and Supabase deployment](docs/VERCEL_SUPABASE_DEPLOYMENT.md).
 
+The current evidence approach is documented in [Female-focused evidence layer v0.5](docs/FEMALE_EVIDENCE_LAYER_V0.5.md).
+
 ## Package map
 
 - `CODEX_PROMPT.md`: full build prompt

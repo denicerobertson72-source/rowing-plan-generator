@@ -20,6 +20,7 @@ from rowing_plan.scheduler import generate_plan
 from rowing_plan.validators import hard_constraint_errors, validate_profile
 from rowing_plan.workbook import build_workbook
 from .repositories import REPOSITORIES
+from rowing_plan.training_load import load_summary, session_load_au
 from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, PlanGenerationRequest, PlanResponse, RegenerateRequest, WorkoutLogRequest
 
 CONFIG = json.loads((ROOT / "config/defaults.json").read_text())
@@ -120,12 +121,14 @@ def session_detail(plan_id: str, session_date: date, session_id: str, mode: str)
 @app.post("/api/v1/plans/{plan_id}/sessions/{session_key}/log")
 def log_workout(plan_id: str, session_key: str, log: WorkoutLogRequest) -> dict:
     if not REPOSITORIES.get_plan(plan_id): raise HTTPException(404, "Plan not found")
-    return {"status": "accepted", "log_id": REPOSITORIES.save_log(plan_id, session_key, log.model_dump())}
+    payload=log.model_dump()
+    return {"status": "accepted", "log_id": REPOSITORIES.save_log(plan_id, session_key, payload), "session_load_au":session_load_au(payload)}
 
 @app.get("/api/v1/plans/{plan_id}/logs")
 def workout_logs(plan_id: str) -> dict:
     if not REPOSITORIES.get_plan(plan_id): raise HTTPException(404, "Plan not found")
-    return {"plan_id":plan_id,"logs":REPOSITORIES.logs_for_plan(plan_id)}
+    logs=REPOSITORIES.logs_for_plan(plan_id)
+    return {"plan_id":plan_id,"logs":logs,"load_summary":load_summary(logs)}
 
 @app.get("/api/v1/plans/{plan_id}/season")
 def season_summary(plan_id: str) -> dict:

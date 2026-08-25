@@ -92,12 +92,12 @@ def _plan_impact(trends: dict) -> list[str]:
     current,prior=trends.get("current"),trends.get("prior")
     if not current: return ["No valid performance tests are available yet; use HR, RPE, rate, and coach guidance."]
     if not prior: return ["Current testing block establishes a baseline. Actual 2k is the primary erg performance anchor; short tests personalize PP and AN work."]
-    row=trends["rows"][-1]; changes=[row.get(f"{x}_pct_change") for x in ("two_k","seven_stroke_peak","sixty_second")]
+    row=trends["rows"][-1]; changes=[row.get(f"{x}_pct_change") for x in ("two_k","sixty_second")]
     available=[x for x in changes if x is not None]
     if available and all(x < 0 for x in available): return ["Recent 2k and available short-power values were lower. The app does not add intensity; review recovery, total load, illness, and test consistency before progression."]
-    if row.get("two_k_pct_change",0)>0 and any((row.get("seven_stroke_peak_pct_change",0)<0,row.get("sixty_second_pct_change",0)<0)):
+    if row.get("two_k_pct_change",0)>0 and row.get("sixty_second_pct_change",0)<0:
         return ["2k power increased while at least one short-duration measure was lower. Keep the current aerobic progression and retain, rather than expand, a small short-power exposure when recovery and race timing allow."]
-    if (row.get("seven_stroke_peak_pct_change",0)>0 or row.get("sixty_second_pct_change",0)>0) and row.get("two_k_pct_change",0)<=0:
+    if row.get("sixty_second_pct_change",0)>0 and row.get("two_k_pct_change",0)<=0:
         return ["Short-duration power increased while 2k power changed little or decreased. The next eligible development block may shift a small amount of quality work toward sustained UT1/AT or 2k-specific work; taper and recovery rules still win."]
     return ["Recent changes are modest or mixed. Continue the current progression and interpret test changes alongside normal variability and training context."]
 

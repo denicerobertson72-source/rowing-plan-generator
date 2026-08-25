@@ -5,6 +5,7 @@ from collections import defaultdict
 from .periodization import phase_for_day, parse, build_phases
 from .session_selector import load_library, select_session
 from .power_profile import target_for_band
+from .evidence import METHODOLOGY_STATEMENT, RULES
 from .conversions import watts_to_split_seconds, format_split
 
 WEEKDAY=["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
@@ -68,4 +69,4 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
         s["rating"] = f"{min(rate_lows)}–{max(rate_highs)} spm" if rate_lows and rate_highs else "—"
         s["description"] = f"{s.get('title', '')}. {s.get('structure', '')}".strip()
     impacts=power.get("plan_impacts",[])
-    return {"plan_version":"0.3.0","profile_id":profile.get("athlete",{}).get("display_name","athlete"),"generated_at":datetime.now().isoformat(),"intensity_profile":bands,"power_profile":power,"phases":build_phases(profile),"sessions":sessions,"weekly_totals":totals,"warnings":warnings+[{"level":"info","message":w} for w in power.get("warnings",[])],"plan_impacts":impacts,"algorithm_versions":{"planner":"0.3.0","power_profile":power.get("algorithm_version"),"config":config["config_version"]}}
+    return {"plan_version":"0.5.0","profile_id":profile.get("athlete",{}).get("display_name","athlete"),"generated_at":datetime.now().isoformat(),"intensity_profile":bands,"power_profile":power,"phases":build_phases(profile),"sessions":sessions,"weekly_totals":totals,"warnings":warnings+[{"level":"info","message":w} for w in power.get("warnings",[])],"plan_impacts":impacts,"evidence_methodology":METHODOLOGY_STATEMENT,"evidence_rules":RULES,"algorithm_versions":{"planner":"0.5.0","power_profile":power.get("algorithm_version"),"config":config["config_version"]}}
