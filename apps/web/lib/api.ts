@@ -7,6 +7,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/
 async function request<T>(path:string, init?:RequestInit): Promise<T> { const {supabase}=await import("./supabase");const token=(await supabase?.auth.getSession())?.data.session?.access_token;const response=await fetch(`${API_BASE}${path}`,{headers:{"Content-Type":"application/json",...(token?{Authorization:`Bearer ${token}`}:{}),...(init?.headers ?? {})},...init}); if (!response.ok) throw new Error((await response.text()) || "Request failed"); return response.json() as Promise<T>; }
 export function createAthlete(athlete_profile: Record<string, unknown>): Promise<AthleteResponse> { return request("/athletes",{method:"POST",body:JSON.stringify({athlete_profile})}); }
 export function getAthlete(athleteId:string): Promise<AthleteResponse> { return request(`/athletes/${athleteId}`); }
+export function getCurrentAthlete(): Promise<AthleteResponse & {plan_id:string|null}> { return request("/account/athlete"); }
 export function updateAthlete(athleteId:string, athlete_profile:Record<string,unknown>): Promise<AthleteResponse> { return request(`/athletes/${athleteId}`,{method:"PUT",body:JSON.stringify({athlete_profile})}); }
 export function generateAthletePlan(athleteId:string): Promise<PlanResponse> { return request(`/athletes/${athleteId}/plans/generate`,{method:"POST",body:"{}"}); }
 export function getPlan(planId:string): Promise<{plan_id:string; athlete_id:string; version_number:number; plan:Plan}> { return request(`/plans/${planId}`); }

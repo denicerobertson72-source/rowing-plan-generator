@@ -71,6 +71,12 @@ def get_athlete(athlete_id: str, user_id: str = Depends(current_user_id)) -> Ath
     profile=owned_athlete(athlete_id,user_id)
     return AthleteResponse(athlete_id=athlete_id, athlete_profile=profile)
 
+@app.get("/api/v1/account/athlete")
+def get_current_athlete(user_id: str = Depends(current_user_id)) -> dict:
+    record=REPOSITORIES.latest_for_user(user_id)
+    if not record: raise HTTPException(404,"No Athlete Profile is associated with this account.")
+    return record
+
 @app.put("/api/v1/athletes/{athlete_id}", response_model=AthleteResponse)
 def update_athlete(athlete_id: str, request: AthleteCreateRequest, user_id: str = Depends(current_user_id)) -> AthleteResponse:
     owned_athlete(athlete_id,user_id)

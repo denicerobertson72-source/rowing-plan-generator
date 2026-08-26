@@ -50,6 +50,11 @@ class SQLiteRepositories:
     def athlete_owner(self, athlete_id: str) -> str | None:
         with self._connect() as db: row=db.execute("SELECT user_id FROM athletes WHERE athlete_id=?",(athlete_id,)).fetchone()
         return row["user_id"] if row else None
+    def latest_for_user(self, user_id: str) -> dict[str, Any] | None:
+        with self._connect() as db: row=db.execute("SELECT athlete_id, profile_json FROM athletes WHERE user_id=? ORDER BY updated_at DESC LIMIT 1",(user_id,)).fetchone()
+        if not row: return None
+        plan=db.execute("SELECT plan_id FROM plan_versions WHERE athlete_id=? ORDER BY version_number DESC LIMIT 1",(row["athlete_id"],)).fetchone()
+        return {"athlete_id":row["athlete_id"],"athlete_profile":json.loads(row["profile_json"]),"plan_id":plan["plan_id"] if plan else None}
     def save_plan(self, athlete_id: str, plan: dict[str, Any]) -> str:
         with self._connect() as db:
             version=db.execute("SELECT COALESCE(MAX(version_number),0)+1 FROM plan_versions WHERE athlete_id=?",(athlete_id,)).fetchone()[0]
@@ -137,6 +142,12 @@ class PostgresRepositories:
         with self._connect() as db, db.cursor() as cursor:
             cursor.execute("SELECT user_id FROM athletes WHERE athlete_id=%s",(athlete_id,)); row=cursor.fetchone()
         return row["user_id"] if row else None
+    def latest_for_user(self, user_id: str) -> dict[str, Any] | None:
+        with self._connect() as db, db.cursor() as cursor:
+            cursor.execute("SELECT athlete_id, profile_json FROM athletes WHERE user_id=%s ORDER BY updated_at DESC LIMIT 1",(user_id,)); row=cursor.fetchone()
+            if not row: return None
+            cursor.execute("SELECT plan_id FROM plan_versions WHERE athlete_id=%s ORDER BY version_number DESC LIMIT 1",(row["athlete_id"])); plan=cursor.fetchone()
+        return {"athlete_id":row["athlete_id"],"athlete_profile":row["profile_json"],"plan_id":plan["plan_id"] if plan else None}
     def save_plan(self, athlete_id: str, plan: dict[str, Any]) -> str:
         from psycopg.types.json import Jsonb
         plan_id=str(uuid4())
