@@ -52,6 +52,11 @@ class PrivateCheckInRequest(BaseModel):
     hrv_ms: Optional[float] = Field(default=None, ge=0)
     athlete_note: str = ""
 
+class WeeklyOverrideRequest(BaseModel):
+    week_start: str
+    scope: Literal["this_week_only","make_normal_schedule"] = "this_week_only"
+    changes: list[dict[str, Any]] = Field(default_factory=list)
+
 class ApiHealth(BaseModel):
     status: Literal["ok"]
     api_version: str

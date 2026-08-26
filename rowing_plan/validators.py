@@ -1,6 +1,7 @@
 """Input and generated-plan validation with user-facing messages."""
 from __future__ import annotations
 from datetime import date
+from .recurring_activities import validate_recurring_activities
 
 def validate_profile(profile: dict) -> list[str]:
     errors=[]
@@ -11,6 +12,7 @@ def validate_profile(profile: dict) -> list[str]:
         if r.get("start_date","") > r.get("end_date",""): errors.append(f"Race {r.get('event_name','')} ends before it starts.")
     for t in (profile.get("tests",{}).get("multi_duration_power_tests") or {}).values():
         if isinstance(t,dict) and t.get("value_watts") is not None and t["value_watts"] <= 0: errors.append("Test watts must be positive.")
+    errors.extend(validate_recurring_activities(profile))
     return errors
 
 def hard_constraint_errors(plan: dict, profile: dict) -> list[str]:

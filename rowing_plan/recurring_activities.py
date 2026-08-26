@@ -1,0 +1,22 @@
+"""Recurring commitments replace fixed weekday assumptions without breaking legacy profiles."""
+from __future__ import annotations
+from uuid import uuid4
+
+def migrate_legacy_availability(profile: dict) -> list[dict]:
+    activities=profile.get("recurring_activities")
+    if activities is not None: return activities
+    days=profile.get("weekly_availability",[])
+    lifts=[d["weekday"] for d in days if d.get("heavy_lifting")]
+    rests=[d["weekday"] for d in days if d.get("fixed_rest")]
+    items=[]
+    if lifts: items.append({"activity_id":str(uuid4()),"activity_type":"strength","sessions_per_week":len(lifts),"scheduling_status":"fixed","fixed_days":lifts,"preferred_days":[],"allowed_days":lifts,"prohibited_days":[],"planner_may_choose_day":False,"same_day_rules":{"rowing_allowed":all(d.get("row_on_lifting_day",True) for d in days if d["weekday"] in lifts),"strength_allowed":True,"alternate_ut2_allowed":any(d.get("alternate_ut2_allowed") for d in days if d["weekday"] in lifts),"second_hard_session_allowed":False},"race_week_mobility":"locked","notes":"Migrated lifting commitments."})
+    if rests: items.append({"activity_id":str(uuid4()),"activity_type":"rest","sessions_per_week":len(rests),"scheduling_status":"fixed","fixed_days":rests,"preferred_days":[],"allowed_days":rests,"prohibited_days":[],"planner_may_choose_day":False,"same_day_rules":{"rowing_allowed":False,"strength_allowed":False,"alternate_ut2_allowed":False,"second_hard_session_allowed":False},"race_week_mobility":"locked","notes":"Migrated rest commitments."})
+    return items
+
+def validate_recurring_activities(profile: dict) -> list[str]:
+    errors=[]
+    for item in migrate_legacy_availability(profile):
+        allowed=set(item.get("allowed_days",[]))|set(item.get("fixed_days",[]))|set(item.get("preferred_days",[]))
+        if item.get("sessions_per_week",0)>len(allowed): errors.append(f"{item.get('activity_type','Activity')} requests more weekly sessions than allowed days.")
+        if set(item.get("prohibited_days",[]))&allowed: errors.append(f"{item.get('activity_type','Activity')} includes a prohibited day.")
+    return errors

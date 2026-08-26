@@ -22,7 +22,7 @@ from rowing_plan.workbook import build_workbook
 from .repositories import REPOSITORIES
 from .auth import current_user_id
 from rowing_plan.training_load import load_summary, session_load_au
-from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, PlanGenerationRequest, PlanResponse, PrivateCheckInRequest, RegenerateRequest, WorkoutLogRequest
+from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, PlanGenerationRequest, PlanResponse, PrivateCheckInRequest, RegenerateRequest, WeeklyOverrideRequest, WorkoutLogRequest
 
 CONFIG = json.loads((ROOT / "config/defaults.json").read_text())
 app = FastAPI(title="Rowing Plan API", version="0.4.0", openapi_url="/api/v1/openapi.json", docs_url="/docs")
@@ -106,13 +106,20 @@ def week(plan_id: str, week_number: int, user_id: str = Depends(current_user_id)
     availability={item["weekday"]:item for item in profile.get("weekly_availability",[])}
     first=min(date.fromisoformat(s["date"]) for s in sessions)
     monday=first-timedelta(days=first.weekday())
+    # The newest saved override for this week takes precedence.  It is applied
+    # only to this read model; the underlying plan and permanent profile stay intact.
+    matching_override=next((item["payload"] for item in REPOSITORIES.weekly_overrides(record["athlete_id"])
+                            if item["payload"].get("week_start")==monday.isoformat()), None)
+    if matching_override:
+        from rowing_plan.weekly_overrides import apply_to_sessions
+        sessions=apply_to_sessions(sessions,matching_override)
     days=[]
     for offset in range(7):
         current=monday+timedelta(days=offset); day_sessions=[s for s in sessions if s["date"]==current.isoformat()]
         rule=availability.get(current.strftime("%A").lower(),{})
         state="rest" if rule.get("fixed_rest") or not rule.get("available",True) else "planned"
         days.append({"date":current.isoformat(),"day":current.strftime("%A"),"state":state,"sessions":day_sessions})
-    return {"plan_id": plan_id, "week": week_number, "days": days}
+    return {"plan_id": plan_id, "week": week_number, "days": days, "weekly_override_applied":bool(matching_override)}
 
 @app.get("/api/v1/plans/{plan_id}/sessions/detail")
 def session_detail(plan_id: str, session_date: date, session_id: str, mode: str, user_id: str = Depends(current_user_id)) -> dict:
@@ -148,6 +155,18 @@ def private_check_ins(athlete_id: str, user_id: str = Depends(current_user_id)) 
     entries=REPOSITORIES.private_check_ins(athlete_id)
     high=sum(e["payload"].get("symptom_impact")=="high" for e in entries)
     return {"entries":entries,"suggestion":"Review recovery and session placement with your coach if this reflects a repeated personal pattern." if high>=3 else None,"automatic_plan_change":False}
+
+@app.post("/api/v1/athletes/{athlete_id}/weekly-overrides")
+def save_weekly_override(athlete_id: str, override: WeeklyOverrideRequest, user_id: str = Depends(current_user_id)) -> dict:
+    owned_athlete(athlete_id,user_id)
+    from rowing_plan.weekly_overrides import normalize
+    payload=normalize(override.model_dump())
+    return {"override_id":REPOSITORIES.save_weekly_override(athlete_id,payload),"scope":payload["scope"]}
+
+@app.get("/api/v1/athletes/{athlete_id}/weekly-overrides")
+def weekly_overrides(athlete_id: str, user_id: str = Depends(current_user_id)) -> dict:
+    owned_athlete(athlete_id,user_id)
+    return {"overrides":REPOSITORIES.weekly_overrides(athlete_id)}
 
 @app.get("/api/v1/plans/{plan_id}/season")
 def season_summary(plan_id: str, user_id: str = Depends(current_user_id)) -> dict:

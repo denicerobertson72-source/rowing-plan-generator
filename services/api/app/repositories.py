@@ -32,6 +32,7 @@ class SQLiteRepositories:
               CREATE TABLE IF NOT EXISTS plan_versions (plan_id TEXT PRIMARY KEY, athlete_id TEXT NOT NULL, version_number INTEGER NOT NULL, plan_json TEXT NOT NULL, created_at TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS workout_logs (log_id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, session_key TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS private_check_ins (entry_id TEXT PRIMARY KEY, athlete_id TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL);
+              CREATE TABLE IF NOT EXISTS weekly_overrides (override_id TEXT PRIMARY KEY, athlete_id TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL);
             """)
     def _connect(self) -> sqlite3.Connection:
         db=sqlite3.connect(self.path); db.row_factory=sqlite3.Row; return db
@@ -74,6 +75,13 @@ class SQLiteRepositories:
     def private_check_ins(self, athlete_id: str) -> list[dict[str, Any]]:
         with self._connect() as db: rows=db.execute("SELECT * FROM private_check_ins WHERE athlete_id=? ORDER BY created_at DESC",(athlete_id,)).fetchall()
         return [{"entry_id":r["entry_id"],"created_at":r["created_at"],"payload":json.loads(r["payload_json"])} for r in rows]
+    def save_weekly_override(self, athlete_id: str, payload: dict[str, Any]) -> str:
+        override_id=str(uuid4())
+        with self._connect() as db: db.execute("INSERT INTO weekly_overrides VALUES (?, ?, ?, ?)",(override_id,athlete_id,json.dumps(payload),self._now()))
+        return override_id
+    def weekly_overrides(self, athlete_id: str) -> list[dict[str, Any]]:
+        with self._connect() as db: rows=db.execute("SELECT * FROM weekly_overrides WHERE athlete_id=? ORDER BY created_at DESC",(athlete_id,)).fetchall()
+        return [{"override_id":r["override_id"],"created_at":r["created_at"],"payload":json.loads(r["payload_json"])} for r in rows]
 
 class PostgresRepositories:
     """Supabase Postgres store. Selected only when SUPABASE_DB_URL is configured."""
@@ -108,6 +116,7 @@ class PostgresRepositories:
                 entry_id TEXT PRIMARY KEY, athlete_id TEXT NOT NULL REFERENCES athletes(athlete_id) ON DELETE CASCADE,
                 payload_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
               );
+              CREATE TABLE IF NOT EXISTS weekly_overrides (override_id TEXT PRIMARY KEY, athlete_id TEXT NOT NULL REFERENCES athletes(athlete_id) ON DELETE CASCADE, payload_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
               CREATE INDEX IF NOT EXISTS workout_logs_plan_created_idx ON workout_logs (plan_id, created_at DESC);
             """)
     def create(self, profile: dict[str, Any], user_id: str | None = None) -> str:
@@ -163,6 +172,15 @@ class PostgresRepositories:
     def private_check_ins(self, athlete_id: str) -> list[dict[str, Any]]:
         with self._connect() as db, db.cursor() as cursor: cursor.execute("SELECT entry_id,created_at,payload_json FROM private_check_ins WHERE athlete_id=%s ORDER BY created_at DESC",(athlete_id,)); rows=cursor.fetchall()
         return [{"entry_id":r["entry_id"],"created_at":r["created_at"].isoformat(),"payload":r["payload_json"]} for r in rows]
+    def save_weekly_override(self, athlete_id: str, payload: dict[str, Any]) -> str:
+        from psycopg.types.json import Jsonb
+        override_id=str(uuid4())
+        with self._connect() as db, db.cursor() as cursor: cursor.execute("INSERT INTO weekly_overrides (override_id,athlete_id,payload_json) VALUES (%s,%s,%s)",(override_id,athlete_id,Jsonb(payload)))
+        return override_id
+    def weekly_overrides(self, athlete_id: str) -> list[dict[str, Any]]:
+        with self._connect() as db, db.cursor() as cursor:
+            cursor.execute("SELECT override_id, created_at, payload_json FROM weekly_overrides WHERE athlete_id=%s ORDER BY created_at DESC",(athlete_id,)); rows=cursor.fetchall()
+        return [{"override_id":r["override_id"],"created_at":r["created_at"].isoformat(),"payload":r["payload_json"]} for r in rows]
 
 class LazyRepositories:
     """Avoid opening a database connection during a serverless function import."""

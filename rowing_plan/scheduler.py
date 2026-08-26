@@ -6,6 +6,8 @@ from .periodization import phase_for_day, parse, build_phases
 from .session_selector import load_library, select_session
 from .power_profile import target_for_band
 from .evidence import METHODOLOGY_STATEMENT, RULES
+from .recurring_activities import migrate_legacy_availability
+from .schedule_scoring import choose
 from .conversions import watts_to_split_seconds, format_split
 
 WEEKDAY=["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
@@ -68,5 +70,13 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
         s["coached"] = s.get("session_id") == "COACHED"
         s["rating"] = f"{min(rate_lows)}–{max(rate_highs)} spm" if rate_lows and rate_highs else "—"
         s["description"] = f"{s.get('title', '')}. {s.get('structure', '')}".strip()
+    # Keep placement decisions inspectable for the mobile client and future
+    # recurring-activity UI.  Quality and fixed dates are derived from this
+    # actual plan rather than from a hard-coded weekday.
+    quality_days={s["day"].lower() for s in sessions if s.get("band") in ("TR","AN","PP","RACE")}
+    fixed_days={s["day"].lower() for s in sessions if s.get("fixed")}
+    schedule_moves=[{"activity_type":a.get("activity_type"),**choose(a,quality_days,fixed_days)}
+                    for a in migrate_legacy_availability(profile)
+                    if a.get("scheduling_status")!="fixed" and a.get("planner_may_choose_day",True)]
     impacts=power.get("plan_impacts",[])
-    return {"plan_version":"0.5.0","profile_id":profile.get("athlete",{}).get("display_name","athlete"),"generated_at":datetime.now().isoformat(),"intensity_profile":bands,"power_profile":power,"phases":build_phases(profile),"sessions":sessions,"weekly_totals":totals,"warnings":warnings+[{"level":"info","message":w} for w in power.get("warnings",[])],"plan_impacts":impacts,"evidence_methodology":METHODOLOGY_STATEMENT,"evidence_rules":RULES,"algorithm_versions":{"planner":"0.5.0","power_profile":power.get("algorithm_version"),"config":config["config_version"]}}
+    return {"plan_version":"0.5.0","profile_id":profile.get("athlete",{}).get("display_name","athlete"),"generated_at":datetime.now().isoformat(),"intensity_profile":bands,"power_profile":power,"phases":build_phases(profile),"sessions":sessions,"weekly_totals":totals,"warnings":warnings+[{"level":"info","message":w} for w in power.get("warnings",[])],"plan_impacts":impacts,"schedule_moves":schedule_moves,"evidence_methodology":METHODOLOGY_STATEMENT,"evidence_rules":RULES,"algorithm_versions":{"planner":"0.5.0","power_profile":power.get("algorithm_version"),"config":config["config_version"]}}
