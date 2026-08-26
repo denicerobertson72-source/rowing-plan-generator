@@ -4,7 +4,9 @@ from itertools import combinations
 
 def placements(activity: dict) -> list[tuple[str,...]]:
     if activity.get("scheduling_status")=="fixed": return [tuple(activity.get("fixed_days",[]))]
-    days=[d for d in activity.get("allowed_days",[]) if d not in activity.get("prohibited_days",[])]
+    # Preferred days are valid days too; "also possible" is additive, not a
+    # replacement for the athlete's preferred choices.
+    days=[d for d in dict.fromkeys([*activity.get("preferred_days",[]),*activity.get("allowed_days",[])]) if d not in activity.get("prohibited_days",[])]
     return list(combinations(days,activity.get("sessions_per_week",1)))
 
 def score(activity: dict, selected: tuple[str,...], quality_days: set[str], fixed_days: set[str]) -> tuple[int,list[str]]:
