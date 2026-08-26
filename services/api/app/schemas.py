@@ -37,6 +37,21 @@ class WorkoutLogRequest(BaseModel):
     conditions: str = ""
     notes: str = ""
 
+class PrivateCheckInRequest(BaseModel):
+    entry_date: str
+    female_health_tracking_enabled: bool = False
+    bleeding_today: Optional[bool] = None
+    symptom_impact: Optional[Literal["none","mild","moderate","high"]] = None
+    symptom_tags: list[str] = Field(default_factory=list)
+    life_stage_tracking_enabled: bool = False
+    life_stage: Optional[Literal["premenopausal","perimenopausal","postmenopausal","unsure","prefer_not_to_say"]] = None
+    sleep_impact: Optional[Literal["none","mild","moderate","high"]] = None
+    fatigue_impact: Optional[Literal["none","mild","moderate","high"]] = None
+    muscle_joint_impact: Optional[Literal["none","mild","moderate","high"]] = None
+    heat_symptom_impact: Optional[Literal["none","mild","moderate","high"]] = None
+    hrv_ms: Optional[float] = Field(default=None, ge=0)
+    athlete_note: str = ""
+
 class ApiHealth(BaseModel):
     status: Literal["ok"]
     api_version: str

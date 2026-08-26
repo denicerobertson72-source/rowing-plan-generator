@@ -31,6 +31,7 @@ class SQLiteRepositories:
               CREATE TABLE IF NOT EXISTS athletes (athlete_id TEXT PRIMARY KEY, user_id TEXT, profile_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS plan_versions (plan_id TEXT PRIMARY KEY, athlete_id TEXT NOT NULL, version_number INTEGER NOT NULL, plan_json TEXT NOT NULL, created_at TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS workout_logs (log_id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, session_key TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL);
+              CREATE TABLE IF NOT EXISTS private_check_ins (entry_id TEXT PRIMARY KEY, athlete_id TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL);
             """)
     def _connect(self) -> sqlite3.Connection:
         db=sqlite3.connect(self.path); db.row_factory=sqlite3.Row; return db
@@ -45,6 +46,9 @@ class SQLiteRepositories:
     def get(self, athlete_id: str) -> dict[str, Any] | None:
         with self._connect() as db: row=db.execute("SELECT profile_json FROM athletes WHERE athlete_id=?",(athlete_id,)).fetchone()
         return json.loads(row["profile_json"]) if row else None
+    def athlete_owner(self, athlete_id: str) -> str | None:
+        with self._connect() as db: row=db.execute("SELECT user_id FROM athletes WHERE athlete_id=?",(athlete_id,)).fetchone()
+        return row["user_id"] if row else None
     def save_plan(self, athlete_id: str, plan: dict[str, Any]) -> str:
         with self._connect() as db:
             version=db.execute("SELECT COALESCE(MAX(version_number),0)+1 FROM plan_versions WHERE athlete_id=?",(athlete_id,)).fetchone()[0]
@@ -53,6 +57,9 @@ class SQLiteRepositories:
     def get_plan(self, plan_id: str) -> dict[str, Any] | None:
         with self._connect() as db: row=db.execute("SELECT * FROM plan_versions WHERE plan_id=?",(plan_id,)).fetchone()
         return {"plan_id":row["plan_id"],"athlete_id":row["athlete_id"],"version_number":row["version_number"],"created_at":row["created_at"],"plan":json.loads(row["plan_json"])} if row else None
+    def plan_owner(self, plan_id: str) -> str | None:
+        with self._connect() as db: row=db.execute("SELECT a.user_id FROM plan_versions p JOIN athletes a ON a.athlete_id=p.athlete_id WHERE p.plan_id=?",(plan_id,)).fetchone()
+        return row["user_id"] if row else None
     def save_log(self, plan_id: str, session_key: str, payload: dict[str, Any]) -> str:
         log_id=str(uuid4())
         with self._connect() as db: db.execute("INSERT INTO workout_logs VALUES (?, ?, ?, ?, ?)",(log_id,plan_id,session_key,json.dumps(payload),self._now()))
@@ -60,6 +67,13 @@ class SQLiteRepositories:
     def logs_for_plan(self, plan_id: str) -> list[dict[str, Any]]:
         with self._connect() as db: rows=db.execute("SELECT * FROM workout_logs WHERE plan_id=? ORDER BY created_at DESC",(plan_id,)).fetchall()
         return [{"log_id":row["log_id"],"session_key":row["session_key"],"created_at":row["created_at"],"payload":json.loads(row["payload_json"])} for row in rows]
+    def save_private_check_in(self, athlete_id: str, payload: dict[str, Any]) -> str:
+        entry_id=str(uuid4())
+        with self._connect() as db: db.execute("INSERT INTO private_check_ins VALUES (?, ?, ?, ?)",(entry_id,athlete_id,json.dumps(payload),self._now()))
+        return entry_id
+    def private_check_ins(self, athlete_id: str) -> list[dict[str, Any]]:
+        with self._connect() as db: rows=db.execute("SELECT * FROM private_check_ins WHERE athlete_id=? ORDER BY created_at DESC",(athlete_id,)).fetchall()
+        return [{"entry_id":r["entry_id"],"created_at":r["created_at"],"payload":json.loads(r["payload_json"])} for r in rows]
 
 class PostgresRepositories:
     """Supabase Postgres store. Selected only when SUPABASE_DB_URL is configured."""
@@ -90,6 +104,10 @@ class PostgresRepositories:
                 log_id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES plan_versions(plan_id) ON DELETE CASCADE,
                 session_key TEXT NOT NULL, payload_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
               );
+              CREATE TABLE IF NOT EXISTS private_check_ins (
+                entry_id TEXT PRIMARY KEY, athlete_id TEXT NOT NULL REFERENCES athletes(athlete_id) ON DELETE CASCADE,
+                payload_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+              );
               CREATE INDEX IF NOT EXISTS workout_logs_plan_created_idx ON workout_logs (plan_id, created_at DESC);
             """)
     def create(self, profile: dict[str, Any], user_id: str | None = None) -> str:
@@ -106,6 +124,10 @@ class PostgresRepositories:
         with self._connect() as db, db.cursor() as cursor:
             cursor.execute("SELECT profile_json FROM athletes WHERE athlete_id=%s",(athlete_id,)); row=cursor.fetchone()
         return row["profile_json"] if row else None
+    def athlete_owner(self, athlete_id: str) -> str | None:
+        with self._connect() as db, db.cursor() as cursor:
+            cursor.execute("SELECT user_id FROM athletes WHERE athlete_id=%s",(athlete_id,)); row=cursor.fetchone()
+        return row["user_id"] if row else None
     def save_plan(self, athlete_id: str, plan: dict[str, Any]) -> str:
         from psycopg.types.json import Jsonb
         plan_id=str(uuid4())
@@ -119,6 +141,10 @@ class PostgresRepositories:
         with self._connect() as db, db.cursor() as cursor:
             cursor.execute("SELECT plan_id, athlete_id, version_number, created_at, plan_json FROM plan_versions WHERE plan_id=%s",(plan_id,)); row=cursor.fetchone()
         return {"plan_id":row["plan_id"],"athlete_id":row["athlete_id"],"version_number":row["version_number"],"created_at":row["created_at"].isoformat(),"plan":row["plan_json"]} if row else None
+    def plan_owner(self, plan_id: str) -> str | None:
+        with self._connect() as db, db.cursor() as cursor:
+            cursor.execute("SELECT a.user_id FROM plan_versions p JOIN athletes a ON a.athlete_id=p.athlete_id WHERE p.plan_id=%s",(plan_id,)); row=cursor.fetchone()
+        return row["user_id"] if row else None
     def save_log(self, plan_id: str, session_key: str, payload: dict[str, Any]) -> str:
         from psycopg.types.json import Jsonb
         log_id=str(uuid4())
@@ -129,6 +155,14 @@ class PostgresRepositories:
         with self._connect() as db, db.cursor() as cursor:
             cursor.execute("SELECT log_id, session_key, created_at, payload_json FROM workout_logs WHERE plan_id=%s ORDER BY created_at DESC",(plan_id,)); rows=cursor.fetchall()
         return [{"log_id":row["log_id"],"session_key":row["session_key"],"created_at":row["created_at"].isoformat(),"payload":row["payload_json"]} for row in rows]
+    def save_private_check_in(self, athlete_id: str, payload: dict[str, Any]) -> str:
+        from psycopg.types.json import Jsonb
+        entry_id=str(uuid4())
+        with self._connect() as db, db.cursor() as cursor: cursor.execute("INSERT INTO private_check_ins (entry_id, athlete_id, payload_json) VALUES (%s,%s,%s)",(entry_id,athlete_id,Jsonb(payload)))
+        return entry_id
+    def private_check_ins(self, athlete_id: str) -> list[dict[str, Any]]:
+        with self._connect() as db, db.cursor() as cursor: cursor.execute("SELECT entry_id,created_at,payload_json FROM private_check_ins WHERE athlete_id=%s ORDER BY created_at DESC",(athlete_id,)); rows=cursor.fetchall()
+        return [{"entry_id":r["entry_id"],"created_at":r["created_at"].isoformat(),"payload":r["payload_json"]} for r in rows]
 
 class LazyRepositories:
     """Avoid opening a database connection during a serverless function import."""

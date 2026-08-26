@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -20,8 +20,9 @@ from rowing_plan.scheduler import generate_plan
 from rowing_plan.validators import hard_constraint_errors, validate_profile
 from rowing_plan.workbook import build_workbook
 from .repositories import REPOSITORIES
+from .auth import current_user_id
 from rowing_plan.training_load import load_summary, session_load_au
-from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, PlanGenerationRequest, PlanResponse, RegenerateRequest, WorkoutLogRequest
+from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, PlanGenerationRequest, PlanResponse, PrivateCheckInRequest, RegenerateRequest, WorkoutLogRequest
 
 CONFIG = json.loads((ROOT / "config/defaults.json").read_text())
 app = FastAPI(title="Rowing Plan API", version="0.4.0", openapi_url="/api/v1/openapi.json", docs_url="/docs")
@@ -38,6 +39,17 @@ def build_plan(request: PlanGenerationRequest) -> dict:
     if hard_errors: raise HTTPException(status_code=422, detail={"constraint_errors": hard_errors})
     return plan
 
+def owned_athlete(athlete_id: str, user_id: str) -> dict:
+    profile=REPOSITORIES.get(athlete_id)
+    if not profile: raise HTTPException(404,"Athlete not found")
+    if REPOSITORIES.athlete_owner(athlete_id) != user_id: raise HTTPException(403,"This athlete belongs to another account.")
+    return profile
+def owned_plan(plan_id: str, user_id: str) -> dict:
+    record=REPOSITORIES.get_plan(plan_id)
+    if not record: raise HTTPException(404,"Plan not found")
+    if REPOSITORIES.plan_owner(plan_id) != user_id: raise HTTPException(403,"This plan belongs to another account.")
+    return record
+
 @app.get("/api/v1/health", response_model=ApiHealth)
 def health() -> ApiHealth: return ApiHealth(status="ok", api_version="v1", planner_version=PLANNER_VERSION)
 
@@ -48,51 +60,46 @@ def generate(request: PlanGenerationRequest) -> PlanResponse:
     return PlanResponse(plan_id=REPOSITORIES.save_plan(athlete_id, plan), plan=plan)
 
 @app.post("/api/v1/athletes", response_model=AthleteResponse)
-def create_athlete(request: AthleteCreateRequest) -> AthleteResponse:
+def create_athlete(request: AthleteCreateRequest, user_id: str = Depends(current_user_id)) -> AthleteResponse:
     errors=validate_profile(request.athlete_profile)
     if errors: raise HTTPException(status_code=422, detail={"validation_errors":errors})
-    athlete_id=REPOSITORIES.create(request.athlete_profile, request.user_id)
+    athlete_id=REPOSITORIES.create(request.athlete_profile, user_id)
     return AthleteResponse(athlete_id=athlete_id, athlete_profile=request.athlete_profile)
 
 @app.get("/api/v1/athletes/{athlete_id}", response_model=AthleteResponse)
-def get_athlete(athlete_id: str) -> AthleteResponse:
-    profile=REPOSITORIES.get(athlete_id)
-    if not profile: raise HTTPException(404, "Athlete not found")
+def get_athlete(athlete_id: str, user_id: str = Depends(current_user_id)) -> AthleteResponse:
+    profile=owned_athlete(athlete_id,user_id)
     return AthleteResponse(athlete_id=athlete_id, athlete_profile=profile)
 
 @app.put("/api/v1/athletes/{athlete_id}", response_model=AthleteResponse)
-def update_athlete(athlete_id: str, request: AthleteCreateRequest) -> AthleteResponse:
-    if not REPOSITORIES.get(athlete_id): raise HTTPException(404, "Athlete not found")
+def update_athlete(athlete_id: str, request: AthleteCreateRequest, user_id: str = Depends(current_user_id)) -> AthleteResponse:
+    owned_athlete(athlete_id,user_id)
     errors=validate_profile(request.athlete_profile)
     if errors: raise HTTPException(status_code=422, detail={"validation_errors":errors})
     REPOSITORIES.save(athlete_id, request.athlete_profile)
     return AthleteResponse(athlete_id=athlete_id, athlete_profile=request.athlete_profile)
 
 @app.post("/api/v1/athletes/{athlete_id}/plans/generate", response_model=PlanResponse)
-def generate_for_athlete(athlete_id: str, request: RegenerateRequest) -> PlanResponse:
-    profile=REPOSITORIES.get(athlete_id)
-    if not profile: raise HTTPException(404, "Athlete not found")
+def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: str = Depends(current_user_id)) -> PlanResponse:
+    profile=owned_athlete(athlete_id,user_id)
     plan=build_plan(PlanGenerationRequest(athlete_profile=profile, locked_sessions=request.locked_sessions))
     return PlanResponse(plan_id=REPOSITORIES.save_plan(athlete_id,plan), plan=plan)
 
 @app.get("/api/v1/plans/{plan_id}")
-def get_plan(plan_id: str) -> dict:
-    record=REPOSITORIES.get_plan(plan_id)
-    if not record: raise HTTPException(404, "Plan not found")
+def get_plan(plan_id: str, user_id: str = Depends(current_user_id)) -> dict:
+    record=owned_plan(plan_id,user_id)
     return record
 
 @app.get("/api/v1/plans/{plan_id}/today")
-def today(plan_id: str, on: Optional[date] = None) -> dict:
-    record = REPOSITORIES.get_plan(plan_id)
-    if not record: raise HTTPException(404, "Plan not found")
+def today(plan_id: str, on: Optional[date] = None, user_id: str = Depends(current_user_id)) -> dict:
+    record = owned_plan(plan_id,user_id)
     target = (on or date.today()).isoformat()
     sessions = [s for s in record["plan"]["sessions"] if s["date"] == target]
     return {"plan_id": plan_id, "date": target, "sessions": sessions, "cached_at": date.today().isoformat()}
 
 @app.get("/api/v1/plans/{plan_id}/week")
-def week(plan_id: str, week_number: int) -> dict:
-    record = REPOSITORIES.get_plan(plan_id)
-    if not record: raise HTTPException(404, "Plan not found")
+def week(plan_id: str, week_number: int, user_id: str = Depends(current_user_id)) -> dict:
+    record = owned_plan(plan_id,user_id)
     sessions = [s for s in record["plan"]["sessions"] if date.fromisoformat(s["date"]).isocalendar().week == week_number]
     if not sessions: return {"plan_id": plan_id, "week": week_number, "days": []}
     profile=REPOSITORIES.get(record["athlete_id"]) or {}
@@ -108,10 +115,9 @@ def week(plan_id: str, week_number: int) -> dict:
     return {"plan_id": plan_id, "week": week_number, "days": days}
 
 @app.get("/api/v1/plans/{plan_id}/sessions/detail")
-def session_detail(plan_id: str, session_date: date, session_id: str, mode: str) -> dict:
+def session_detail(plan_id: str, session_date: date, session_id: str, mode: str, user_id: str = Depends(current_user_id)) -> dict:
     """Mobile display adapter; planning calculations remain in the engine."""
-    record=REPOSITORIES.get_plan(plan_id)
-    if not record: raise HTTPException(404, "Plan not found")
+    record=owned_plan(plan_id,user_id)
     session=next((s for s in record["plan"]["sessions"] if s["date"]==session_date.isoformat() and s["session_id"]==session_id and s["mode"]==mode),None)
     if not session: raise HTTPException(404, "Session not found")
     type_map={"on_water":"row_water","erg":"row_erg","strength":"strength","race":"race","treadmill_walk_jog":"alternate_ut2","elliptical":"alternate_ut2","bike":"cross_training"}
@@ -119,21 +125,33 @@ def session_detail(plan_id: str, session_date: date, session_id: str, mode: str)
     return {"session_id":session_id,"date":session["date"],"session_type":session_type,"title":session["title"],"primary_band":session.get("band"),"planned_duration_min":session.get("total_cardio_minutes",0),"segments":[{"type":"main","duration_min":session.get("total_cardio_minutes",0),"description":session.get("structure","")}],"erg_targets":{"watts":session.get("target_watts"),"split":session.get("split_guide"),"rate":session.get("rating"),"hr":session.get("hr_range")} if mode=="erg" else None,"water_targets":{"rate":session.get("rating"),"hr":session.get("hr_range"),"technical_cue":session.get("technical_cue"),"note":"Water speed varies with current, wind, steering, boat class, and direction."} if mode=="on_water" else None,"coach_directed":session_id=="COACHED","description":session.get("description",session.get("structure","")),"recovery":session.get("recovery"),"rpe_guidance":session.get("rating")}
 
 @app.post("/api/v1/plans/{plan_id}/sessions/{session_key}/log")
-def log_workout(plan_id: str, session_key: str, log: WorkoutLogRequest) -> dict:
-    if not REPOSITORIES.get_plan(plan_id): raise HTTPException(404, "Plan not found")
+def log_workout(plan_id: str, session_key: str, log: WorkoutLogRequest, user_id: str = Depends(current_user_id)) -> dict:
+    owned_plan(plan_id,user_id)
     payload=log.model_dump()
     return {"status": "accepted", "log_id": REPOSITORIES.save_log(plan_id, session_key, payload), "session_load_au":session_load_au(payload)}
 
 @app.get("/api/v1/plans/{plan_id}/logs")
-def workout_logs(plan_id: str) -> dict:
-    if not REPOSITORIES.get_plan(plan_id): raise HTTPException(404, "Plan not found")
+def workout_logs(plan_id: str, user_id: str = Depends(current_user_id)) -> dict:
+    owned_plan(plan_id,user_id)
     logs=REPOSITORIES.logs_for_plan(plan_id)
     return {"plan_id":plan_id,"logs":logs,"load_summary":load_summary(logs)}
 
+@app.post("/api/v1/athletes/{athlete_id}/private-check-ins")
+def private_check_in(athlete_id: str, entry: PrivateCheckInRequest, user_id: str = Depends(current_user_id)) -> dict:
+    owned_athlete(athlete_id,user_id)
+    entry_id=REPOSITORIES.save_private_check_in(athlete_id,entry.model_dump())
+    return {"status":"accepted","entry_id":entry_id,"message":"Private tracking is opt-in and never changes training automatically."}
+
+@app.get("/api/v1/athletes/{athlete_id}/private-check-ins")
+def private_check_ins(athlete_id: str, user_id: str = Depends(current_user_id)) -> dict:
+    owned_athlete(athlete_id,user_id)
+    entries=REPOSITORIES.private_check_ins(athlete_id)
+    high=sum(e["payload"].get("symptom_impact")=="high" for e in entries)
+    return {"entries":entries,"suggestion":"Review recovery and session placement with your coach if this reflects a repeated personal pattern." if high>=3 else None,"automatic_plan_change":False}
+
 @app.get("/api/v1/plans/{plan_id}/season")
-def season_summary(plan_id: str) -> dict:
-    record=REPOSITORIES.get_plan(plan_id)
-    if not record: raise HTTPException(404, "Plan not found")
+def season_summary(plan_id: str, user_id: str = Depends(current_user_id)) -> dict:
+    record=owned_plan(plan_id,user_id)
     profile=REPOSITORIES.get(record["athlete_id"]) or {}
     today_value=date.today()
     phases=record["plan"].get("phases",[])
