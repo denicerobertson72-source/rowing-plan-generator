@@ -123,6 +123,7 @@ class PostgresRepositories:
               );
               CREATE TABLE IF NOT EXISTS weekly_overrides (override_id TEXT PRIMARY KEY, athlete_id TEXT NOT NULL REFERENCES athletes(athlete_id) ON DELETE CASCADE, payload_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
               CREATE INDEX IF NOT EXISTS workout_logs_plan_created_idx ON workout_logs (plan_id, created_at DESC);
+              REVOKE ALL ON TABLE athletes, plan_versions, workout_logs, private_check_ins, weekly_overrides FROM anon, authenticated;
             """)
     def create(self, profile: dict[str, Any], user_id: str | None = None) -> str:
         from psycopg.types.json import Jsonb
@@ -200,6 +201,8 @@ class LazyRepositories:
     def _get(self) -> SQLiteRepositories | PostgresRepositories:
         if self._instance is None:
             database_url=os.environ.get("SUPABASE_DB_URL")
+            if not database_url and os.environ.get("VERCEL") == "1":
+                raise RuntimeError("SUPABASE_DB_URL must be configured for a Vercel deployment.")
             self._instance=PostgresRepositories(database_url) if database_url else SQLiteRepositories(Path(__file__).resolve().parents[1] / "data" / "rowing_plan.sqlite3")
         return self._instance
     def __getattr__(self, name: str):

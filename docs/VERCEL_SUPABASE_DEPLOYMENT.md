@@ -44,6 +44,8 @@ Deploy the PWA. Copy its production URL and update the API project's `ALLOWED_OR
 3. Confirm Today and Week load.
 4. Log a workout, then reload the page to confirm it remains saved.
 
-## Current pilot security model
+## Required production security model
 
-This setup keeps the database password on the server and does not expose Supabase directly to browsers. It does not yet have user accounts, so the pilot URL should be shared only with trusted testers. The next account milestone should add Supabase Auth and Row Level Security before broader distribution.
+The PWA uses Supabase Auth in the browser and sends its access token to the FastAPI service. The API verifies the token and is the only permitted application path to the athlete tables. Before admitting real athletes, configure `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_DB_URL`, `REQUIRE_AUTH=true`, and an explicit `ALLOWED_ORIGINS` value on the API project.
+
+Verify `https://YOUR-API.vercel.app/api/v1/ready` after each production API deployment. A successful `/health` response only confirms that the function is running; `/ready` confirms that the required production configuration is present.

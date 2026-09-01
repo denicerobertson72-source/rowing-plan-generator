@@ -53,6 +53,15 @@ def owned_plan(plan_id: str, user_id: str) -> dict:
 @app.get("/api/v1/health", response_model=ApiHealth)
 def health() -> ApiHealth: return ApiHealth(status="ok", api_version="v1", planner_version=PLANNER_VERSION)
 
+@app.get("/api/v1/ready")
+def ready() -> dict:
+    if os.getenv("VERCEL") != "1": return {"status":"ok","environment":"local"}
+    required=["SUPABASE_DB_URL","SUPABASE_URL","SUPABASE_PUBLISHABLE_KEY","ALLOWED_ORIGINS"]
+    missing=[name for name in required if not os.getenv(name)]
+    if os.getenv("REQUIRE_AUTH", "false").lower() != "true": missing.append("REQUIRE_AUTH=true")
+    if missing: raise HTTPException(503, {"status":"not_ready","missing":missing})
+    return {"status":"ok","environment":"vercel"}
+
 @app.post("/api/v1/plans/generate", response_model=PlanResponse)
 def generate(request: PlanGenerationRequest) -> PlanResponse:
     plan = build_plan(request)
@@ -190,9 +199,8 @@ def season_summary(plan_id: str, user_id: str = Depends(current_user_id)) -> dic
     return {"current_phase":current,"next_race":next_race,"days_to_next_race":(date.fromisoformat(next_race["start_date"])-today_value).days if next_race else None,"transitions":transitions}
 
 @app.get("/api/v1/plans/{plan_id}/excel")
-def excel(plan_id: str) -> StreamingResponse:
-    record = REPOSITORIES.get_plan(plan_id)
-    if not record: raise HTTPException(404, "Plan not found")
+def excel(plan_id: str, user_id: str = Depends(current_user_id)) -> StreamingResponse:
+    record = owned_plan(plan_id, user_id)
     profile=REPOSITORIES.get(record["athlete_id"])
     if not profile: raise HTTPException(404, "Athlete not found")
     buffer=BytesIO(build_workbook(profile, record["plan"]))

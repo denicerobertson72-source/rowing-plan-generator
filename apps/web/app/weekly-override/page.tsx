@@ -2,10 +2,10 @@
 
 import { useMemo, useState } from "react";
 import { AppShell } from "../../components/app-shell";
+import { API_BASE } from "../../lib/api";
 import { getSavedSession } from "../../lib/session";
 import { supabase } from "../../lib/supabase";
 
-const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
 const localDate = (value: Date) => value.toISOString().slice(0, 10);
 const mondayFor = (value: string) => {
   const date = new Date(`${value}T12:00:00`);
@@ -27,7 +27,7 @@ export default function WeeklyOverride() {
       setMessage("Sign in and create a plan first.");
       return;
     }
-    const response = await fetch(`${apiBase}/athletes/${saved.athleteId}/weekly-overrides`, {
+    const response = await fetch(`${API_BASE}/athletes/${saved.athleteId}/weekly-overrides`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({

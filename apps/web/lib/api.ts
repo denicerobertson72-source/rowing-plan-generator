@@ -3,7 +3,7 @@ export type PlanSession = { date:string; day:string; band:string; title:string; 
 export type Plan = { sessions: PlanSession[]; phases: {date:string;phase:string;race_event?:string}[]; plan_impacts?:string[] };
 export type PlanResponse = { plan_id: string; plan: Plan };
 export type AthleteResponse = { athlete_id: string; athlete_profile: Record<string, unknown> };
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? (process.env.NODE_ENV === "development" ? "http://localhost:8000/api/v1" : "https://rowing-plan-api.vercel.app/api/v1");
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? (process.env.NODE_ENV === "development" ? "http://localhost:8000/api/v1" : "https://rowing-plan-api.vercel.app/api/v1");
 async function request<T>(path:string, init?:RequestInit): Promise<T> { const {supabase}=await import("./supabase");const token=(await supabase?.auth.getSession())?.data.session?.access_token;const response=await fetch(`${API_BASE}${path}`,{headers:{"Content-Type":"application/json",...(token?{Authorization:`Bearer ${token}`}:{}),...(init?.headers ?? {})},...init}); if (!response.ok) throw new Error((await response.text()) || "Request failed"); return response.json() as Promise<T>; }
 export function createAthlete(athlete_profile: Record<string, unknown>): Promise<AthleteResponse> { return request("/athletes",{method:"POST",body:JSON.stringify({athlete_profile})}); }
 export function getAthlete(athleteId:string): Promise<AthleteResponse> { return request(`/athletes/${athleteId}`); }
