@@ -15,8 +15,18 @@ def migrate_legacy_availability(profile: dict) -> list[dict]:
 
 def validate_recurring_activities(profile: dict) -> list[str]:
     errors=[]
-    for item in migrate_legacy_availability(profile):
+    items=migrate_legacy_availability(profile)
+    fixed_days={day for item in items if item.get("scheduling_status")=="fixed" for day in item.get("fixed_days",[])}
+    seen_fixed=set()
+    for item in items:
         allowed=set(item.get("allowed_days",[]))|set(item.get("fixed_days",[]))|set(item.get("preferred_days",[]))
         if item.get("sessions_per_week",0)>len(allowed): errors.append(f"{item.get('activity_type','Activity')} requests more weekly sessions than allowed days.")
         if set(item.get("prohibited_days",[]))&allowed: errors.append(f"{item.get('activity_type','Activity')} includes a prohibited day.")
+        if item.get("scheduling_status")=="fixed":
+            overlap=seen_fixed&set(item.get("fixed_days",[]))
+            if overlap: errors.append(f"Fixed commitments overlap on {', '.join(sorted(overlap))}.")
+            seen_fixed.update(item.get("fixed_days",[]))
+        if item.get("scheduling_status")!="fixed":
+            free_days=allowed-fixed_days
+            if item.get("sessions_per_week",0)>len(free_days): errors.append(f"{item.get('activity_type','Activity')} cannot be placed its requested number of times without sharing a fixed commitment day.")
     return errors

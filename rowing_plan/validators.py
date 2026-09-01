@@ -9,7 +9,11 @@ def validate_profile(profile: dict) -> list[str]:
         if date.fromisoformat(profile["season"]["end_date"]) < date.fromisoformat(profile["season"]["start_date"]): errors.append("Season end date must be after the start date.")
     except (KeyError, ValueError): errors.append("Season dates are required and must use YYYY-MM-DD.")
     for r in profile.get("races",[]):
+        if not r.get("event_name") or not r.get("start_date") or not r.get("end_date"):
+            errors.append("Each race needs a name, start date, and end date.")
+            continue
         if r.get("start_date","") > r.get("end_date",""): errors.append(f"Race {r.get('event_name','')} ends before it starts.")
+        if r.get("priority") not in ("A","B","C"): errors.append(f"Race {r.get('event_name','')} needs an A, B, or C priority.")
     for t in (profile.get("tests",{}).get("multi_duration_power_tests") or {}).values():
         if isinstance(t,dict) and t.get("value_watts") is not None and t["value_watts"] <= 0: errors.append("Test watts must be positive.")
     errors.extend(validate_recurring_activities(profile))

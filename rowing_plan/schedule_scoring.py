@@ -18,8 +18,16 @@ def score(activity: dict, selected: tuple[str,...], quality_days: set[str], fixe
         if day in quality_days: points-=6; reasons.append("improved_spacing_before_quality_row")
     return points,reasons
 
-def choose(activity: dict, quality_days: set[str], fixed_days: set[str]) -> dict:
+def choose(activity: dict, quality_days: set[str], fixed_days: set[str], unavailable_days: set[str] | None = None) -> dict:
+    """Select every requested occurrence or report that the schedule is impossible.
+
+    A movable activity may never silently share a day already committed to another
+    recurring activity.  That keeps its requested weekly frequency meaningful.
+    """
+    unavailable_days=unavailable_days or set()
     candidates=placements(activity)
+    if activity.get("scheduling_status") != "fixed":
+        candidates=[candidate for candidate in candidates if not set(candidate) & unavailable_days]
     if not candidates: return {"scheduled_days":[],"score":-999,"explanation":"No valid scheduling day is available."}
     ranked=sorted(((score(activity,c,quality_days,fixed_days),c) for c in candidates),key=lambda x:x[0][0],reverse=True)
     (points,reasons),days=ranked[0]; moved=bool(set(days)-set(activity.get("preferred_days",[])))

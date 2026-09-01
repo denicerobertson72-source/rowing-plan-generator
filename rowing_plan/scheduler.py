@@ -28,25 +28,32 @@ def _recurring_commitments(profile, start, end):
         # Tuesday is the engine's normal quality-row candidate; scorer avoids
         # placing movable stress there when another athlete-approved day exists.
         quality_days={"tuesday"}
-        for activity in activities:
-            placement=choose(activity,quality_days,fixed_days)
-            if not placement["scheduled_days"]: continue
+        occupied_days=set()
+        # Fixed commitments establish the weekly frame before any preferences
+        # are scored.  Movable cards are then placed one-by-one without overlap.
+        ordered=sorted(activities,key=lambda item: item.get("scheduling_status")!="fixed")
+        for activity in ordered:
+            placement=choose(activity,quality_days,fixed_days,occupied_days)
+            requested=activity.get("sessions_per_week",1)
+            if len(placement["scheduled_days"]) != requested:
+                raise ValueError(f"{activity.get('activity_type','Activity')} cannot be placed {requested} time(s) in a full week without conflicting with your other commitments.")
             moves.append({"week_start":week_start.isoformat(),"activity_id":activity.get("activity_id"),"activity_type":activity.get("activity_type"),**placement})
             for weekday in placement["scheduled_days"]:
                 try: offset=WEEKDAY.index(weekday)
                 except ValueError: continue
                 current=week_start+timedelta(days=offset)
                 if start<=current<=end: commitments[current.isoformat()].append(activity)
+            occupied_days.update(placement["scheduled_days"])
         week_start+=timedelta(days=7)
     return commitments,moves
 def _commitment(activity_type, day, phase, avail, activity):
     if activity_type=="strength":
         return {"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":activity.get("scheduling_status")=="fixed","mode":"strength","session_id":"LIFT","title":"Heavy lifting","total_cardio_minutes":0,"rowing_minutes":0,"quality_minutes":0,"band":"STRENGTH","structure":"Scheduled strength commitment."}
     return {"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":activity.get("scheduling_status")=="fixed","mode":"on_water","session_id":"COACHED","title":"Private coaching" if activity_type=="private_coaching" else "Coached row","total_cardio_minutes":min(75,avail.get("max_training_minutes",75)),"rowing_minutes":min(75,avail.get("max_training_minutes",75)),"quality_minutes":0,"band":"UT2/UT1","structure":"Coach-led technique and aerobic work.","warning":"Coached intensity is athlete-provided."}
-def _session(day, phase, avail, library, band, power, race_type, fixed=False, title=None):
+def _session(day, phase, avail, library, band, power, race_type, structure_preference="varied", fixed=False, title=None):
     mode=next((m for m in avail.get("rowing_modes",[]) if m in ("on_water","erg")),"erg")
     minutes=min(avail.get("max_training_minutes",60), 60 if band in ("UT2","UT1") else 50)
-    template=select_session(library,band,phase,race_type,[mode],minutes) or select_session(library,band,"all",race_type,[mode],minutes)
+    template=select_session(library,band,phase,race_type,[mode],minutes,structure_preference) or select_session(library,band,"all",race_type,[mode],minutes,structure_preference)
     if not template: return None
     anchor=target_for_band(power,band) if mode=="erg" else None
     watts = round((anchor["target_watts_low"]+anchor["target_watts_high"])/2,1) if anchor else None
@@ -87,7 +94,7 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
         # Taper protection prioritizes easy technical work.
         band = "UT3" if phase in ("taper_sharpen","race_recovery") else ("TR" if day.weekday()==1 and phase in ("race_build","specific_preparation") else "UT2")
         if day.weekday()==3: band="UT2" # Thursday is intentionally optional/easy.
-        made=_session(day,phase,a,library,band,power,key_race_type)
+        made=_session(day,phase,a,library,band,power,key_race_type,profile.get("preferences",{}).get("workout_structure_preference","varied"))
         if made: sessions.append(made)
         day+=timedelta(days=1)
     # restore locked sessions by exact date, preserving byte-identical dictionaries
