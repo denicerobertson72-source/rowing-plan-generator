@@ -6,7 +6,7 @@ from .periodization import phase_for_day, parse, build_phases
 from .session_selector import load_library, select_session
 from .power_profile import target_for_band
 from .evidence import METHODOLOGY_STATEMENT, RULES
-from .recurring_activities import migrate_legacy_availability
+from .recurring_activities import migrate_legacy_availability, schedule_signature
 from .schedule_scoring import choose
 from .conversions import watts_to_split_seconds, format_split
 
@@ -58,6 +58,43 @@ def _session(day, phase, avail, library, band, power, race_type, structure_prefe
     anchor=target_for_band(power,band) if mode=="erg" else None
     watts = round((anchor["target_watts_low"]+anchor["target_watts_high"])/2,1) if anchor else None
     return {"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":fixed,"mode":mode,"session_id":template["session_id"],"title":title or template["title"],"total_cardio_minutes":minutes,"rowing_minutes":minutes,"quality_minutes":minutes if band in ("AT","TR","AN","PP") else 0,"band":band,"structure":template["work_structure"],"recovery":template["recovery_structure"],"technical_cue":template["technical_cues"][0],"rate_guide":template.get("spm_guidance"),"source_basis_ids":template["source_basis_ids"],"power_target_method":anchor["formula"] if anchor else "Intensity provider / HRR-RPE guidance", "source_anchor":anchor["source_test"] if anchor else None,"target_watts":watts,"split_guide":format_split(watts_to_split_seconds(watts)) if watts else None,"confidence":anchor["confidence"] if anchor else "low","assumptions":anchor["assumptions"] if anchor else ["Follow rate, breathing, and RPE where exact power is unavailable."]}
+
+def _calendar_days(profile, start, end, commitments, modern_schedule):
+    """Persist an explicit day state; an empty day is not automatically rest."""
+    availability=_availability(profile); result=[]; day=start
+    while day<=end:
+        activities=commitments.get(day.isoformat(),[]) if modern_schedule else []
+        designated_rest=any(item.get("activity_type")=="rest" for item in activities)
+        legacy=availability.get(WEEKDAY[day.weekday()],{})
+        unavailable=(not modern_schedule and not legacy.get("available",True) and not legacy.get("fixed_rest",False))
+        result.append({"date":day.isoformat(),"designated_rest":designated_rest,"unavailable":unavailable,"state":"designated_rest" if designated_rest else "unavailable" if unavailable else "no_additional_session","commitments":[{"activity_id":item.get("activity_id"),"activity_type":item.get("activity_type")} for item in activities]})
+        day+=timedelta(days=1)
+    return result
+
+def _validate_weekly_frequencies(profile, start, end, calendar_days, phases):
+    """Reject a normal complete week that loses a requested recurring session."""
+    activities=profile.get("recurring_activities")
+    if activities is None: return []
+    expected={item.get("activity_type"):item.get("sessions_per_week",0) for item in activities}
+    phase_by_date={item["date"]:item["phase"] for item in phases}; errors=[]; exceptions=[]
+    monday=start-timedelta(days=start.weekday())
+    while monday+timedelta(days=6)<=end:
+        if monday<start:
+            monday+=timedelta(days=7); continue
+        week=[item for item in calendar_days if monday<=date.fromisoformat(item["date"])<=monday+timedelta(days=6)]
+        phase_set={phase_by_date.get(item["date"]) for item in week}
+        if phase_set & {"race","taper_sharpen","race_recovery"}:
+            exceptions.append({"week_start":monday.isoformat(),"reason_code":"race_period_exception"})
+            monday+=timedelta(days=7); continue
+        actual={}
+        for item in week:
+            for commitment in item["commitments"]:
+                kind=commitment["activity_type"]; actual[kind]=actual.get(kind,0)+1
+        for kind,count in expected.items():
+            if actual.get(kind,0)!=count:
+                errors.append(f"Unable to place {count} requested {kind.replace('_',' ')} session(s) in the week of {monday.isoformat()} while preserving your other commitments.")
+        monday+=timedelta(days=7)
+    return errors,exceptions
 
 def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, locked_sessions: list[dict] | None = None) -> dict:
     library=load_library(); avails=_availability(profile); races=profile.get("races",[]); locked={(s["date"],s.get("session_id")):s for s in (locked_sessions or [])}; sessions=[]; warnings=[]
@@ -127,5 +164,7 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
     if not modern_schedule:
         quality_days={s["day"].lower() for s in sessions if s.get("band") in ("TR","AN","PP","RACE")}; fixed_days={s["day"].lower() for s in sessions if s.get("fixed")}
         schedule_moves=[{"activity_type":a.get("activity_type"),**choose(a,quality_days,fixed_days)} for a in migrate_legacy_availability(profile) if a.get("scheduling_status")!="fixed" and a.get("planner_may_choose_day",True)]
+    phases=build_phases(profile); calendar_days=_calendar_days(profile,start,end,commitments,modern_schedule); frequency_errors,frequency_exceptions=_validate_weekly_frequencies(profile,start,end,calendar_days,phases)
+    if frequency_errors: raise ValueError(" ".join(frequency_errors))
     impacts=power.get("plan_impacts",[])
-    return {"plan_version":"0.5.0","profile_id":profile.get("athlete",{}).get("display_name","athlete"),"generated_at":datetime.now().isoformat(),"intensity_profile":bands,"power_profile":power,"phases":build_phases(profile),"sessions":sessions,"weekly_totals":totals,"warnings":warnings+[{"level":"info","message":w} for w in power.get("warnings",[])],"plan_impacts":impacts,"schedule_moves":schedule_moves,"evidence_methodology":METHODOLOGY_STATEMENT,"evidence_rules":RULES,"algorithm_versions":{"planner":"0.5.0","power_profile":power.get("algorithm_version"),"config":config["config_version"]}}
+    return {"plan_version":"0.5.1","profile_id":profile.get("athlete",{}).get("display_name","athlete"),"generated_at":datetime.now().isoformat(),"schedule_signature":schedule_signature(profile),"intensity_profile":bands,"power_profile":power,"phases":phases,"calendar_days":calendar_days,"frequency_exceptions":frequency_exceptions,"sessions":sessions,"weekly_totals":totals,"warnings":warnings+[{"level":"info","message":w} for w in power.get("warnings",[])],"plan_impacts":impacts,"schedule_moves":schedule_moves,"evidence_methodology":METHODOLOGY_STATEMENT,"evidence_rules":RULES,"algorithm_versions":{"planner":"0.5.1","power_profile":power.get("algorithm_version"),"config":config["config_version"]}}

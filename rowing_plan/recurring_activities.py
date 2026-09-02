@@ -1,6 +1,19 @@
 """Recurring commitments replace fixed weekday assumptions without breaking legacy profiles."""
 from __future__ import annotations
 from uuid import uuid4
+import hashlib
+import json
+
+def schedule_signature(profile: dict) -> str:
+    """Stable fingerprint of fields that change future-plan placement."""
+    source={
+        "recurring_activities":migrate_legacy_availability(profile),
+        "season":{key:profile.get("season",{}).get(key) for key in ("start_date","end_date")},
+        "races":profile.get("races",[]),
+        "availability":profile.get("weekly_availability",[]),
+        "preferences":profile.get("preferences",{}).get("workout_structure_preference"),
+    }
+    return hashlib.sha256(json.dumps(source,sort_keys=True,separators=(",",":"),default=str).encode()).hexdigest()[:16]
 
 def migrate_legacy_availability(profile: dict) -> list[dict]:
     activities=profile.get("recurring_activities")

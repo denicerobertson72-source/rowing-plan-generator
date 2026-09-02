@@ -22,6 +22,7 @@ from rowing_plan.workbook import build_workbook
 from .repositories import REPOSITORIES
 from .auth import current_user_id
 from rowing_plan.training_load import load_summary, session_load_au
+from rowing_plan.recurring_activities import schedule_signature
 from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, PlanGenerationRequest, PlanResponse, PrivateCheckInRequest, RegenerateRequest, WeeklyOverrideRequest, WorkoutLogRequest
 
 CONFIG = json.loads((ROOT / "config/defaults.json").read_text())
@@ -29,12 +30,19 @@ app = FastAPI(title="Rowing Plan API", version="0.4.0", openapi_url="/api/v1/ope
 allowed_origins=[origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if origin.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
+@app.middleware("http")
+async def prevent_dynamic_api_caching(request, call_next):
+    response=await call_next(request)
+    if request.url.path.startswith("/api/v1/") and request.method=="GET": response.headers["Cache-Control"]="no-store"
+    return response
+
 def build_plan(request: PlanGenerationRequest) -> dict:
     errors = validate_profile(request.athlete_profile)
     if errors: raise HTTPException(status_code=422, detail={"validation_errors": errors})
     bands = build_intensity_profile(request.athlete_profile, CONFIG)
     power = build_power_profile(request.athlete_profile, CONFIG)
-    plan = generate_plan(request.athlete_profile, CONFIG, bands, power, request.locked_sessions)
+    try: plan = generate_plan(request.athlete_profile, CONFIG, bands, power, request.locked_sessions)
+    except ValueError as error: raise HTTPException(status_code=422, detail={"planning_conflicts":[str(error)]}) from error
     hard_errors = hard_constraint_errors(plan, request.athlete_profile)
     if hard_errors: raise HTTPException(status_code=422, detail={"constraint_errors": hard_errors})
     return plan
@@ -49,6 +57,8 @@ def owned_plan(plan_id: str, user_id: str) -> dict:
     if not record: raise HTTPException(404,"Plan not found")
     if REPOSITORIES.plan_owner(plan_id) != user_id: raise HTTPException(403,"This plan belongs to another account.")
     return record
+def plan_needs_update(record: dict, profile: dict) -> bool:
+    return record["plan"].get("schedule_signature") != schedule_signature(profile)
 
 @app.get("/api/v1/health", response_model=ApiHealth)
 def health() -> ApiHealth: return ApiHealth(status="ok", api_version="v1", planner_version=PLANNER_VERSION)
@@ -92,25 +102,32 @@ def update_athlete(athlete_id: str, request: AthleteCreateRequest, user_id: str 
     errors=validate_profile(request.athlete_profile)
     if errors: raise HTTPException(status_code=422, detail={"validation_errors":errors})
     REPOSITORIES.save(athlete_id, request.athlete_profile)
-    return AthleteResponse(athlete_id=athlete_id, athlete_profile=request.athlete_profile)
+    return AthleteResponse(athlete_id=athlete_id, athlete_profile=REPOSITORIES.get(athlete_id) or request.athlete_profile)
 
 @app.post("/api/v1/athletes/{athlete_id}/plans/generate", response_model=PlanResponse)
 def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: str = Depends(current_user_id)) -> PlanResponse:
     profile=owned_athlete(athlete_id,user_id)
-    plan=build_plan(PlanGenerationRequest(athlete_profile=profile, locked_sessions=request.locked_sessions))
+    previous=REPOSITORIES.latest_plan_for_athlete(athlete_id)
+    locked=list(request.locked_sessions)
+    if previous:
+        completed={entry["session_key"] for entry in REPOSITORIES.logs_for_plan(previous["plan_id"]) if entry["payload"].get("status")=="completed"}
+        locked.extend(session for session in previous["plan"].get("sessions",[]) if f'{session["date"]}:{session.get("session_id")}:{session.get("mode")}' in completed)
+    plan=build_plan(PlanGenerationRequest(athlete_profile=profile, locked_sessions=locked))
     return PlanResponse(plan_id=REPOSITORIES.save_plan(athlete_id,plan), plan=plan)
 
 @app.get("/api/v1/plans/{plan_id}")
 def get_plan(plan_id: str, user_id: str = Depends(current_user_id)) -> dict:
     record=owned_plan(plan_id,user_id)
-    return record
+    profile=REPOSITORIES.get(record["athlete_id"]) or {}
+    return {**record,"plan_needs_update":plan_needs_update(record,profile)}
 
 @app.get("/api/v1/plans/{plan_id}/today")
 def today(plan_id: str, on: Optional[date] = None, user_id: str = Depends(current_user_id)) -> dict:
     record = owned_plan(plan_id,user_id)
     target = (on or date.today()).isoformat()
     sessions = [s for s in record["plan"]["sessions"] if s["date"] == target]
-    return {"plan_id": plan_id, "date": target, "sessions": sessions, "cached_at": date.today().isoformat()}
+    profile=REPOSITORIES.get(record["athlete_id"]) or {}
+    return {"plan_id": plan_id, "plan_version":record["version_number"],"plan_needs_update":plan_needs_update(record,profile),"date": target, "sessions": sessions, "cached_at": date.today().isoformat()}
 
 @app.get("/api/v1/plans/{plan_id}/week")
 def week(plan_id: str, week_number: int, user_id: str = Depends(current_user_id)) -> dict:
@@ -118,7 +135,7 @@ def week(plan_id: str, week_number: int, user_id: str = Depends(current_user_id)
     sessions = [s for s in record["plan"]["sessions"] if date.fromisoformat(s["date"]).isocalendar().week == week_number]
     if not sessions: return {"plan_id": plan_id, "week": week_number, "days": []}
     profile=REPOSITORIES.get(record["athlete_id"]) or {}
-    availability={item["weekday"]:item for item in profile.get("weekly_availability",[])}
+    calendar={item["date"]:item for item in record["plan"].get("calendar_days",[])}
     first=min(date.fromisoformat(s["date"]) for s in sessions)
     monday=first-timedelta(days=first.weekday())
     # The newest saved override for this week takes precedence.  It is applied
@@ -131,10 +148,17 @@ def week(plan_id: str, week_number: int, user_id: str = Depends(current_user_id)
     days=[]
     for offset in range(7):
         current=monday+timedelta(days=offset); day_sessions=[s for s in sessions if s["date"]==current.isoformat()]
-        rule=availability.get(current.strftime("%A").lower(),{})
-        state="rest" if rule.get("fixed_rest") or not rule.get("available",True) else "planned"
+        state=calendar.get(current.isoformat(),{}).get("state","no_additional_session")
         days.append({"date":current.isoformat(),"day":current.strftime("%A"),"state":state,"sessions":day_sessions})
-    return {"plan_id": plan_id, "week": week_number, "days": days, "weekly_override_applied":bool(matching_override)}
+    return {"plan_id": plan_id,"plan_version":record["version_number"],"plan_needs_update":plan_needs_update(record,profile), "week": week_number, "days": days, "weekly_override_applied":bool(matching_override)}
+
+@app.get("/api/v1/plans/{plan_id}/calendar")
+def calendar(plan_id: str, user_id: str = Depends(current_user_id)) -> dict:
+    record=owned_plan(plan_id,user_id); profile=REPOSITORIES.get(record["athlete_id"]) or {}
+    sessions_by_date={}
+    for session in record["plan"].get("sessions",[]): sessions_by_date.setdefault(session["date"],[]).append(session)
+    days=[{**item,"sessions":sessions_by_date.get(item["date"],[])} for item in record["plan"].get("calendar_days",[])]
+    return {"plan_id":plan_id,"plan_version":record["version_number"],"plan_needs_update":plan_needs_update(record,profile),"days":days,"phases":record["plan"].get("phases",[])}
 
 @app.get("/api/v1/plans/{plan_id}/sessions/detail")
 def session_detail(plan_id: str, session_date: date, session_id: str, mode: str, user_id: str = Depends(current_user_id)) -> dict:

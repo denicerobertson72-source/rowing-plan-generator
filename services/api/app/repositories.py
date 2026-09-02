@@ -16,6 +16,7 @@ class AthleteRepository(Protocol):
 class PlanRepository(Protocol):
     def save(self, athlete_id: str, plan: dict[str, Any]) -> str: ...
     def get(self, plan_id: str) -> dict[str, Any] | None: ...
+    def latest_plan_for_athlete(self, athlete_id: str) -> dict[str, Any] | None: ...
 
 class TestRepository(Protocol): pass
 class WorkoutLogRepository(Protocol): pass
@@ -62,6 +63,9 @@ class SQLiteRepositories:
         return plan_id
     def get_plan(self, plan_id: str) -> dict[str, Any] | None:
         with self._connect() as db: row=db.execute("SELECT * FROM plan_versions WHERE plan_id=?",(plan_id,)).fetchone()
+        return {"plan_id":row["plan_id"],"athlete_id":row["athlete_id"],"version_number":row["version_number"],"created_at":row["created_at"],"plan":json.loads(row["plan_json"])} if row else None
+    def latest_plan_for_athlete(self, athlete_id: str) -> dict[str, Any] | None:
+        with self._connect() as db: row=db.execute("SELECT * FROM plan_versions WHERE athlete_id=? ORDER BY version_number DESC LIMIT 1",(athlete_id,)).fetchone()
         return {"plan_id":row["plan_id"],"athlete_id":row["athlete_id"],"version_number":row["version_number"],"created_at":row["created_at"],"plan":json.loads(row["plan_json"])} if row else None
     def plan_owner(self, plan_id: str) -> str | None:
         with self._connect() as db: row=db.execute("SELECT a.user_id FROM plan_versions p JOIN athletes a ON a.athlete_id=p.athlete_id WHERE p.plan_id=?",(plan_id,)).fetchone()
@@ -161,6 +165,10 @@ class PostgresRepositories:
     def get_plan(self, plan_id: str) -> dict[str, Any] | None:
         with self._connect() as db, db.cursor() as cursor:
             cursor.execute("SELECT plan_id, athlete_id, version_number, created_at, plan_json FROM plan_versions WHERE plan_id=%s",(plan_id,)); row=cursor.fetchone()
+        return {"plan_id":row["plan_id"],"athlete_id":row["athlete_id"],"version_number":row["version_number"],"created_at":row["created_at"].isoformat(),"plan":row["plan_json"]} if row else None
+    def latest_plan_for_athlete(self, athlete_id: str) -> dict[str, Any] | None:
+        with self._connect() as db, db.cursor() as cursor:
+            cursor.execute("SELECT plan_id, athlete_id, version_number, created_at, plan_json FROM plan_versions WHERE athlete_id=%s ORDER BY version_number DESC LIMIT 1",(athlete_id,)); row=cursor.fetchone()
         return {"plan_id":row["plan_id"],"athlete_id":row["athlete_id"],"version_number":row["version_number"],"created_at":row["created_at"].isoformat(),"plan":row["plan_json"]} if row else None
     def plan_owner(self, plan_id: str) -> str | None:
         with self._connect() as db, db.cursor() as cursor:
