@@ -23,7 +23,7 @@ from .repositories import REPOSITORIES
 from .auth import current_user_id
 from rowing_plan.training_load import load_summary, session_load_au
 from rowing_plan.recurring_activities import schedule_signature
-from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, PlanGenerationRequest, PlanResponse, PrivateCheckInRequest, RegenerateRequest, WeeklyOverrideRequest, WorkoutLogRequest
+from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, PlanGenerationRequest, PlanResponse, PrivateCheckInRequest, RacePostingRequest, RegenerateRequest, WeeklyOverrideRequest, WorkoutLogRequest
 
 CONFIG = json.loads((ROOT / "config/defaults.json").read_text())
 app = FastAPI(title="Rowing Plan API", version="0.4.0", openapi_url="/api/v1/openapi.json", docs_url="/docs")
@@ -59,6 +59,10 @@ def owned_plan(plan_id: str, user_id: str) -> dict:
     return record
 def plan_needs_update(record: dict, profile: dict) -> bool:
     return record["plan"].get("schedule_signature") != schedule_signature(profile)
+def require_coach_admin(user_id: str = Depends(current_user_id)) -> str:
+    allowed={value.strip() for value in os.getenv("COACH_ADMIN_USER_IDS","").split(",") if value.strip()}
+    if user_id not in allowed: raise HTTPException(403,"Coach/admin access is required for race postings.")
+    return user_id
 
 @app.get("/api/v1/health", response_model=ApiHealth)
 def health() -> ApiHealth: return ApiHealth(status="ok", api_version="v1", planner_version=PLANNER_VERSION)
@@ -206,6 +210,30 @@ def save_weekly_override(athlete_id: str, override: WeeklyOverrideRequest, user_
 def weekly_overrides(athlete_id: str, user_id: str = Depends(current_user_id)) -> dict:
     owned_athlete(athlete_id,user_id)
     return {"overrides":REPOSITORIES.weekly_overrides(athlete_id)}
+
+@app.get("/api/v1/race-postings")
+def race_postings(user_id: str = Depends(current_user_id)) -> dict:
+    account=REPOSITORIES.latest_for_user(user_id); level=(account or {}).get("athlete_profile",{}).get("athlete",{}).get("experience_level","intermediate")
+    items=REPOSITORIES.race_postings()
+    return {"postings":[{**item["payload"],"posting_id":item["posting_id"],"updated_at":item["updated_at"]} for item in items if level in item["payload"].get("audience_levels",[])]}
+
+@app.get("/api/v1/admin/race-postings")
+def admin_race_postings(user_id: str = Depends(require_coach_admin)) -> dict:
+    return {"postings":[{**item["payload"],"posting_id":item["posting_id"],"updated_at":item["updated_at"]} for item in REPOSITORIES.race_postings()]}
+
+@app.post("/api/v1/admin/race-postings")
+def create_race_posting(posting: RacePostingRequest, user_id: str = Depends(require_coach_admin)) -> dict:
+    if posting.end_date < posting.start_date: raise HTTPException(422,"Race posting end date must be on or after start date.")
+    if not posting.audience_levels: raise HTTPException(422,"Choose at least one rower group.")
+    item=REPOSITORIES.create_race_posting(user_id,posting.model_dump())
+    return {**item["payload"],"posting_id":item["posting_id"],"updated_at":item["updated_at"]}
+
+@app.put("/api/v1/admin/race-postings/{posting_id}")
+def update_race_posting(posting_id: str, posting: RacePostingRequest, user_id: str = Depends(require_coach_admin)) -> dict:
+    if posting.end_date < posting.start_date: raise HTTPException(422,"Race posting end date must be on or after start date.")
+    item=REPOSITORIES.update_race_posting(posting_id,posting.model_dump())
+    if not item: raise HTTPException(404,"Race posting not found")
+    return {**item["payload"],"posting_id":item["posting_id"],"updated_at":item["updated_at"]}
 
 @app.get("/api/v1/plans/{plan_id}/season")
 def season_summary(plan_id: str, user_id: str = Depends(current_user_id)) -> dict:

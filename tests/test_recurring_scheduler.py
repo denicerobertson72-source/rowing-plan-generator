@@ -101,3 +101,12 @@ def test_persisted_profile_and_latest_plan_keep_the_schedule_source_of_truth():
         future=generate_plan(repo.get(athlete_id),config,build_intensity_profile(reloaded,config),build_power_profile(reloaded,config)); future_id=repo.save_plan(athlete_id,future)
         assert repo.get_plan(future_id)["version_number"]==2
         assert sum(item["activity_type"]=="strength" for day in repo.get_plan(future_id)["plan"]["calendar_days"][:7] for item in day["commitments"])==3
+
+
+def test_race_posting_persists_groups_and_can_be_edited_after_its_date():
+    with tempfile.TemporaryDirectory() as directory:
+        repo=SQLiteRepositories(Path(directory)/"test.sqlite3")
+        posting=repo.create_race_posting("coach",{"title":"Spring regatta","start_date":"2026-04-10","end_date":"2026-04-11","location":"Lake","notes":"","audience_levels":["advanced"]})
+        edited=repo.update_race_posting(posting["posting_id"],{"title":"Spring regatta — updated","start_date":"2026-04-10","end_date":"2026-04-11","location":"Lake","notes":"Completed results posted.","audience_levels":["beginner","advanced"]})
+        assert edited and edited["payload"]["audience_levels"]==["beginner","advanced"]
+        assert repo.race_postings()[0]["payload"]["title"]=="Spring regatta — updated"

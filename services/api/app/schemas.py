@@ -57,6 +57,14 @@ class WeeklyOverrideRequest(BaseModel):
     scope: Literal["this_week_only","make_normal_schedule"] = "this_week_only"
     changes: list[dict[str, Any]] = Field(default_factory=list)
 
+class RacePostingRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    start_date: str
+    end_date: str
+    location: str = ""
+    notes: str = ""
+    audience_levels: list[Literal["beginner","intermediate","advanced"]] = Field(default_factory=lambda:["beginner","intermediate","advanced"])
+
 class ApiHealth(BaseModel):
     status: Literal["ok"]
     api_version: str

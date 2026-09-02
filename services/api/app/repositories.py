@@ -34,6 +34,7 @@ class SQLiteRepositories:
               CREATE TABLE IF NOT EXISTS workout_logs (log_id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, session_key TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS private_check_ins (entry_id TEXT PRIMARY KEY, athlete_id TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS weekly_overrides (override_id TEXT PRIMARY KEY, athlete_id TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL);
+              CREATE TABLE IF NOT EXISTS race_postings (posting_id TEXT PRIMARY KEY, created_by TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
             """)
     def _connect(self) -> sqlite3.Connection:
         db=sqlite3.connect(self.path); db.row_factory=sqlite3.Row; return db
@@ -91,6 +92,20 @@ class SQLiteRepositories:
     def weekly_overrides(self, athlete_id: str) -> list[dict[str, Any]]:
         with self._connect() as db: rows=db.execute("SELECT * FROM weekly_overrides WHERE athlete_id=? ORDER BY created_at DESC",(athlete_id,)).fetchall()
         return [{"override_id":r["override_id"],"created_at":r["created_at"],"payload":json.loads(r["payload_json"])} for r in rows]
+    def create_race_posting(self, user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        posting_id=str(uuid4()); now=self._now()
+        with self._connect() as db: db.execute("INSERT INTO race_postings VALUES (?, ?, ?, ?, ?)",(posting_id,user_id,json.dumps(payload),now,now))
+        return {"posting_id":posting_id,"created_by":user_id,"created_at":now,"updated_at":now,"payload":payload}
+    def update_race_posting(self, posting_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        now=self._now()
+        with self._connect() as db:
+            row=db.execute("SELECT created_by,created_at FROM race_postings WHERE posting_id=?",(posting_id,)).fetchone()
+            if not row:return None
+            db.execute("UPDATE race_postings SET payload_json=?,updated_at=? WHERE posting_id=?",(json.dumps(payload),now,posting_id))
+        return {"posting_id":posting_id,"created_by":row["created_by"],"created_at":row["created_at"],"updated_at":now,"payload":payload}
+    def race_postings(self) -> list[dict[str, Any]]:
+        with self._connect() as db: rows=db.execute("SELECT * FROM race_postings ORDER BY updated_at DESC").fetchall()
+        return [{"posting_id":row["posting_id"],"created_by":row["created_by"],"created_at":row["created_at"],"updated_at":row["updated_at"],"payload":json.loads(row["payload_json"])} for row in rows]
 
 class PostgresRepositories:
     """Supabase Postgres store. Selected only when SUPABASE_DB_URL is configured."""
@@ -126,6 +141,7 @@ class PostgresRepositories:
                 payload_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
               );
               CREATE TABLE IF NOT EXISTS weekly_overrides (override_id TEXT PRIMARY KEY, athlete_id TEXT NOT NULL REFERENCES athletes(athlete_id) ON DELETE CASCADE, payload_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+              CREATE TABLE IF NOT EXISTS race_postings (posting_id TEXT PRIMARY KEY, created_by TEXT NOT NULL, payload_json JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
               CREATE INDEX IF NOT EXISTS workout_logs_plan_created_idx ON workout_logs (plan_id, created_at DESC);
               REVOKE ALL ON TABLE athletes, plan_versions, workout_logs, private_check_ins, weekly_overrides FROM anon, authenticated;
             """)
@@ -201,6 +217,20 @@ class PostgresRepositories:
         with self._connect() as db, db.cursor() as cursor:
             cursor.execute("SELECT override_id, created_at, payload_json FROM weekly_overrides WHERE athlete_id=%s ORDER BY created_at DESC",(athlete_id,)); rows=cursor.fetchall()
         return [{"override_id":r["override_id"],"created_at":r["created_at"].isoformat(),"payload":r["payload_json"]} for r in rows]
+    def create_race_posting(self, user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        from psycopg.types.json import Jsonb
+        posting_id=str(uuid4())
+        with self._connect() as db, db.cursor() as cursor:
+            cursor.execute("INSERT INTO race_postings (posting_id,created_by,payload_json) VALUES (%s,%s,%s) RETURNING created_at,updated_at",(posting_id,user_id,Jsonb(payload))); row=cursor.fetchone()
+        return {"posting_id":posting_id,"created_by":user_id,"created_at":row["created_at"].isoformat(),"updated_at":row["updated_at"].isoformat(),"payload":payload}
+    def update_race_posting(self, posting_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        from psycopg.types.json import Jsonb
+        with self._connect() as db, db.cursor() as cursor:
+            cursor.execute("UPDATE race_postings SET payload_json=%s,updated_at=NOW() WHERE posting_id=%s RETURNING created_by,created_at,updated_at",(Jsonb(payload),posting_id)); row=cursor.fetchone()
+        return {"posting_id":posting_id,"created_by":row["created_by"],"created_at":row["created_at"].isoformat(),"updated_at":row["updated_at"].isoformat(),"payload":payload} if row else None
+    def race_postings(self) -> list[dict[str, Any]]:
+        with self._connect() as db, db.cursor() as cursor: cursor.execute("SELECT posting_id,created_by,created_at,updated_at,payload_json FROM race_postings ORDER BY updated_at DESC"); rows=cursor.fetchall()
+        return [{"posting_id":row["posting_id"],"created_by":row["created_by"],"created_at":row["created_at"].isoformat(),"updated_at":row["updated_at"].isoformat(),"payload":row["payload_json"]} for row in rows]
 
 class LazyRepositories:
     """Avoid opening a database connection during a serverless function import."""
