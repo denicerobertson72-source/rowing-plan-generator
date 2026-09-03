@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { AppShell } from "../../components/app-shell";
+import { useSaveFeedback } from "../../components/save-feedback";
 import { API_BASE } from "../../lib/api";
 import { getSavedSession } from "../../lib/session";
 import { supabase } from "../../lib/supabase";
@@ -17,17 +18,20 @@ export default function WeeklyOverride() {
   const today = useMemo(() => localDate(new Date()), []);
   const [changeDate, setChangeDate] = useState(today);
   const [reason, setReason] = useState("");
-  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+  const { showSaveSuccess, showSaveError } = useSaveFeedback();
 
   const save = async () => {
+    if (saving) return;
     const saved = getSavedSession();
     const session = await supabase?.auth.getSession();
     const token = session?.data.session?.access_token;
     if (!saved || !token) {
-      setMessage("Sign in and create a plan first.");
+      showSaveError("Sign in and create a plan first.");
       return;
     }
-    const response = await fetch(`${API_BASE}/athletes/${saved.athleteId}/weekly-overrides`, {
+    setSaving(true);
+    try { const response = await fetch(`${API_BASE}/athletes/${saved.athleteId}/weekly-overrides`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({
@@ -36,9 +40,9 @@ export default function WeeklyOverride() {
         changes: [{ date: changeDate, unavailable: true, reason: reason.trim() || "Unavailable" }],
       }),
     });
-    setMessage(response.ok
-      ? "Saved. Non-fixed sessions on that date will be hidden in the Week view; your normal schedule is unchanged."
-      : "Could not save this change. Please try again.");
+    if (!response.ok) throw new Error();
+    showSaveSuccess("Temporary change saved. Non-fixed sessions on that date will be hidden in Week view.");
+    } catch { showSaveError("Couldn’t save this change. Your choices are still here."); } finally { setSaving(false); }
   };
 
   return <AppShell title="Adjust this week">
@@ -47,8 +51,7 @@ export default function WeeklyOverride() {
       <p>Mark one planned date unavailable for this week only. Fixed races and coach-directed sessions remain visible.</p>
       <label>Date<input type="date" value={changeDate} onChange={(event) => setChangeDate(event.target.value)} /></label>
       <label>Why? (optional)<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Travel, recovery, lifting, family…" /></label>
-      <button onClick={save}>Save temporary change</button>
-      {message && <p className="status">{message}</p>}
+      <button onClick={save} disabled={saving}>{saving ? "Saving…" : "Save temporary change"}</button>
     </section>
   </AppShell>;
 }

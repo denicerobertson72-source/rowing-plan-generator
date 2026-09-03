@@ -8,7 +8,8 @@ def schedule_signature(profile: dict) -> str:
     """Stable fingerprint of fields that change future-plan placement."""
     source={
         "recurring_activities":migrate_legacy_availability(profile),
-        "season":{key:profile.get("season",{}).get(key) for key in ("start_date","end_date")},
+        "season":{key:profile.get("season",{}).get(key) for key in ("start_date","end_date","current_weekly_endurance_minutes","target_peak_weekly_endurance_minutes","default_block_pattern")},
+        "athlete_development":{key:profile.get("athlete",{}).get(key) for key in ("experience_level","current_rowing_sessions_per_week","desired_rowing_sessions_per_week","recent_training_consistency","longest_comfortable_continuous_row_minutes","current_approx_weekly_rowing_minutes")},
         "races":profile.get("races",[]),
         "availability":profile.get("weekly_availability",[]),
         "preferences":profile.get("preferences",{}).get("workout_structure_preference"),

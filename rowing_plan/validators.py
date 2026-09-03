@@ -16,6 +16,10 @@ def validate_profile(profile: dict) -> list[str]:
         if r.get("priority") not in ("A","B","C"): errors.append(f"Race {r.get('event_name','')} needs an A, B, or C priority.")
     for t in (profile.get("tests",{}).get("multi_duration_power_tests") or {}).values():
         if isinstance(t,dict) and t.get("value_watts") is not None and t["value_watts"] <= 0: errors.append("Test watts must be positive.")
+    athlete=profile.get("athlete",{})
+    for key in ("current_rowing_sessions_per_week","desired_rowing_sessions_per_week","longest_comfortable_continuous_row_minutes","current_approx_weekly_rowing_minutes"):
+        if athlete.get(key) is not None and (not isinstance(athlete[key],int) or athlete[key] < 0): errors.append(f"{key.replace('_',' ').capitalize()} must be a non-negative whole number.")
+    if athlete.get("recent_training_consistency") not in (None,"consistent","building","inconsistent","returning"): errors.append("Recent training consistency must be consistent, building, inconsistent, or returning.")
     errors.extend(validate_recurring_activities(profile))
     return errors
 

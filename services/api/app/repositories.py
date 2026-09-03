@@ -241,7 +241,9 @@ class LazyRepositories:
             database_url=os.environ.get("SUPABASE_DB_URL")
             if not database_url and os.environ.get("VERCEL") == "1":
                 raise RuntimeError("SUPABASE_DB_URL must be configured for a Vercel deployment.")
-            self._instance=PostgresRepositories(database_url) if database_url else SQLiteRepositories(Path(__file__).resolve().parents[1] / "data" / "rowing_plan.sqlite3")
+            default_path=Path(__file__).resolve().parents[1] / "data" / "rowing_plan.sqlite3"
+            sqlite_path=Path(os.environ.get("ROWING_PLAN_DB_PATH", default_path))
+            self._instance=PostgresRepositories(database_url) if database_url else SQLiteRepositories(sqlite_path)
         return self._instance
     def __getattr__(self, name: str):
         return getattr(self._get(), name)

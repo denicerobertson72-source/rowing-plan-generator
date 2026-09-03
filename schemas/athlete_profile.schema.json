@@ -46,6 +46,27 @@
             "competitive"
           ]
         },
+        "current_rowing_sessions_per_week": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 7
+        },
+        "desired_rowing_sessions_per_week": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 7
+        },
+        "recent_training_consistency": {
+          "enum": ["consistent", "building", "inconsistent", "returning", null]
+        },
+        "longest_comfortable_continuous_row_minutes": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "current_approx_weekly_rowing_minutes": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
         "sex_for_optional_reference_equations": {
           "enum": [
             "female",

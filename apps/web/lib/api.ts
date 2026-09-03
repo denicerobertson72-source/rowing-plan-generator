@@ -1,5 +1,5 @@
 /** Typed boundary for the FastAPI OpenAPI contract; code generation replaces this shim in Milestone 2. */
-export type PlanSession = { date:string; day:string; band:string; title:string; structure?:string; description?:string; total_cardio_minutes:number; hr_range?:string; rating?:string; coached?:boolean; mode:string; session_id:string };
+export type PlanSession = { date:string; day:string; band:string; title:string; structure?:string; description?:string; total_cardio_minutes:number; hr_range?:string; rating?:string; coached?:boolean; mode:string; session_id:string; session_role?:string; recovery?:string; selection_reason?:string; transformation_reason?:string; strength_state?:string; phase?:string; target_watts?:number; split_guide?:string };
 export type CalendarDay = {date:string;state:"designated_rest"|"unavailable"|"no_additional_session";designated_rest?:boolean;unavailable?:boolean};
 export type Plan = { plan_version?:string; schedule_signature?:string; sessions: PlanSession[]; phases: {date:string;phase:string;race_event?:string}[]; calendar_days?:CalendarDay[]; plan_impacts?:string[] };
 export type PlanResponse = { plan_id: string; plan: Plan };
