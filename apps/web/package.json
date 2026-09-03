@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:e2e": "PYTHONPATH=/private/tmp/rowing-plan-api-test-deps:$PYTHONPATH python3 ../../services/api/tests/run_disposable_e2e.py"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.4",
@@ -15,6 +16,7 @@
     "react-dom": "latest"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/node": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
