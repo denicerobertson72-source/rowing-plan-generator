@@ -120,6 +120,33 @@ def _weekly_volume_feasibility(intents, sessions, tolerance=0.10):
         results.append({"week_start":intent["week_start"],"target_rowing_minutes":target,"planned_rowing_minutes":actual,"residual_rowing_minutes":residual,"tolerance_minutes":round(target*tolerance),"status":status,"reason":reason,"scalable_session_dates":[s["date"] for s in scalable_sessions]})
     return results
 
+def _reconcile_low_intensity_volume(intents, sessions, tolerance=0.10):
+    """Boundedly close positive rowing-volume residuals using only easy rows."""
+    initial=_weekly_volume_feasibility(intents,sessions,tolerance); adjustments=[]
+    for row in initial:
+        if row["status"] != "needs_reconciliation": continue
+        start=date.fromisoformat(row["week_start"]); end=start+timedelta(days=6); remaining=row["residual_rowing_minutes"]-row["tolerance_minutes"]
+        candidates=[s for s in sessions if start<=date.fromisoformat(s["date"])<=end and s.get("session_role") in {"AEROBIC_BASE","LONG_AEROBIC","TECHNIQUE_EASY","AEROBIC_STRENGTH"} and s.get("band") in {"UT2","UT3","UT1"}]
+        for session in sorted(candidates,key=lambda s:(s.get("session_role")!="LONG_AEROBIC",s["date"])):
+            if remaining<=0: break
+            amount=min(20,remaining); session["rowing_minutes"]+=amount; session["total_cardio_minutes"]+=amount
+            session["structure"]+=f"; plus {amount} min continuous easy rowing for weekly aerobic-volume reconciliation."
+            session.setdefault("reconciliation_adjustments",[]).append({"type":"low_intensity_extension","minutes":amount,"reason":"bounded_rowing_volume_reconciliation"})
+            fingerprint=session.get("session_fingerprint")
+            if fingerprint: fingerprint["reconciliation_extension_minutes"]=fingerprint.get("reconciliation_extension_minutes",0)+amount
+            adjustments.append({"week_start":row["week_start"],"date":session["date"],"minutes":amount,"role":session.get("session_role")})
+            remaining-=amount
+    final=_weekly_volume_feasibility(intents,sessions,tolerance); output=[]
+    for before,after in zip(initial,final):
+        changed=[item for item in adjustments if item["week_start"]==after["week_start"]]
+        if after["status"]=="needs_reconciliation":
+            after["status"]="infeasible_with_reason"; after["reason"]="Bounded low-intensity reconciliation could not close the residual without distorting session roles."
+        elif changed: after["status"]="reconciled"; after["reason"]="Bounded low-intensity rowing extensions reconciled the weekly residual."
+        elif after["status"] in {"above_target","infeasible"}: after["status"]="infeasible_with_reason"; after["reason"]="Committed or quality-session rowing leaves no safe low-intensity reconciliation path."
+        after.update({"original_planned_rowing_minutes":before["planned_rowing_minutes"],"adjustments":changed,"final_rowing_minutes":after["planned_rowing_minutes"],"final_residual_rowing_minutes":after["residual_rowing_minutes"],"final_status":after["status"],"explanation":after["reason"]})
+        output.append(after)
+    return output
+
 def _ordinary_row_dates(profile, start, end, commitments, modern_schedule, intents):
     """Choose the ordinary rowing dates needed to meet the weekly prescription.
 
@@ -249,5 +276,5 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
     calendar_days=_calendar_days(profile,start,end,commitments,modern_schedule); frequency_errors,frequency_exceptions=_validate_weekly_frequencies(profile,start,end,calendar_days,phases)
     if frequency_errors: raise ValueError(" ".join(frequency_errors))
     impacts=power.get("plan_impacts",[])
-    volume_feasibility=_weekly_volume_feasibility(weekly_training_intents,sessions)
+    volume_feasibility=_reconcile_low_intensity_volume(weekly_training_intents,sessions)
     return {"plan_version":"0.7.0","profile_id":profile.get("athlete",{}).get("display_name","athlete"),"generated_at":datetime.now().isoformat(),"schedule_signature":schedule_signature(profile),"intensity_profile":bands,"power_profile":power,"phases":phases,"season_phases":season_phases,"weekly_training_intents":weekly_training_intents,"calendar_days":calendar_days,"frequency_exceptions":frequency_exceptions,"weekly_volume_feasibility":volume_feasibility,"sessions":sessions,"weekly_totals":totals,"warnings":warnings+[{"level":"info","message":w} for w in power.get("warnings",[])],"plan_impacts":impacts,"schedule_moves":schedule_moves,"evidence_methodology":METHODOLOGY_STATEMENT,"evidence_rules":RULES,"algorithm_versions":{"planner":"0.7.0","phase_weekly_intent":PLANNING_MODEL_VERSION,"session_selection":SELECTION_VERSION,"archetype_catalog":"0.1.0","progression":"deterministic-piece-duration-0.1.0","load_transformation":TRANSFORMATION_VERSION,"taper_rule":"role-sensitive-taper-0.1.0","recovery_rule":"role-sensitive-recovery-0.1.0","power_profile":power.get("algorithm_version"),"config":config["config_version"]}}
