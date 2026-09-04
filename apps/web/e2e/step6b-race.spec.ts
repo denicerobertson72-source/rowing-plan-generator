@@ -30,7 +30,7 @@ test("Step 6B race draft create, failure guard, duplicate guard, and plan invali
   await page.getByLabel("Race name").fill("Failure stays local");
   await page.route("**/api/v1/athletes/**", route => route.fulfill({status:500,body:"failure"}));
   await page.getByRole("button",{name:"Save race"}).click();
-  await expect(page.getByRole("alert")).toContainText("Couldn’t save");
+  await expect(page.getByRole("alert").filter({hasText:"Couldn’t save"})).toContainText("Couldn’t save");
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.getByLabel("Race name")).toHaveValue("Failure stays local");
   await page.unroute("**/api/v1/athletes/**");

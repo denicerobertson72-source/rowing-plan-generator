@@ -3,7 +3,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from rowing_plan.power_profile import build_power_profile
+from rowing_plan.power_profile import build_power_profile, profile_test_rejection_reason
 
 ROOT = Path(__file__).parents[1]
 
@@ -32,5 +32,12 @@ class WinterPowerProfileTests(unittest.TestCase):
         code=(ROOT / "rowing_plan/power_profile.py").read_text()
         self.assertNotIn("1.531",code)
         self.assertNotIn("predicted_2k",code)
+
+    def test_explicit_profile_approval_overrides_generic_test_age_default(self):
+        test=self.profile["tests"]["testing_blocks"][0]["performance_tests"][0]
+        test["test_date"]="2025-01-01"
+        self.assertIsNone(profile_test_rejection_reason(test, date(2026, 8, 9), 180))
+        test.pop("valid_for_profile")
+        self.assertIn("older than", profile_test_rejection_reason(test, date(2026, 8, 9), 180) or "")
 
 if __name__ == "__main__": unittest.main()

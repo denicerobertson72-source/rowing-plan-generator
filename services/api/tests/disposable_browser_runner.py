@@ -22,6 +22,8 @@ def running_disposable_api(port: int = 8011):
             raise RuntimeError("Refusing to start browser acceptance API against a non-disposable database")
         env=os.environ.copy(); env["ROWING_PLAN_DB_PATH"]=str(db)
         env["PYTHONPATH"]=os.pathsep.join([str(TEMP_DEPS), str(Path.cwd()), env.get("PYTHONPATH","")])
+        # Keep the same interpreter used by the caller, but make the bundled
+        # API dependencies importable for the disposable subprocess.
         process=subprocess.Popen([sys.executable,"-m","uvicorn","services.api.app.main:app","--host","127.0.0.1","--port",str(port)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             deadline=time.monotonic()+15

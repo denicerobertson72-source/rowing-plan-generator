@@ -51,13 +51,13 @@ def exported_runtime_profile() -> dict:
         for day in ("monday","tuesday","wednesday","thursday","friday","saturday","sunday")
     ]
     profile["recurring_activities"]=[
-        {"activity_id":"lift","activity_type":"strength","sessions_per_week":2,"scheduling_status":"flexible","fixed_days":[],"preferred_days":["monday","friday"],"allowed_days":["monday","friday","tuesday","thursday"],"prohibited_days":["wednesday"],"same_day_rules":{"rowing_allowed":False,"alternate_ut2_allowed":True}},
+        {"activity_id":"lift","activity_type":"strength","sessions_per_week":2,"scheduling_status":"flexible","fixed_days":[],"preferred_days":["monday","friday"],"allowed_days":["monday","friday","tuesday","thursday"],"prohibited_days":["wednesday"],"planner_may_choose_day":True,"same_day_rules":{"rowing_allowed":False,"alternate_ut2_allowed":True},"race_week_mobility":"normal","notes":"Keep strength away from Wednesday coaching.","additive_fixture_field":{"preserve":True}},
         {"activity_id":"rest","activity_type":"rest","sessions_per_week":1,"scheduling_status":"flexible","fixed_days":["saturday"],"preferred_days":[],"allowed_days":[],"prohibited_days":[],"planner_may_choose_day":True},
     ]
     profile["tests"]={"resting_hr":58,"max_hr":177,"erg_2k_seconds":496,"multi_duration_power_tests":{},"testing_blocks":[{"id":"exported-tests","label":"Sanitized export","performance_tests":[
-        {"id":"2k","protocol":"two_k","time_seconds":496,"valid_for_profile":True,"source":"manual"},
-        {"id":"60","protocol":"sixty_second","average_watts":220,"valid_for_profile":True,"source":"manual"},
-        {"id":"7stroke","protocol":"seven_stroke_peak","average_watts":287,"valid_for_profile":True,"source":"manual"},
+        {"id":"2k","protocol":"two_k","test_date":"2025-11-21","time_seconds":496,"valid_for_profile":True,"source":"manual"},
+        {"id":"60","protocol":"sixty_second","test_date":"2026-01-04","average_watts":220,"valid_for_profile":True,"source":"manual"},
+        {"id":"7stroke","protocol":"seven_stroke_peak","test_date":"2026-01-14","average_watts":287,"valid_for_profile":True,"source":"manual"},
     ]}]}
     return profile
 

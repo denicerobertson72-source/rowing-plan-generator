@@ -20,9 +20,26 @@ def _value(test: dict | None) -> float | None:
     if test.get("time_seconds"):
         return two_k_seconds_to_watts(float(test["time_seconds"]))
     return None
+def profile_test_rejection_reason(test: dict | None, today: date, recency: int) -> str | None:
+    """Explain why a test cannot be used as a current profile input.
+
+    An athlete or coach can explicitly retain a result with
+    ``valid_for_profile: true``. That explicit profile decision overrides the
+    generic age default; unmarked legacy results continue to expire normally.
+    """
+    if not test:
+        return "missing test"
+    if test.get("valid_for_profile") is False or test.get("validity") not in (None, "valid"):
+        return "marked invalid for profile"
+    if not (_value(test) or test.get("time_seconds")):
+        return "missing measurable result"
+    test_date = _date(test.get("test_date"))
+    if test_date and (today - test_date).days > recency and test.get("valid_for_profile") is not True:
+        return f"older than the {recency}-day default without explicit profile approval"
+    return None
+
 def _valid(test, today, recency):
-    d=_date(test.get("test_date")) if test else None
-    return bool(test and test.get("valid_for_profile", test.get("validity", "valid") == "valid") and (_value(test) or test.get("time_seconds")) and (not d or (today-d).days <= recency))
+    return profile_test_rejection_reason(test, today, recency) is None
 
 def _legacy_block(tests: dict) -> dict:
     raw=tests.get("multi_duration_power_tests") or {}
