@@ -35,3 +35,20 @@ test("Step 6B race draft create, failure guard, duplicate guard, and plan invali
   await expect(page.getByLabel("Race name")).toHaveValue("Failure stays local");
   await page.unroute("**/api/v1/athletes/**");
 });
+
+test("Week presents semantic cards without internal role labels or narrow-screen overflow", async ({page}) => {
+  await page.setViewportSize({width:375,height:812});
+  await page.goto("/profile");
+  await expect(page.getByText("Synthetic Step 6B Rower")).toBeVisible();
+  await page.getByRole("button",{name:"Update plan with these choices"}).click();
+  await expect(page.getByRole("status")).toContainText("Plan updated");
+  await page.goto("/week");
+  await expect(page.getByRole("heading",{name:"Week"})).toBeVisible();
+  await expect(page.locator(".week-card").first()).toBeVisible();
+  await expect(page.getByText("AEROBIC_BASE")).toHaveCount(0);
+  expect(await page.locator("body").evaluate(element=>element.scrollWidth<=window.innerWidth)).toBeTruthy();
+  for (const width of [390,430,768,1280]) {
+    await page.setViewportSize({width,height:900});
+    expect(await page.locator("body").evaluate(element=>element.scrollWidth<=window.innerWidth)).toBeTruthy();
+  }
+});
