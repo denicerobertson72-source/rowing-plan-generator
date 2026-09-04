@@ -33,7 +33,10 @@ def _recurring_commitments(profile, start, end):
         occupied_days=set()
         # Fixed commitments establish the weekly frame before any preferences
         # are scored.  Movable cards are then placed one-by-one without overlap.
-        ordered=sorted(activities,key=lambda item: item.get("scheduling_status")!="fixed")
+        # Flexible rest is placed after strength and coaching commitments. This
+        # lets its candidate score preserve independent-row recovery spacing
+        # instead of prematurely consuming the only useful gap.
+        ordered=sorted(activities,key=lambda item:(item.get("scheduling_status")!="fixed",item.get("activity_type")=="rest"))
         for activity in ordered:
             placement=choose(activity,quality_days,fixed_days,occupied_days)
             requested=activity.get("sessions_per_week",1)
@@ -146,6 +149,16 @@ def _reconcile_low_intensity_volume(intents, sessions, tolerance=0.10):
         after.update({"original_planned_rowing_minutes":before["planned_rowing_minutes"],"adjustments":changed,"final_rowing_minutes":after["planned_rowing_minutes"],"final_residual_rowing_minutes":after["residual_rowing_minutes"],"final_status":after["status"],"explanation":after["reason"]})
         output.append(after)
     return output
+
+def _hard_session_spacing(sessions):
+    """Explain unavoidable adjacent independent hard-row pairs for diagnostics."""
+    hard={"THRESHOLD","RACE_PACE","SPRINT_POWER"}
+    independent=sorted((s for s in sessions if s.get("session_role") in hard and s.get("band") in {"AT","TR","AN","PP"}),key=lambda s:s["date"])
+    findings=[]
+    for left,right in zip(independent,independent[1:]):
+        if (date.fromisoformat(right["date"])-date.fromisoformat(left["date"])).days==1:
+            findings.append({"dates":[left["date"],right["date"]],"roles":[left["session_role"],right["session_role"]],"status":"unavoidable_constraints","reason":"No candidate schedule separated the independent hard sessions without violating a higher-priority commitment."})
+    return findings
 
 def _ordinary_row_dates(profile, start, end, commitments, modern_schedule, intents):
     """Choose the ordinary rowing dates needed to meet the weekly prescription.
@@ -277,4 +290,4 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
     if frequency_errors: raise ValueError(" ".join(frequency_errors))
     impacts=power.get("plan_impacts",[])
     volume_feasibility=_reconcile_low_intensity_volume(weekly_training_intents,sessions)
-    return {"plan_version":"0.7.0","profile_id":profile.get("athlete",{}).get("display_name","athlete"),"generated_at":datetime.now().isoformat(),"schedule_signature":schedule_signature(profile),"intensity_profile":bands,"power_profile":power,"phases":phases,"season_phases":season_phases,"weekly_training_intents":weekly_training_intents,"calendar_days":calendar_days,"frequency_exceptions":frequency_exceptions,"weekly_volume_feasibility":volume_feasibility,"sessions":sessions,"weekly_totals":totals,"warnings":warnings+[{"level":"info","message":w} for w in power.get("warnings",[])],"plan_impacts":impacts,"schedule_moves":schedule_moves,"evidence_methodology":METHODOLOGY_STATEMENT,"evidence_rules":RULES,"algorithm_versions":{"planner":"0.7.0","phase_weekly_intent":PLANNING_MODEL_VERSION,"session_selection":SELECTION_VERSION,"archetype_catalog":"0.1.0","progression":"deterministic-piece-duration-0.1.0","load_transformation":TRANSFORMATION_VERSION,"taper_rule":"role-sensitive-taper-0.1.0","recovery_rule":"role-sensitive-recovery-0.1.0","power_profile":power.get("algorithm_version"),"config":config["config_version"]}}
+    return {"plan_version":"0.7.0","profile_id":profile.get("athlete",{}).get("display_name","athlete"),"generated_at":datetime.now().isoformat(),"schedule_signature":schedule_signature(profile),"intensity_profile":bands,"power_profile":power,"phases":phases,"season_phases":season_phases,"weekly_training_intents":weekly_training_intents,"calendar_days":calendar_days,"frequency_exceptions":frequency_exceptions,"weekly_volume_feasibility":volume_feasibility,"hard_session_spacing":_hard_session_spacing(sessions),"sessions":sessions,"weekly_totals":totals,"warnings":warnings+[{"level":"info","message":w} for w in power.get("warnings",[])],"plan_impacts":impacts,"schedule_moves":schedule_moves,"evidence_methodology":METHODOLOGY_STATEMENT,"evidence_rules":RULES,"algorithm_versions":{"planner":"0.7.0","phase_weekly_intent":PLANNING_MODEL_VERSION,"session_selection":SELECTION_VERSION,"archetype_catalog":"0.1.0","progression":"deterministic-piece-duration-0.1.0","load_transformation":TRANSFORMATION_VERSION,"taper_rule":"role-sensitive-taper-0.1.0","recovery_rule":"role-sensitive-recovery-0.1.0","power_profile":power.get("algorithm_version"),"config":config["config_version"]}}

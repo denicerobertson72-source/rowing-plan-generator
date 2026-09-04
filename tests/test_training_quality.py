@@ -2,7 +2,7 @@ import json
 from datetime import date
 
 from rowing_plan.session_selection import select_and_instantiate
-from rowing_plan.scheduler import _reconcile_low_intensity_volume
+from rowing_plan.scheduler import _hard_session_spacing, _reconcile_low_intensity_volume
 
 
 def _select(role, history=None):
@@ -45,3 +45,15 @@ def test_impossible_reconciliation_is_explicit_not_unprocessed():
     result = _reconcile_low_intensity_volume(intents, sessions, tolerance=.10)[0]
     assert result["final_status"] == "infeasible_with_reason"
     assert result["status"] != "needs_reconciliation"
+
+
+def test_adjacent_independent_hard_rows_are_recorded_but_race_days_are_not():
+    adjacent = _hard_session_spacing([
+        {"date":"2026-09-26", "session_role":"RACE_PACE", "band":"TR"},
+        {"date":"2026-09-27", "session_role":"THRESHOLD", "band":"AT"},
+    ])
+    assert adjacent[0]["status"] == "unavoidable_constraints"
+    assert not _hard_session_spacing([
+        {"date":"2026-09-26", "session_id":"RACE", "band":"RACE"},
+        {"date":"2026-09-27", "session_role":"THRESHOLD", "band":"AT"},
+    ])
