@@ -7,7 +7,7 @@ import { useSaveFeedback } from "../../components/save-feedback";
 import { generateAthletePlan, getAthlete, getCurrentAthlete, updateAthlete } from "../../lib/api";
 import { cachePlan } from "../../lib/plan-cache";
 import { normalizeModernSchedulingProfile } from "../../lib/scheduling-profile";
-import { getSavedSession, saveSession } from "../../lib/session";
+import { clearSavedSession, getSavedSession, saveSession } from "../../lib/session";
 
 type Profile = Record<string, any>;
 type Activity = Record<string, any>;
@@ -65,8 +65,8 @@ const secondsToTime = (value: number | undefined) => value == null ? "" : `${Mat
 export default function ProfilePage() {
   const [profile, setProfile] = useState<Profile | null>(null), [athleteId, setAthleteId] = useState<string | null>(null), [profileRevision, setProfileRevision] = useState(0), [error, setError] = useState(""), [activityDraft, setActivityDraft] = useState<Activity | null>(null), [raceDraft, setRaceDraft] = useState<Draft | null>(null), [saving, setSaving] = useState(false), [conflict, setConflict] = useState(false);
   const saved = useMemo(() => getSavedSession(), []), { showSaveSuccess, showSaveError } = useSaveFeedback();
-  const loadLatest = async () => { const result = athleteId ? await getAthlete(athleteId) : await getCurrentAthlete(); setAthleteId(result.athlete_id); setProfile(result.athlete_profile); setProfileRevision(result.profile_revision); if ((result as any).plan_id) saveSession({ athleteId: result.athlete_id, planId: (result as any).plan_id }); setConflict(false); };
-  useEffect(() => { loadLatest().catch(() => setError("Create your athlete profile to begin.")); }, [saved]);
+  const loadLatest = async () => { const result = saved?.athleteId ? await getAthlete(saved.athleteId) : await getCurrentAthlete(); setAthleteId(result.athlete_id); setProfile(result.athlete_profile); setProfileRevision(result.profile_revision); if ((result as any).plan_id) saveSession({ athleteId: result.athlete_id, planId: (result as any).plan_id }); setConflict(false); };
+  useEffect(() => { loadLatest().catch(() => { if (saved?.athleteId) clearSavedSession(); setError(saved?.athleteId ? "Your selected profile is no longer available. Choose one of your account profiles." : "Create your athlete profile to begin."); }); }, [saved]);
   if (error) return <AppShell title="Athlete Profile"><section className="empty"><p>{error}</p><Link href="/onboarding">Create Athlete Profile</Link></section></AppShell>;
   if (!profile) return <AppShell title="Athlete Profile"><p>Loading Athlete Profile…</p></AppShell>;
   const athlete = profile.athlete ?? {}, season = profile.season ?? {}, tests = profile.tests ?? {}, activities = legacyActivities(profile), persistedRaces = profile.races ?? [], races = [...persistedRaces].sort((a, b) => (a.start_date ?? "").localeCompare(b.start_date ?? "")), blocks = tests.testing_blocks ?? [], latest = blocks.at(-1) ?? { id: uid(), performance_tests: [] };

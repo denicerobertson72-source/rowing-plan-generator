@@ -63,3 +63,24 @@ test("Onboarding recovers the account athlete when this origin has no local sess
   await expect(page.getByText("Synthetic Step 6B Rower")).toBeVisible();
   expect(creates).toBe(0);
 });
+
+test("explicit duplicate-profile selection remains active through Profile navigation and reload", async ({page}) => {
+  let creates=0;
+  page.on("request", request => { if (request.method()==="POST" && request.url().endsWith("/athletes")) creates++; });
+  const accountResponse=page.waitForResponse(response => response.url().endsWith("/account/athlete") && response.status()===200);
+  await page.goto("/profile");
+  const account=await (await accountResponse).json();
+  const selectedId=account.athlete_id;
+  await page.evaluate(() => localStorage.clear());
+  const selected={athlete_id:selectedId,updated_at:"2026-09-05T00:00:00Z",display_name:"Chosen full profile",season_name:"Fall",season_start:"2026-09-01",season_end:"2026-11-08",race_count:2,recurring_activity_count:4,performance_test_count:3,plan_id:""};
+  await page.route("**/api/v1/account/athletes", route => route.fulfill({contentType:"application/json",body:JSON.stringify({athletes:[{...selected,athlete_id:"other-1",display_name:"Older profile"},selected,{...selected,athlete_id:"other-3",display_name:"Another profile"},{...selected,athlete_id:"other-4",display_name:"Fourth profile"}]})}));
+  await page.goto("/onboarding");
+  await expect(page.getByText("We found more than one rowing profile")).toBeVisible();
+  await page.getByRole("button",{name:"Use this profile"}).nth(1).click();
+  await expect(page).toHaveURL(/\/profile/);
+  await expect(page.getByText("Synthetic Step 6B Rower")).toBeVisible();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("rowing-plan-session-v1")||"{}").athleteId)).toBe(selectedId);
+  await page.reload();
+  await expect(page.getByText("Synthetic Step 6B Rower")).toBeVisible();
+  expect(creates).toBe(0);
+});
