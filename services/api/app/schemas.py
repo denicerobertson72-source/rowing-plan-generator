@@ -19,6 +19,11 @@ class AthleteCreateRequest(BaseModel):
 class AthleteResponse(BaseModel):
     athlete_id: str
     athlete_profile: dict[str, Any]
+    profile_revision: int = 0
+
+class AthleteUpdateRequest(BaseModel):
+    athlete_profile: dict[str, Any]
+    expected_revision: Optional[int] = None
 
 class RegenerateRequest(BaseModel):
     locked_sessions: list[dict[str, Any]] = Field(default_factory=list)

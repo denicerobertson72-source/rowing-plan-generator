@@ -19,11 +19,11 @@ from rowing_plan.power_profile import build_power_profile
 from rowing_plan.scheduler import generate_plan
 from rowing_plan.validators import hard_constraint_errors, validate_profile
 from rowing_plan.workbook import build_workbook
-from .repositories import REPOSITORIES
+from .repositories import REPOSITORIES, profile_revision, public_profile, with_profile_revision
 from .auth import current_user_id
 from rowing_plan.training_load import load_summary, session_load_au
 from rowing_plan.recurring_activities import schedule_signature
-from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, PlanGenerationRequest, PlanResponse, PrivateCheckInRequest, RacePostingRequest, RegenerateRequest, WeeklyOverrideRequest, WorkoutLogRequest
+from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, AthleteUpdateRequest, PlanGenerationRequest, PlanResponse, PrivateCheckInRequest, RacePostingRequest, RegenerateRequest, WeeklyOverrideRequest, WorkoutLogRequest
 
 CONFIG = json.loads((ROOT / "config/defaults.json").read_text())
 app = FastAPI(title="Rowing Plan API", version="0.4.0", openapi_url="/api/v1/openapi.json", docs_url="/docs")
@@ -52,6 +52,14 @@ def owned_athlete(athlete_id: str, user_id: str) -> dict:
     if not profile: raise HTTPException(404,"Athlete not found")
     if REPOSITORIES.athlete_owner(athlete_id) != user_id: raise HTTPException(403,"This athlete belongs to another account.")
     return profile
+def athlete_response(athlete_id: str, profile: dict) -> AthleteResponse:
+    return AthleteResponse(athlete_id=athlete_id, athlete_profile=public_profile(profile), profile_revision=profile_revision(profile))
+def athlete_summary(record: dict) -> dict:
+    profile=record["athlete_profile"]
+    athlete=profile.get("athlete",{})
+    season=profile.get("season",{})
+    blocks=profile.get("tests",{}).get("testing_blocks",[])
+    return {"athlete_id":record["athlete_id"],"updated_at":record["updated_at"],"display_name":athlete.get("display_name") or "Unnamed rower","season_name":season.get("season_name") or "","season_start":season.get("start_date"),"season_end":season.get("end_date"),"race_count":len(profile.get("races",[])),"recurring_activity_count":len(profile.get("recurring_activities",[])),"performance_test_count":sum(len(block.get("performance_tests",[])) for block in blocks if isinstance(block,dict)),"plan_id":record.get("plan_id")}
 def owned_plan(plan_id: str, user_id: str) -> dict:
     record=REPOSITORIES.get_plan(plan_id)
     if not record: raise HTTPException(404,"Plan not found")
@@ -86,27 +94,37 @@ def generate(request: PlanGenerationRequest) -> PlanResponse:
 def create_athlete(request: AthleteCreateRequest, user_id: str = Depends(current_user_id)) -> AthleteResponse:
     errors=validate_profile(request.athlete_profile)
     if errors: raise HTTPException(status_code=422, detail={"validation_errors":errors})
-    athlete_id=REPOSITORIES.create(request.athlete_profile, user_id)
-    return AthleteResponse(athlete_id=athlete_id, athlete_profile=request.athlete_profile)
+    profile=with_profile_revision(request.athlete_profile, 0)
+    athlete_id=REPOSITORIES.create(profile, user_id)
+    return athlete_response(athlete_id, profile)
 
 @app.get("/api/v1/athletes/{athlete_id}", response_model=AthleteResponse)
 def get_athlete(athlete_id: str, user_id: str = Depends(current_user_id)) -> AthleteResponse:
     profile=owned_athlete(athlete_id,user_id)
-    return AthleteResponse(athlete_id=athlete_id, athlete_profile=profile)
+    return athlete_response(athlete_id, profile)
 
 @app.get("/api/v1/account/athlete")
 def get_current_athlete(user_id: str = Depends(current_user_id)) -> dict:
     record=REPOSITORIES.latest_for_user(user_id)
     if not record: raise HTTPException(404,"No Athlete Profile is associated with this account.")
-    return record
+    return {"athlete_id":record["athlete_id"],"athlete_profile":public_profile(record["athlete_profile"]),"profile_revision":profile_revision(record["athlete_profile"]),"plan_id":record.get("plan_id")}
+
+@app.get("/api/v1/account/athletes")
+def get_account_athletes(user_id: str = Depends(current_user_id)) -> dict:
+    return {"athletes":[athlete_summary(record) for record in REPOSITORIES.list_for_user(user_id)]}
 
 @app.put("/api/v1/athletes/{athlete_id}", response_model=AthleteResponse)
-def update_athlete(athlete_id: str, request: AthleteCreateRequest, user_id: str = Depends(current_user_id)) -> AthleteResponse:
-    owned_athlete(athlete_id,user_id)
+def update_athlete(athlete_id: str, request: AthleteUpdateRequest, user_id: str = Depends(current_user_id)) -> AthleteResponse:
+    current=owned_athlete(athlete_id,user_id)
     errors=validate_profile(request.athlete_profile)
     if errors: raise HTTPException(status_code=422, detail={"validation_errors":errors})
-    REPOSITORIES.save(athlete_id, request.athlete_profile)
-    return AthleteResponse(athlete_id=athlete_id, athlete_profile=REPOSITORIES.get(athlete_id) or request.athlete_profile)
+    current_revision=profile_revision(current)
+    if request.expected_revision != current_revision: raise HTTPException(status_code=409, detail={"message":"This profile was updated in another tab or session.","current_revision":current_revision})
+    profile=with_profile_revision(request.athlete_profile, current_revision+1)
+    if not REPOSITORIES.save_if_revision(athlete_id, profile, current_revision):
+        latest=REPOSITORIES.get(athlete_id) or current
+        raise HTTPException(status_code=409, detail={"message":"This profile was updated in another tab or session.","current_revision":profile_revision(latest)})
+    return athlete_response(athlete_id, profile)
 
 @app.post("/api/v1/athletes/{athlete_id}/plans/generate", response_model=PlanResponse)
 def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: str = Depends(current_user_id)) -> PlanResponse:

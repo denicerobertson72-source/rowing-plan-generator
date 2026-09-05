@@ -52,3 +52,14 @@ test("Week presents semantic cards without internal role labels or narrow-screen
     expect(await page.locator("body").evaluate(element=>element.scrollWidth<=window.innerWidth)).toBeTruthy();
   }
 });
+
+test("Onboarding recovers the account athlete when this origin has no local session", async ({page}) => {
+  let creates=0;
+  page.on("request", request => { if (request.method()==="POST" && request.url().endsWith("/athletes")) creates++; });
+  await page.goto("/");
+  await page.evaluate(() => localStorage.clear());
+  await page.goto("/onboarding");
+  await expect(page).toHaveURL(/\/profile/);
+  await expect(page.getByText("Synthetic Step 6B Rower")).toBeVisible();
+  expect(creates).toBe(0);
+});

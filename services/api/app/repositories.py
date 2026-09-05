@@ -8,10 +8,30 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
+REVISION_KEY = "_profile_revision"
+
+def profile_revision(profile: dict[str, Any]) -> int:
+    try:
+        return max(0, int(profile.get(REVISION_KEY, 0)))
+    except (TypeError, ValueError):
+        return 0
+
+def with_profile_revision(profile: dict[str, Any], revision: int) -> dict[str, Any]:
+    stored = dict(profile)
+    stored[REVISION_KEY] = revision
+    return stored
+
+def public_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    result = dict(profile)
+    result.pop(REVISION_KEY, None)
+    return result
+
 class AthleteRepository(Protocol):
     def create(self, profile: dict[str, Any], user_id: str | None = None) -> str: ...
     def save(self, athlete_id: str, profile: dict[str, Any]) -> None: ...
     def get(self, athlete_id: str) -> dict[str, Any] | None: ...
+    def save_if_revision(self, athlete_id: str, profile: dict[str, Any], expected_revision: int) -> bool: ...
+    def list_for_user(self, user_id: str) -> list[dict[str, Any]]: ...
 
 class PlanRepository(Protocol):
     def save(self, athlete_id: str, plan: dict[str, Any]) -> str: ...
@@ -46,6 +66,10 @@ class SQLiteRepositories:
         return athlete_id
     def save(self, athlete_id: str, profile: dict[str, Any]) -> None:
         with self._connect() as db: db.execute("UPDATE athletes SET profile_json=?, updated_at=? WHERE athlete_id=?",(json.dumps(profile),self._now(),athlete_id))
+    def save_if_revision(self, athlete_id: str, profile: dict[str, Any], expected_revision: int) -> bool:
+        with self._connect() as db:
+            result=db.execute("UPDATE athletes SET profile_json=?, updated_at=? WHERE athlete_id=? AND COALESCE(CAST(json_extract(profile_json, '$._profile_revision') AS INTEGER), 0)=?",(json.dumps(profile),self._now(),athlete_id,expected_revision))
+        return result.rowcount == 1
     def get(self, athlete_id: str) -> dict[str, Any] | None:
         with self._connect() as db: row=db.execute("SELECT profile_json FROM athletes WHERE athlete_id=?",(athlete_id,)).fetchone()
         return json.loads(row["profile_json"]) if row else None
@@ -57,6 +81,14 @@ class SQLiteRepositories:
         if not row: return None
         plan=db.execute("SELECT plan_id FROM plan_versions WHERE athlete_id=? ORDER BY version_number DESC LIMIT 1",(row["athlete_id"],)).fetchone()
         return {"athlete_id":row["athlete_id"],"athlete_profile":json.loads(row["profile_json"]),"plan_id":plan["plan_id"] if plan else None}
+    def list_for_user(self, user_id: str) -> list[dict[str, Any]]:
+        with self._connect() as db:
+            rows=db.execute("SELECT athlete_id, profile_json, created_at, updated_at FROM athletes WHERE user_id=? ORDER BY updated_at DESC",(user_id,)).fetchall()
+            result=[]
+            for row in rows:
+                plan=db.execute("SELECT plan_id FROM plan_versions WHERE athlete_id=? ORDER BY version_number DESC LIMIT 1",(row["athlete_id"],)).fetchone()
+                result.append({"athlete_id":row["athlete_id"],"athlete_profile":json.loads(row["profile_json"]),"created_at":row["created_at"],"updated_at":row["updated_at"],"plan_id":plan["plan_id"] if plan else None})
+        return result
     def save_plan(self, athlete_id: str, plan: dict[str, Any]) -> str:
         with self._connect() as db:
             version=db.execute("SELECT COALESCE(MAX(version_number),0)+1 FROM plan_versions WHERE athlete_id=?",(athlete_id,)).fetchone()[0]
@@ -155,6 +187,11 @@ class PostgresRepositories:
         from psycopg.types.json import Jsonb
         with self._connect() as db, db.cursor() as cursor:
             cursor.execute("UPDATE athletes SET profile_json=%s, updated_at=NOW() WHERE athlete_id=%s",(Jsonb(profile),athlete_id))
+    def save_if_revision(self, athlete_id: str, profile: dict[str, Any], expected_revision: int) -> bool:
+        from psycopg.types.json import Jsonb
+        with self._connect() as db, db.cursor() as cursor:
+            cursor.execute("UPDATE athletes SET profile_json=%s, updated_at=NOW() WHERE athlete_id=%s AND COALESCE((profile_json->>'_profile_revision')::integer, 0)=%s",(Jsonb(profile),athlete_id,expected_revision))
+            return cursor.rowcount == 1
     def get(self, athlete_id: str) -> dict[str, Any] | None:
         with self._connect() as db, db.cursor() as cursor:
             cursor.execute("SELECT profile_json FROM athletes WHERE athlete_id=%s",(athlete_id,)); row=cursor.fetchone()
@@ -169,6 +206,14 @@ class PostgresRepositories:
             if not row: return None
             cursor.execute("SELECT plan_id FROM plan_versions WHERE athlete_id=%s ORDER BY version_number DESC LIMIT 1",(row["athlete_id"])); plan=cursor.fetchone()
         return {"athlete_id":row["athlete_id"],"athlete_profile":row["profile_json"],"plan_id":plan["plan_id"] if plan else None}
+    def list_for_user(self, user_id: str) -> list[dict[str, Any]]:
+        with self._connect() as db, db.cursor() as cursor:
+            cursor.execute("SELECT athlete_id, profile_json, created_at, updated_at FROM athletes WHERE user_id=%s ORDER BY updated_at DESC",(user_id,)); rows=cursor.fetchall()
+            result=[]
+            for row in rows:
+                cursor.execute("SELECT plan_id FROM plan_versions WHERE athlete_id=%s ORDER BY version_number DESC LIMIT 1",(row["athlete_id"],)); plan=cursor.fetchone()
+                result.append({"athlete_id":row["athlete_id"],"athlete_profile":row["profile_json"],"created_at":row["created_at"].isoformat(),"updated_at":row["updated_at"].isoformat(),"plan_id":plan["plan_id"] if plan else None})
+        return result
     def save_plan(self, athlete_id: str, plan: dict[str, Any]) -> str:
         from psycopg.types.json import Jsonb
         plan_id=str(uuid4())

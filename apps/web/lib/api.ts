@@ -3,13 +3,15 @@ export type PlanSession = { date:string; day:string; band:string; title:string; 
 export type CalendarDay = {date:string;state:"designated_rest"|"unavailable"|"no_additional_session";designated_rest?:boolean;unavailable?:boolean};
 export type Plan = { plan_version?:string; schedule_signature?:string; sessions: PlanSession[]; phases: {date:string;phase:string;race_event?:string}[]; calendar_days?:CalendarDay[]; plan_impacts?:string[] };
 export type PlanResponse = { plan_id: string; plan: Plan };
-export type AthleteResponse = { athlete_id: string; athlete_profile: Record<string, unknown> };
+export type AthleteResponse = { athlete_id: string; athlete_profile: Record<string, unknown>; profile_revision: number };
+export type AthleteCandidate = { athlete_id:string; updated_at:string; display_name:string; season_name:string; season_start?:string; season_end?:string; race_count:number; recurring_activity_count:number; performance_test_count:number; plan_id?:string|null };
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? (process.env.NODE_ENV === "development" ? "http://localhost:8000/api/v1" : "https://rowing-plan-api.vercel.app/api/v1");
-async function request<T>(path:string, init?:RequestInit): Promise<T> { const {supabase}=await import("./supabase");const token=(await supabase?.auth.getSession())?.data.session?.access_token;const response=await fetch(`${API_BASE}${path}`,{cache:"no-store",headers:{"Content-Type":"application/json",...(token?{Authorization:`Bearer ${token}`}:{}),...(init?.headers ?? {})},...init}); if (!response.ok) throw new Error((await response.text()) || "Request failed"); return response.json() as Promise<T>; }
+async function request<T>(path:string, init?:RequestInit): Promise<T> { const {supabase}=await import("./supabase");const token=(await supabase?.auth.getSession())?.data.session?.access_token;const response=await fetch(`${API_BASE}${path}`,{cache:"no-store",headers:{"Content-Type":"application/json",...(token?{Authorization:`Bearer ${token}`}:{}),...(init?.headers ?? {})},...init}); if (!response.ok) throw new Error(`${response.status}: ${(await response.text()) || "Request failed"}`); return response.json() as Promise<T>; }
 export function createAthlete(athlete_profile: Record<string, unknown>): Promise<AthleteResponse> { return request("/athletes",{method:"POST",body:JSON.stringify({athlete_profile})}); }
 export function getAthlete(athleteId:string): Promise<AthleteResponse> { return request(`/athletes/${athleteId}`); }
 export function getCurrentAthlete(): Promise<AthleteResponse & {plan_id:string|null}> { return request("/account/athlete"); }
-export function updateAthlete(athleteId:string, athlete_profile:Record<string,unknown>): Promise<AthleteResponse> { return request(`/athletes/${athleteId}`,{method:"PUT",body:JSON.stringify({athlete_profile})}); }
+export function getAccountAthletes(): Promise<{athletes:AthleteCandidate[]}> { return request("/account/athletes"); }
+export function updateAthlete(athleteId:string, athlete_profile:Record<string,unknown>, expected_revision:number): Promise<AthleteResponse> { return request(`/athletes/${athleteId}`,{method:"PUT",body:JSON.stringify({athlete_profile,expected_revision})}); }
 export function generateAthletePlan(athleteId:string): Promise<PlanResponse> { return request(`/athletes/${athleteId}/plans/generate`,{method:"POST",body:"{}"}); }
 export function getPlan(planId:string): Promise<{plan_id:string; athlete_id:string; version_number:number; plan_needs_update:boolean; plan:Plan}> { return request(`/plans/${planId}`); }
 export async function getToday(planId:string): Promise<{sessions:PlanSession[];plan_needs_update:boolean;plan_version:number}> { return request(`/plans/${planId}/today`); }
