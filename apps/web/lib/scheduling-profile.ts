@@ -16,6 +16,16 @@ export function normalizeModernSchedulingProfile(profile: Record<string, any>, a
     .filter(Boolean);
   const normalizedActivities = activities.map((source) => {
     const activity = { ...source } as Record<string, any>;
+    const requested = Number(activity.sessions_per_week ?? 1);
+    if (activity.scheduling_status === "fixed") {
+      const fixedDays = strings(activity.fixed_days);
+      const candidates = Array.from(new Set([...strings(activity.allowed_days), ...strings(activity.preferred_days)]));
+      // Compatibility recovery is intentionally narrow: a one-per-week fixed
+      // card with one explicit alternate day has an unambiguous canonical day.
+      activity.fixed_days = fixedDays.length === requested ? fixedDays : requested === 1 && fixedDays.length === 0 && candidates.length === 1 ? candidates : fixedDays;
+      activity.planner_may_choose_day = false;
+      if (activity.activity_type !== "rest") return activity;
+    }
     if (activity.activity_type !== "rest") return activity;
 
     if (activity.scheduling_status !== "fixed") {
@@ -27,9 +37,6 @@ export function normalizeModernSchedulingProfile(profile: Record<string, any>, a
       if (activity.scheduling_status === "flexible" && !strings(activity.allowed_days).length) {
         activity.allowed_days = availableWeekdays;
       }
-    } else {
-      activity.fixed_days = strings(activity.fixed_days);
-      activity.planner_may_choose_day = false;
     }
     return activity;
   });

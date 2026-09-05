@@ -22,7 +22,15 @@ def normalize_recurring_schedule_for_planning(profile: dict) -> dict:
     available_days = [item.get("weekday") for item in availability if item.get("available", True) and item.get("weekday")]
     flexible_rest = False
     for activity in normalized["recurring_activities"]:
-        if activity.get("activity_type") != "rest" or activity.get("scheduling_status") == "fixed":
+        if activity.get("scheduling_status") == "fixed":
+            requested = activity.get("sessions_per_week", 1)
+            fixed_days = activity.get("fixed_days", [])
+            candidates = list(dict.fromkeys([*activity.get("allowed_days", []), *activity.get("preferred_days", [])]))
+            if requested == 1 and not fixed_days and len(candidates) == 1:
+                activity["fixed_days"] = candidates
+                activity["planner_may_choose_day"] = False
+            continue
+        if activity.get("activity_type") != "rest":
             continue
         flexible_rest = True
         activity["fixed_days"] = []

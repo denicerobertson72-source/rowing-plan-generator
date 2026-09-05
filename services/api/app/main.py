@@ -120,11 +120,12 @@ def get_account_athletes(user_id: str = Depends(current_user_id)) -> dict:
 @app.put("/api/v1/athletes/{athlete_id}", response_model=AthleteResponse)
 def update_athlete(athlete_id: str, request: AthleteUpdateRequest, user_id: str = Depends(current_user_id)) -> AthleteResponse:
     current=owned_athlete(athlete_id,user_id)
-    errors=validate_profile(request.athlete_profile)
+    updated_profile=normalize_recurring_schedule_for_planning(request.athlete_profile)
+    errors=validate_profile(updated_profile)
     if errors: raise HTTPException(status_code=422, detail={"validation_errors":errors})
     current_revision=profile_revision(current)
     if request.expected_revision != current_revision: raise HTTPException(status_code=409, detail={"message":"This profile was updated in another tab or session.","current_revision":current_revision})
-    profile=with_profile_revision(request.athlete_profile, current_revision+1)
+    profile=with_profile_revision(updated_profile, current_revision+1)
     if not REPOSITORIES.save_if_revision(athlete_id, profile, current_revision):
         latest=REPOSITORIES.get(athlete_id) or current
         raise HTTPException(status_code=409, detail={"message":"This profile was updated in another tab or session.","current_revision":profile_revision(latest)})
