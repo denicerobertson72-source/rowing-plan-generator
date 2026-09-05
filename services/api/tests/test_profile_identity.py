@@ -1,4 +1,5 @@
 import copy
+import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -6,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from services.api.app.main import app
 from services.api.app.repositories import REPOSITORIES, SQLiteRepositories
-from services.api.tests.disposable_browser_fixture import exported_runtime_profile
+from services.api.tests.disposable_browser_fixture import exported_runtime_profile, synthetic_profile
 
 
 def client_for_database(path: Path):
@@ -90,3 +91,33 @@ def test_real_profile_shaped_regeneration_normalizes_legacy_flexible_rest_withou
     assert {"target_total_rowing_exposures","target_coached_rowing_exposures","target_independent_rowing_exposures"} <= intent.keys()
     assert stored["recurring_activities"][1]["fixed_days"] == ["saturday"]
     assert next(item for item in stored["weekly_availability"] if item["weekday"] == "saturday")["fixed_rest"] is True
+
+
+def test_generation_conflict_preserves_safe_scheduler_diagnostic_and_creates_no_plan(caplog):
+    profile=synthetic_profile()
+    profile["recurring_activities"] = [
+        {"activity_id":"private","activity_type":"private_coaching","sessions_per_week":1,"scheduling_status":"fixed","fixed_days":["wednesday"],"preferred_days":[],"allowed_days":[],"prohibited_days":[]},
+        {"activity_id":"rest","activity_type":"rest","sessions_per_week":1,"scheduling_status":"fixed","fixed_days":["sunday"],"preferred_days":[],"allowed_days":[],"prohibited_days":[]},
+        {"activity_id":"strength","activity_type":"strength","sessions_per_week":2,"scheduling_status":"flexible","fixed_days":[],"preferred_days":[],"allowed_days":["monday","friday"],"prohibited_days":[]},
+        {"activity_id":"coach","activity_type":"coached_row","sessions_per_week":1,"scheduling_status":"flexible","fixed_days":[],"preferred_days":[],"allowed_days":["monday","friday"],"prohibited_days":[]},
+    ]
+    with TemporaryDirectory() as directory:
+        client, previous=client_for_database(Path(directory)/"conflict.sqlite3")
+        try:
+            athlete_id=client.post("/api/v1/athletes",json={"athlete_profile":profile}).json()["athlete_id"]
+            caplog.set_level(logging.WARNING, logger="services.api.app.main")
+            response=client.post(f"/api/v1/athletes/{athlete_id}/plans/generate",json={})
+            latest=REPOSITORIES.latest_plan_for_athlete(athlete_id)
+        finally:
+            REPOSITORIES._instance=previous
+    detail=response.json()["detail"]
+    diagnostic=detail["diagnostic"]
+    assert response.status_code == 422 and detail["error_code"] == "planning_conflict"
+    assert diagnostic["conflict_type"] == "recurring_activity_placement"
+    assert diagnostic["activity_type"] == "coached_row"
+    assert diagnostic["requested_frequency"] == 1
+    assert diagnostic["week_start"] == "2026-08-31"
+    assert latest is None
+    assert "code=planning_conflict" in caplog.text
+    assert "conflict_type=recurring_activity_placement" in caplog.text
+    assert "activity_type=coached_row" in caplog.text

@@ -13,6 +13,12 @@ from .session_selection import VERSION as SELECTION_VERSION, assign_week_roles, 
 from .load_transformations import VERSION as TRANSFORMATION_VERSION, transform
 
 WEEKDAY=["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
+class PlanningConflict(ValueError):
+    """A safe, scheduler-originated constraint diagnostic for API consumers."""
+    def __init__(self, reason: str, details: dict):
+        super().__init__(reason)
+        self.details = details
+
 def _availability(profile): return {x["weekday"]:x for x in profile["weekly_availability"]}
 def _race(day,races): return next((r for r in races if parse(r["start_date"])<=day<=parse(r["end_date"])),None)
 def _recurring_commitments(profile, start, end):
@@ -41,7 +47,21 @@ def _recurring_commitments(profile, start, end):
             placement=choose(activity,quality_days,fixed_days,occupied_days)
             requested=activity.get("sessions_per_week",1)
             if len(placement["scheduled_days"]) != requested:
-                raise ValueError(f"{activity.get('activity_type','Activity')} cannot be placed {requested} time(s) in a full week without conflicting with your other commitments.")
+                activity_type=activity.get("activity_type","activity")
+                reason=f"{activity_type.replace('_',' ')} cannot be placed {requested} time(s) in a full week without conflicting with other commitments."
+                candidate_days=list(dict.fromkeys([*activity.get("preferred_days",[]),*activity.get("allowed_days",[]),*activity.get("fixed_days",[])]))
+                raise PlanningConflict(reason, {
+                    "conflict_type":"recurring_activity_placement",
+                    "activity_type":activity_type,
+                    "scheduling_status":activity.get("scheduling_status","fixed"),
+                    "requested_frequency":requested,
+                    "candidate_days":candidate_days,
+                    "prohibited_days":activity.get("prohibited_days",[]),
+                    "fixed_days":activity.get("fixed_days",[]),
+                    "week_start":week_start.isoformat(),
+                    "validation_rule":"all_recurring_sessions_must_be_placed",
+                    "reason":reason,
+                })
             moves.append({"week_start":week_start.isoformat(),"activity_id":activity.get("activity_id"),"activity_type":activity.get("activity_type"),**placement})
             for weekday in placement["scheduled_days"]:
                 try: offset=WEEKDAY.index(weekday)

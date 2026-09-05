@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
 from rowing_plan import PLANNER_VERSION
 from rowing_plan.intensity import build_intensity_profile
 from rowing_plan.power_profile import build_power_profile
-from rowing_plan.scheduler import generate_plan
+from rowing_plan.scheduler import PlanningConflict, generate_plan
 from rowing_plan.validators import hard_constraint_errors, validate_profile
 from rowing_plan.workbook import build_workbook
 from .repositories import REPOSITORIES, profile_revision, public_profile, with_profile_revision
@@ -45,7 +45,8 @@ def build_plan(request: PlanGenerationRequest) -> dict:
     bands = build_intensity_profile(profile, CONFIG)
     power = build_power_profile(profile, CONFIG)
     try: plan = generate_plan(profile, CONFIG, bands, power, request.locked_sessions)
-    except ValueError as error: raise HTTPException(status_code=422, detail={"error_code":"planning_conflict","planning_conflicts":[str(error)]}) from error
+    except PlanningConflict as error: raise HTTPException(status_code=422, detail={"error_code":"planning_conflict","planning_conflicts":[str(error)],"diagnostic":error.details}) from error
+    except ValueError as error: raise HTTPException(status_code=422, detail={"error_code":"planning_conflict","planning_conflicts":[str(error)],"diagnostic":{"conflict_type":"planner_value_error","reason":"A planner constraint could not be resolved."}}) from error
     hard_errors = hard_constraint_errors(plan, profile)
     if hard_errors: raise HTTPException(status_code=422, detail={"error_code":"hard_constraint","constraint_errors": hard_errors})
     return plan
@@ -142,7 +143,8 @@ def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: s
     except HTTPException as error:
         detail=error.detail if isinstance(error.detail, dict) else {}
         code=detail.get("error_code", "planning_rejected" if error.status_code == 422 else "request_rejected")
-        logger.warning("plan_generation_failed endpoint=athlete_regenerate status=%s code=%s diagnostic=%s", error.status_code, code, "request_rejected")
+        diagnostic=detail.get("diagnostic") if isinstance(detail.get("diagnostic"), dict) else {}
+        logger.warning("plan_generation_failed endpoint=athlete_regenerate status=%s code=%s conflict_type=%s reason=%s activity_type=%s scheduling_status=%s requested_frequency=%s week_start=%s validation_rule=%s", error.status_code, code, diagnostic.get("conflict_type","request_rejected"), diagnostic.get("reason","request_rejected"), diagnostic.get("activity_type"), diagnostic.get("scheduling_status"), diagnostic.get("requested_frequency"), diagnostic.get("week_start"), diagnostic.get("validation_rule"))
         raise
     return PlanResponse(plan_id=REPOSITORIES.save_plan(athlete_id,plan), plan=plan)
 
