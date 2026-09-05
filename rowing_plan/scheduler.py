@@ -31,6 +31,8 @@ def _recurring_commitments(profile, start, end):
     activities=profile.get("recurring_activities")
     if activities is None: return {}, []
     commitments=defaultdict(list); moves=[]; week_start=start-timedelta(days=start.weekday())
+    available_days=[item.get("weekday") for item in profile.get("weekly_availability",[]) if item.get("available",True) and item.get("weekday")]
+    preferred_long_days=set(profile.get("preferences",{}).get("preferred_long_session_days",[]))
     while week_start<=end:
         fixed_days={day for activity in activities if activity.get("scheduling_status")=="fixed" for day in activity.get("fixed_days",[])}
         # Tuesday is the engine's normal quality-row candidate; scorer avoids
@@ -44,7 +46,13 @@ def _recurring_commitments(profile, start, end):
         # instead of prematurely consuming the only useful gap.
         ordered=sorted(activities,key=lambda item:(item.get("scheduling_status")!="fixed",item.get("activity_type")=="rest"))
         for activity in ordered:
-            placement=choose(activity,quality_days,fixed_days,occupied_days)
+            scoring_activity=activity
+            # A preferred long-row day is a strong scheduling preference, not
+            # a hidden fixed rule.  Do not spend it on a movable lift or rest
+            # when another athlete-available day exists.
+            if activity.get("scheduling_status") != "fixed" and activity.get("activity_type") in {"strength","rest"}:
+                scoring_activity={**activity,"discouraged_days":list(preferred_long_days)}
+            placement=choose(scoring_activity,quality_days,fixed_days,occupied_days,available_days)
             requested=activity.get("sessions_per_week",1)
             if len(placement["scheduled_days"]) != requested:
                 activity_type=activity.get("activity_type","activity")
@@ -77,7 +85,7 @@ def _commitment(activity_type, day, phase, avail, activity):
     return {"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":activity.get("scheduling_status")=="fixed","mode":"on_water","session_id":"COACHED","title":"Private coaching" if activity_type=="private_coaching" else "Coached row","total_cardio_minutes":min(50,avail.get("max_training_minutes",50)),"rowing_minutes":min(50,avail.get("max_training_minutes",50)),"quality_minutes":0,"band":"UT2/UT1","structure":"Coach-led technique and aerobic work.","warning":"Coach instructions take priority."}
 def _session(day, phase, avail, library, band, power, race_type, structure_preference="varied", fixed=False, title=None, role=None, experience="intermediate", history=None):
     mode=next((m for m in avail.get("rowing_modes",[]) if m in ("on_water","erg")),"erg")
-    minutes=min(avail.get("max_training_minutes",60), 60 if band in ("UT2","UT1") else 50)
+    minutes=min(avail.get("max_training_minutes",60), 90 if role=="LONG_AEROBIC" else 60 if band in ("UT2","UT1") else 50)
     selected=select_and_instantiate(role=role,experience=experience,phase=phase,race_type=race_type,mode=mode,minutes=minutes,preference=structure_preference,history=history or []) if role else None
     if selected:
         archetype=selected["archetype"]; band=archetype["primary_band"]
@@ -192,6 +200,7 @@ def _ordinary_row_dates(profile, start, end, commitments, modern_schedule, inten
     availability = _availability(profile)
     races = profile.get("races", [])
     target_by_week = {item["week_start"]: item.get("target_independent_rowing_exposures", max(0,item["target_rowing_sessions"]-item.get("target_private_coaching_sessions",0)-item.get("target_coached_row_sessions",0))) for item in intents}
+    preferred_long_days=set(profile.get("preferences",{}).get("preferred_long_session_days",[]))
     selected = set()
     week_start = start - timedelta(days=start.weekday())
     while week_start <= end:
@@ -214,9 +223,14 @@ def _ordinary_row_dates(profile, start, end, commitments, modern_schedule, inten
             if coached:
                 coached_rows += 1
             else:
-                ordinary_candidates.append(day.isoformat())
+                ordinary_candidates.append((day.isoformat(), legacy.get("max_training_minutes", 0)))
         ordinary_needed = min(len(ordinary_candidates), target_by_week.get(week_start.isoformat(), len(ordinary_candidates)))
-        selected.update(ordinary_candidates[:ordinary_needed])
+        # A preferred long-session day gets a decisive but soft boost.  Within
+        # otherwise equal candidates, more usable time wins over weekday order.
+        # Race days, rest, strength, and explicit availability already removed
+        # above, so an optional recovery cannot satisfy this required count.
+        ranked=sorted(ordinary_candidates,key=lambda item:(WEEKDAY[date.fromisoformat(item[0]).weekday()] in preferred_long_days,item[1],item[0]),reverse=True)
+        selected.update(day for day,_ in ranked[:ordinary_needed])
         week_start += timedelta(days=7)
     return selected
 
@@ -229,7 +243,8 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
     for intent in weekly_training_intents:
         week_start=date.fromisoformat(intent["week_start"]); dates=[d for d in ordinary_row_dates if week_start<=date.fromisoformat(d)<=week_start+timedelta(days=6)]
         next_race_type=next((r.get("race_type","head_5k") for r in races if parse(r["end_date"])>=week_start),"head_5k")
-        day_roles.update(assign_week_roles(dates,intent,next_race_type))
+        preferred_long_dates=[d for d in dates if WEEKDAY[date.fromisoformat(d).weekday()] in profile.get("preferences",{}).get("preferred_long_session_days",[])]
+        day_roles.update(assign_week_roles(dates,intent,next_race_type,preferred_long_dates))
     selection_history=[]; day=start
     while day<=end:
         phase,next_race=phase_for_day(day,races); a=avails.get(WEEKDAY[day.weekday()],{}); race=_race(day,races); key_race_type=(next_race or races[0] if races else {}).get("race_type","head_5k")
@@ -246,8 +261,13 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
         if modern_schedule and strength:
             sessions.append(_commitment("strength",day,phase,a,strength))
             rules=strength.get("same_day_rules",{})
-            if rules.get("alternate_ut2_allowed"):
-                sessions.append({"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":False,"mode":"treadmill_walk_jog","session_id":"XL-UT2-01","title":"Post-lifting alternate UT2","total_cardio_minutes":min(35,a.get("max_training_minutes",60)),"rowing_minutes":0,"quality_minutes":0,"band":"UT2","structure":"Continuous easy-to-steady cross-training."})
+            alternate=strength.get("alternate_cardio",{}) if isinstance(strength.get("alternate_cardio"),dict) else {}
+            alternate_mode=alternate.get("mode", "planned" if rules.get("alternate_ut2_allowed") else "off")
+            if alternate_mode in {"optional","planned"}:
+                cap=int(alternate.get("max_minutes", 20 if alternate_mode=="optional" else 35))
+                minutes=max(0,min(cap,a.get("max_training_minutes",60)-int(strength.get("lifting_minutes",0))))
+                if minutes:
+                    sessions.append({"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":False,"mode":alternate.get("mode_name","treadmill_walk_jog"),"session_id":"XL-UT2-01","title":"Optional post-lifting aerobic work" if alternate_mode=="optional" else "Post-lifting alternate UT2","total_cardio_minutes":minutes,"rowing_minutes":0,"quality_minutes":0,"band":"UT2","structure":"Continuous easy-to-steady cross-training.","optional_add_on":alternate_mode=="optional","required_cross_training":alternate_mode=="planned"})
             if not rules.get("rowing_allowed",True): day+=timedelta(days=1); continue
         if modern_schedule and coached:
             sessions.append(_commitment(coached.get("activity_type"),day,phase,a,coached)); day+=timedelta(days=1); continue
@@ -289,7 +309,9 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
         lifts=sum(s.get("session_id")=="LIFT" for s in items)
         if len(hard)>2: warnings.append({"level":"warning","message":f"Week {week} has more than two high-intensity rows."})
         if lifts>=3 and len(hard)>1: warnings.append({"level":"warning","message":f"Week {week} combines three heavy lifts with more than one hard row."})
-        totals.append({"week":week,"cardio_minutes":sum(s.get("total_cardio_minutes",0) for s in items),"rowing_minutes":sum(s.get("rowing_minutes",0) for s in items),"strength_sessions":lifts,"quality_sessions":len(hard)})
+        required_cross_training=sum(s.get("total_cardio_minutes",0) for s in items if s.get("required_cross_training"))
+        optional_add_on=sum(s.get("total_cardio_minutes",0) for s in items if s.get("optional_add_on"))
+        totals.append({"week":week,"cardio_minutes":sum(s.get("total_cardio_minutes",0) for s in items if not s.get("optional_add_on")),"rowing_minutes":sum(s.get("rowing_minutes",0) for s in items),"required_cross_training_minutes":required_cross_training,"optional_add_on_minutes":optional_add_on,"strength_sessions":lifts,"quality_sessions":len(hard)})
     band_map={b["name"]:b for b in bands}
     for s in sessions:
         matching=[band_map[x] for x in s.get("band","").split("/") if x in band_map]

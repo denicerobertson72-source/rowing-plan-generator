@@ -30,13 +30,16 @@ def normalize_recurring_schedule_for_planning(profile: dict) -> dict:
                 activity["fixed_days"] = candidates
                 activity["planner_may_choose_day"] = False
             continue
+        if activity.get("scheduling_status") == "flexible" and not activity.get("allowed_days"):
+            # Empty is the durable UI representation of "any available day".
+            # Materialise it only in this planning/save adapter so validation
+            # and placement see the same safe candidate set.
+            activity["allowed_days"] = available_days
         if activity.get("activity_type") != "rest":
             continue
         flexible_rest = True
         activity["fixed_days"] = []
         activity["planner_may_choose_day"] = activity.get("scheduling_status") == "flexible"
-        if activity.get("scheduling_status") == "flexible" and not activity.get("allowed_days"):
-            activity["allowed_days"] = available_days
     if flexible_rest:
         normalized.setdefault("preferences", {})["fixed_rest_weekdays"] = []
         for item in availability:
@@ -52,7 +55,7 @@ def schedule_signature(profile: dict) -> str:
         "athlete_development":{key:profile.get("athlete",{}).get(key) for key in ("experience_level","current_rowing_sessions_per_week","desired_rowing_sessions_per_week","recent_training_consistency","longest_comfortable_continuous_row_minutes","current_approx_weekly_rowing_minutes")},
         "races":profile.get("races",[]),
         "availability":profile.get("weekly_availability",[]),
-        "preferences":profile.get("preferences",{}).get("workout_structure_preference"),
+        "preferences":profile.get("preferences",{}),
     }
     return hashlib.sha256(json.dumps(source,sort_keys=True,separators=(",",":"),default=str).encode()).hexdigest()[:16]
 
@@ -72,8 +75,11 @@ def validate_recurring_activities(profile: dict) -> list[str]:
     items=migrate_legacy_availability(profile)
     fixed_days={day for item in items if item.get("scheduling_status")=="fixed" for day in item.get("fixed_days",[])}
     seen_fixed=set()
+    available_days={item.get("weekday") for item in profile.get("weekly_availability",[]) if item.get("available",True)}
     for item in items:
         allowed=set(item.get("allowed_days",[]))|set(item.get("fixed_days",[]))|set(item.get("preferred_days",[]))
+        if item.get("scheduling_status") != "fixed" and not allowed:
+            allowed=available_days-set(item.get("prohibited_days",[]))
         if item.get("sessions_per_week",0)>len(allowed): errors.append(f"{item.get('activity_type','Activity')} requests more weekly sessions than allowed days.")
         if set(item.get("prohibited_days",[]))&allowed: errors.append(f"{item.get('activity_type','Activity')} includes a prohibited day.")
         if item.get("scheduling_status")=="fixed":

@@ -17,7 +17,7 @@ FAMILY={
 }
 WEIGHTS={"phase":12,"race":10,"preference":5,"history":9,"duplicate":12,"progression":8,"duration":8}
 
-def assign_week_roles(dates,intent,race_type):
+def assign_week_roles(dates,intent,race_type,preferred_long_days=()):
     """Assign distinct purposes; fixed coaching stays outside this mapping."""
     types={x["phase_type"] for x in intent.get("phase_mix",[])}; count=len(dates)
     if "taper" in types: base=["RACE_PACE","TECHNIQUE_EASY","LONG_AEROBIC","AEROBIC_BASE"]
@@ -26,7 +26,16 @@ def assign_week_roles(dates,intent,race_type):
     elif types & {"threshold_development"}: base=["THRESHOLD","LONG_AEROBIC"]
     elif count==2: base=["AEROBIC_STRENGTH","LONG_AEROBIC"]
     else: base=["AEROBIC_BASE","TECHNIQUE_EASY","LONG_AEROBIC","AEROBIC_STRENGTH","AEROBIC_BASE"]
-    return {day:base[min(index,len(base)-1)] for index,day in enumerate(sorted(dates))}
+    result={day:base[min(index,len(base)-1)] for index,day in enumerate(sorted(dates))}
+    # Day placement is athlete-specific, while role choice remains driven by
+    # periodization.  When this week's role set includes a long aerobic row,
+    # put it on the athlete's preferred long-session day when that date won
+    # scheduling and is not a race/taper recovery exception.
+    preferred=next((day for day in preferred_long_days if day in result),None)
+    source=next((day for day,role in result.items() if role=="LONG_AEROBIC"),None)
+    if preferred and source and preferred != source:
+        result[source],result[preferred]=result[preferred],result[source]
+    return result
 
 def _environment(mode): return "water" if mode=="on_water" else "erg"
 def _pref(value): return {"short_intervals":"shorter_pieces","long_intervals":"longer_pieces","varied":"mixed","repeatable":"mixed"}.get(value,value)
