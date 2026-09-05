@@ -171,7 +171,7 @@ def _ordinary_row_dates(profile, start, end, commitments, modern_schedule, inten
     """
     availability = _availability(profile)
     races = profile.get("races", [])
-    target_by_week = {item["week_start"]: item["target_rowing_sessions"] for item in intents}
+    target_by_week = {item["week_start"]: item.get("target_independent_rowing_exposures", max(0,item["target_rowing_sessions"]-item.get("target_private_coaching_sessions",0)-item.get("target_coached_row_sessions",0))) for item in intents}
     selected = set()
     week_start = start - timedelta(days=start.weekday())
     while week_start <= end:
@@ -195,7 +195,7 @@ def _ordinary_row_dates(profile, start, end, commitments, modern_schedule, inten
                 coached_rows += 1
             else:
                 ordinary_candidates.append(day.isoformat())
-        ordinary_needed = max(0, target_by_week.get(week_start.isoformat(), len(ordinary_candidates) + coached_rows) - coached_rows)
+        ordinary_needed = min(len(ordinary_candidates), target_by_week.get(week_start.isoformat(), len(ordinary_candidates)))
         selected.update(ordinary_candidates[:ordinary_needed])
         week_start += timedelta(days=7)
     return selected

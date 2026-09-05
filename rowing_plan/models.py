@@ -47,6 +47,9 @@ class WeeklyTrainingIntent:
     week_start: str
     phase_id: str
     target_rowing_sessions: int
+    target_total_rowing_exposures: int
+    target_coached_rowing_exposures: int
+    target_independent_rowing_exposures: int
     target_strength_sessions: int
     target_rest_days: int
     target_private_coaching_sessions: int

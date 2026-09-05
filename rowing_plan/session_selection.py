@@ -23,7 +23,8 @@ def assign_week_roles(dates,intent,race_type):
     if "taper" in types: base=["RACE_PACE","TECHNIQUE_EASY","LONG_AEROBIC","AEROBIC_BASE"]
     elif types & {"race_specific_preparation"}: base=["RACE_PACE","THRESHOLD","LONG_AEROBIC","TECHNIQUE_EASY","AEROBIC_BASE"]
     elif intent.get("load_direction") in {"recover","recover_then_build"}: base=["RECOVERY","TECHNIQUE_EASY","AEROBIC_BASE","LONG_AEROBIC"]
-    elif count==2: base=["AEROBIC_BASE","LONG_AEROBIC"]
+    elif types & {"threshold_development"}: base=["THRESHOLD","LONG_AEROBIC"]
+    elif count==2: base=["AEROBIC_STRENGTH","LONG_AEROBIC"]
     else: base=["AEROBIC_BASE","TECHNIQUE_EASY","LONG_AEROBIC","AEROBIC_STRENGTH","AEROBIC_BASE"]
     return {day:base[min(index,len(base)-1)] for index,day in enumerate(sorted(dates))}
 

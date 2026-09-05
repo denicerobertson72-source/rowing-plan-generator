@@ -271,6 +271,13 @@ def build_weekly_training_intents(profile: dict, season_phases: list[dict], comm
         experience = profile.get("athlete", {}).get("experience_level", "intermediate")
         prescribed_rows = _prescribed_frequency(profile, week_index, rowing_slots, strength_days)
         prescribed_rows = max(prescribed_rows, private_sessions + coached_sessions)
+        coached_total = private_sessions + coached_sessions
+        normal_capacity = max(0, rowing_slots - coached_total)
+        race_or_recovery = any(component["phase_type"] in {"race", "taper", "post_race_recovery", "transition"} for _, component in phase_mix)
+        independent_target = max(0, prescribed_rows - coached_total)
+        if experience in {"intermediate", "experienced", "competitive"} and int(profile.get("athlete", {}).get("current_approx_weekly_rowing_minutes") or 0) >= 180 and not race_or_recovery:
+            independent_target = min(normal_capacity, max(2, independent_target))
+        prescribed_rows = coached_total + independent_target
         baseline = _weekly_volume_baseline(profile, week_start)
         if experience in {"new", "novice", "developing"}:
             baseline = _novice_volume(profile, week_index, baseline)
@@ -301,7 +308,6 @@ def build_weekly_training_intents(profile: dict, season_phases: list[dict], comm
         # Fixed coach-led rows are part of rowing volume. Keep the weekly
         # target feasible rather than asking ordinary sessions to disappear or
         # truncate below their archetype envelopes.
-        coached_total = private_sessions + coached_sessions
         feasible_floor = coached_total * 50 + max(0, prescribed_rows - coached_total) * 40 if coached_total else 0
         total = max(feasible_floor, round(baseline * volume_factor))
         low, moderate = round(total * low_share), round(total * moderate_share)
@@ -330,7 +336,7 @@ def build_weekly_training_intents(profile: dict, season_phases: list[dict], comm
         elif len(phase_mix) > 1:
             transition_note = "This week transitions from " + " + ".join(f"{days} day(s) {component['phase_type'].replace('_', ' ')}" for days, component in phase_mix) + "; targets are weighted by those days, with race/taper priorities taking precedence."
         intents.append(WeeklyTrainingIntent(
-            week_start=week_start.isoformat(), phase_id=phase["phase_id"], target_rowing_sessions=prescribed_rows, target_strength_sessions=strength_days, target_rest_days=rest_days,
+            week_start=week_start.isoformat(), phase_id=phase["phase_id"], target_rowing_sessions=prescribed_rows, target_total_rowing_exposures=prescribed_rows, target_coached_rowing_exposures=coached_total, target_independent_rowing_exposures=independent_target, target_strength_sessions=strength_days, target_rest_days=rest_days,
             target_private_coaching_sessions=private_sessions, target_coached_row_sessions=coached_sessions,
             primary_session_roles=primary, secondary_session_roles=secondary, target_low_intensity_minutes=low, target_moderate_minutes=moderate, target_high_intensity_minutes=high,
             target_total_rowing_minutes=total, race_specific_minutes=high if phase_types & {"race_specific_preparation", "taper", "race"} else 0,
