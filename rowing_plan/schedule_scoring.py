@@ -40,3 +40,38 @@ def choose(activity: dict, quality_days: set[str], fixed_days: set[str], unavail
     ranked=sorted(((score(activity,c,quality_days,fixed_days),c) for c in candidates),key=lambda x:x[0][0],reverse=True)
     (points,reasons),days=ranked[0]; moved=bool(set(days)-set(activity.get("preferred_days",[])))
     return {"scheduled_days":list(days),"score":points,"activity_moved":moved,"reason_codes":reasons,"explanation":"Planner selected this placement to improve recovery spacing before rowing quality work." if moved else "Placement preserves your preferred schedule."}
+
+
+_WEEKDAY=("monday","tuesday","wednesday","thursday","friday","saturday","sunday")
+
+def weekly_candidates(activities: list[dict], available_days: list[str], quality_days: set[str], preferred_long_days: set[str], max_results: int = 5, hard_session_days: set[str] | None = None) -> list[dict]:
+    """Return the best valid whole-week layouts with explicit score parts.
+
+    The lexical final key is only a neutral deterministic tie-break: no score
+    component gives Saturday special treatment.
+    """
+    options=[(activity,placements(activity,available_days)) for activity in activities]
+    if any(not choices or any(len(choice) != activity.get("sessions_per_week",1) for choice in choices) for activity,choices in options):
+        return []
+    hard_session_days=quality_days if hard_session_days is None else hard_session_days
+    candidates=[]
+    def visit(index: int, occupied: set[str], placed: dict[str,tuple[str,...]]):
+        if index == len(options):
+            strength_days={day for activity,_ in options if activity.get("activity_type")=="strength" for day in placed[str(activity.get("activity_id"))]}
+            rest_days={day for activity,_ in options if activity.get("activity_type")=="rest" for day in placed[str(activity.get("activity_id"))]}
+            strength_preference=sum(3 if day in activity.get("preferred_days",[]) else -1 for activity,_ in options if activity.get("activity_type")=="strength" for day in placed[str(activity.get("activity_id"))])
+            hard_spacing=sum(-10 if day in hard_session_days else -4 if any(abs(_WEEKDAY.index(day)-_WEEKDAY.index(hard))==1 for hard in hard_session_days) else 0 for day in strength_days)
+            movable_quality=sum(score(activity,placed[str(activity.get("activity_id"))],quality_days,set())[0] for activity,_ in options if activity.get("scheduling_status")!="fixed" and activity.get("activity_type") not in {"strength"})
+            long_open=bool(preferred_long_days-set(occupied))
+            long_score=(10 if long_open else -10) if preferred_long_days else 0
+            rest_score=sum(4 for day in rest_days if any(_WEEKDAY.index(long)-_WEEKDAY.index(day)==1 for long in preferred_long_days))
+            rest_score+=sum(2 for day in rest_days if any(abs(_WEEKDAY.index(day)-_WEEKDAY.index(hard))==1 for hard in hard_session_days))
+            available_time=5 if long_open and preferred_long_days else 0
+            components={"fixed_commitment_score":0,"training_quality_recovery_score":movable_quality,"long_session_placement_score":long_score,"strength_preference_score":strength_preference,"rest_recovery_score":rest_score,"hard_session_spacing_score":hard_spacing,"available_time_score":available_time}
+            candidates.append({"score":sum(components.values()),"score_components":components,"placements":{key:list(value) for key,value in placed.items()}})
+            return
+        activity,choices=options[index]; key=str(activity.get("activity_id"))
+        for choice in choices:
+            if not set(choice)&occupied: visit(index+1,occupied|set(choice),{**placed,key:choice})
+    visit(0,set(),{})
+    return sorted(candidates,key=lambda item:(-item["score"],tuple((key,tuple(value)) for key,value in sorted(item["placements"].items()))))[:max_results]

@@ -7,7 +7,7 @@ from datetime import date, timedelta
 
 from rowing_plan.intensity import build_intensity_profile
 from rowing_plan.power_profile import build_power_profile
-from rowing_plan.schedule_scoring import choose
+from rowing_plan.schedule_scoring import choose, weekly_candidates
 from rowing_plan.scheduler import generate_plan
 from services.api.tests.disposable_browser_fixture import exported_runtime_profile
 
@@ -88,3 +88,38 @@ def test_day_specific_time_gives_sunday_long_row_more_room_than_workdays():
 def test_preferred_strength_days_can_move_when_they_conflict_with_fixed_commitments():
     placement=choose({"activity_type":"strength","sessions_per_week":2,"scheduling_status":"preferred","preferred_days":["monday","friday"],"allowed_days":[],"prohibited_days":["wednesday"]},{"tuesday"},{"monday","friday"},unavailable_days={"monday","friday"},available_days=["monday","tuesday","thursday","friday","saturday"])
     assert placement["scheduled_days"]==["thursday","saturday"]
+
+
+def test_pass55_top_weekly_candidates_explain_the_stable_normal_week_layout():
+    plan=_plan(_profile())
+    for audit in plan["schedule_candidate_audits"][:3]:
+        candidates=audit["top_candidates"]
+        assert len(candidates)==5
+        winner,runner_up=candidates[:2]
+        assert winner["placements"]["lift"]==["monday","friday"]
+        assert winner["placements"]["rest"]==["saturday"]
+        assert winner["score"]-runner_up["score"]==4
+        assert winner["score_components"]["rest_recovery_score"]==4
+        assert winner["score_components"]["strength_preference_score"]==6
+
+
+def test_pass55_better_hard_session_spacing_can_beat_strength_preference_without_removing_days():
+    profile=_profile(); activities=profile["recurring_activities"]
+    candidates=weekly_candidates(activities,[item["weekday"] for item in profile["weekly_availability"]],{"tuesday"},{"sunday"},hard_session_days={"friday"})
+    winner=next(item for item in candidates if item["placements"]["lift"]==["monday","tuesday"])
+    preferred=next(item for item in candidates if item["placements"]["lift"]==["monday","friday"])
+    assert winner["score"] > preferred["score"]
+    assert winner["score_components"]["hard_session_spacing_score"] == 0
+    assert preferred["score_components"]["hard_session_spacing_score"] == -10
+    # Monday, Friday, and Saturday all remain available in this scenario.
+    assert {"monday","friday","saturday"}.issubset({item["weekday"] for item in profile["weekly_availability"]})
+
+
+def test_pass55_preferred_strength_wins_when_quality_is_equal_and_rest_has_no_saturday_bias():
+    profile=_profile(); days=[item["weekday"] for item in profile["weekly_availability"]]
+    equal=weekly_candidates(profile["recurring_activities"],days,{"tuesday"},{"sunday"},hard_session_days=set())
+    assert equal[0]["placements"]["lift"]==["monday","friday"]
+    rest={"activity_id":"rest","activity_type":"rest","sessions_per_week":1,"scheduling_status":"flexible","fixed_days":[],"preferred_days":[],"allowed_days":[],"prohibited_days":[],"planner_may_choose_day":True}
+    recovery=weekly_candidates([rest],days,{"tuesday"},set(),hard_session_days={"tuesday"})
+    assert recovery[0]["placements"]["rest"]==["monday"]
+    assert recovery[0]["score_components"]["rest_recovery_score"]==2

@@ -7,7 +7,7 @@ from .session_selector import load_library, select_session
 from .power_profile import target_for_band
 from .evidence import METHODOLOGY_STATEMENT, RULES
 from .recurring_activities import migrate_legacy_availability, schedule_signature
-from .schedule_scoring import choose
+from .schedule_scoring import choose, weekly_candidates
 from .conversions import watts_to_split_seconds, format_split
 from .session_selection import VERSION as SELECTION_VERSION, assign_week_roles, select_and_instantiate
 from .load_transformations import VERSION as TRANSFORMATION_VERSION, transform
@@ -30,7 +30,7 @@ def _recurring_commitments(profile, start, end):
     """
     activities=profile.get("recurring_activities")
     if activities is None: return {}, []
-    commitments=defaultdict(list); moves=[]; week_start=start-timedelta(days=start.weekday())
+    commitments=defaultdict(list); moves=[]; audits=[]; week_start=start-timedelta(days=start.weekday())
     available_days=[item.get("weekday") for item in profile.get("weekly_availability",[]) if item.get("available",True) and item.get("weekday")]
     preferred_long_days=set(profile.get("preferences",{}).get("preferred_long_session_days",[]))
     while week_start<=end:
@@ -38,47 +38,38 @@ def _recurring_commitments(profile, start, end):
         # Tuesday is the engine's normal quality-row candidate; scorer avoids
         # placing movable stress there when another athlete-approved day exists.
         quality_days={"tuesday"}
-        occupied_days=set()
         # Fixed commitments establish the weekly frame before any preferences
         # are scored.  Movable cards are then placed one-by-one without overlap.
         # Flexible rest is placed after strength and coaching commitments. This
         # lets its candidate score preserve independent-row recovery spacing
         # instead of prematurely consuming the only useful gap.
         ordered=sorted(activities,key=lambda item:(item.get("scheduling_status")!="fixed",item.get("activity_type")=="rest"))
-        for activity in ordered:
-            scoring_activity=activity
-            # A preferred long-row day is a strong scheduling preference, not
-            # a hidden fixed rule.  Do not spend it on a movable lift or rest
-            # when another athlete-available day exists.
-            if activity.get("scheduling_status") != "fixed" and activity.get("activity_type") in {"strength","rest"}:
-                scoring_activity={**activity,"discouraged_days":list(preferred_long_days)}
-            placement=choose(scoring_activity,quality_days,fixed_days,occupied_days,available_days)
+        ranked=weekly_candidates(ordered,available_days,quality_days,preferred_long_days,hard_session_days=set())
+        if not ranked:
+            # Preserve the established conflict diagnostic: identify the first
+            # card that fails under the deterministic commitment ordering.
+            occupied_days=set(); activity=ordered[0]
+            for candidate in ordered:
+                placement=choose(candidate,quality_days,fixed_days,occupied_days,available_days)
+                activity=candidate
+                if len(placement["scheduled_days"]) != candidate.get("sessions_per_week",1): break
+                occupied_days.update(placement["scheduled_days"])
             requested=activity.get("sessions_per_week",1)
-            if len(placement["scheduled_days"]) != requested:
-                activity_type=activity.get("activity_type","activity")
-                reason=f"{activity_type.replace('_',' ')} cannot be placed {requested} time(s) in a full week without conflicting with other commitments."
-                candidate_days=list(dict.fromkeys([*activity.get("preferred_days",[]),*activity.get("allowed_days",[]),*activity.get("fixed_days",[])]))
-                raise PlanningConflict(reason, {
-                    "conflict_type":"recurring_activity_placement",
-                    "activity_type":activity_type,
-                    "scheduling_status":activity.get("scheduling_status","fixed"),
-                    "requested_frequency":requested,
-                    "candidate_days":candidate_days,
-                    "prohibited_days":activity.get("prohibited_days",[]),
-                    "fixed_days":activity.get("fixed_days",[]),
-                    "week_start":week_start.isoformat(),
-                    "validation_rule":"all_recurring_sessions_must_be_placed",
-                    "reason":reason,
-                })
+            activity_type=activity.get("activity_type","activity")
+            reason=f"{activity_type.replace('_',' ')} cannot be placed {requested} time(s) in a full week without conflicting with other commitments."
+            candidate_days=list(dict.fromkeys([*activity.get("preferred_days",[]),*activity.get("allowed_days",[]),*activity.get("fixed_days",[])]))
+            raise PlanningConflict(reason, {"conflict_type":"recurring_activity_placement","activity_type":activity_type,"scheduling_status":activity.get("scheduling_status","fixed"),"requested_frequency":requested,"candidate_days":candidate_days,"prohibited_days":activity.get("prohibited_days",[]),"fixed_days":activity.get("fixed_days",[]),"week_start":week_start.isoformat(),"validation_rule":"all_recurring_sessions_must_be_placed","reason":reason})
+        winner=ranked[0]; audits.append({"week_start":week_start.isoformat(),"top_candidates":ranked})
+        for activity in ordered:
+            placement={"scheduled_days":winner["placements"][str(activity.get("activity_id"))],"score":winner["score"],"score_components":winner["score_components"]}
             moves.append({"week_start":week_start.isoformat(),"activity_id":activity.get("activity_id"),"activity_type":activity.get("activity_type"),**placement})
             for weekday in placement["scheduled_days"]:
                 try: offset=WEEKDAY.index(weekday)
                 except ValueError: continue
                 current=week_start+timedelta(days=offset)
                 if start<=current<=end: commitments[current.isoformat()].append(activity)
-            occupied_days.update(placement["scheduled_days"])
         week_start+=timedelta(days=7)
-    return commitments,moves
+    return commitments,moves,audits
 def _commitment(activity_type, day, phase, avail, activity):
     if activity_type=="strength":
         return {"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":activity.get("scheduling_status")=="fixed","mode":"strength","session_id":"LIFT","title":"Heavy lifting","total_cardio_minutes":0,"rowing_minutes":0,"quality_minutes":0,"band":"STRENGTH","structure":"Scheduled strength commitment."}
@@ -236,7 +227,7 @@ def _ordinary_row_dates(profile, start, end, commitments, modern_schedule, inten
 
 def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, locked_sessions: list[dict] | None = None) -> dict:
     library=load_library(); avails=_availability(profile); races=profile.get("races",[]); locked={(s["date"],s.get("session_id")):s for s in (locked_sessions or [])}; sessions=[]; warnings=[]
-    start,end=parse(profile["season"]["start_date"]),parse(profile["season"]["end_date"]); commitments,schedule_moves=_recurring_commitments(profile,start,end); modern_schedule=profile.get("recurring_activities") is not None
+    start,end=parse(profile["season"]["start_date"]),parse(profile["season"]["end_date"]); commitments,schedule_moves,schedule_candidate_audits=_recurring_commitments(profile,start,end); modern_schedule=profile.get("recurring_activities") is not None
     phases=build_phases(profile); season_phases=build_season_phases(profile); weekly_training_intents=build_weekly_training_intents(profile,season_phases,commitments,modern_schedule)
     ordinary_row_dates=_ordinary_row_dates(profile,start,end,commitments,modern_schedule,weekly_training_intents)
     day_roles={}
@@ -332,4 +323,4 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
     if frequency_errors: raise ValueError(" ".join(frequency_errors))
     impacts=power.get("plan_impacts",[])
     volume_feasibility=_reconcile_low_intensity_volume(weekly_training_intents,sessions)
-    return {"plan_version":"0.7.0","profile_id":profile.get("athlete",{}).get("display_name","athlete"),"generated_at":datetime.now().isoformat(),"schedule_signature":schedule_signature(profile),"intensity_profile":bands,"power_profile":power,"phases":phases,"season_phases":season_phases,"weekly_training_intents":weekly_training_intents,"calendar_days":calendar_days,"frequency_exceptions":frequency_exceptions,"weekly_volume_feasibility":volume_feasibility,"hard_session_spacing":_hard_session_spacing(sessions),"sessions":sessions,"weekly_totals":totals,"warnings":warnings+[{"level":"info","message":w} for w in power.get("warnings",[])],"plan_impacts":impacts,"schedule_moves":schedule_moves,"evidence_methodology":METHODOLOGY_STATEMENT,"evidence_rules":RULES,"algorithm_versions":{"planner":"0.7.0","phase_weekly_intent":PLANNING_MODEL_VERSION,"session_selection":SELECTION_VERSION,"archetype_catalog":"0.1.0","progression":"deterministic-piece-duration-0.1.0","load_transformation":TRANSFORMATION_VERSION,"taper_rule":"role-sensitive-taper-0.1.0","recovery_rule":"role-sensitive-recovery-0.1.0","power_profile":power.get("algorithm_version"),"config":config["config_version"]}}
+    return {"plan_version":"0.7.0","profile_id":profile.get("athlete",{}).get("display_name","athlete"),"generated_at":datetime.now().isoformat(),"schedule_signature":schedule_signature(profile),"intensity_profile":bands,"power_profile":power,"phases":phases,"season_phases":season_phases,"weekly_training_intents":weekly_training_intents,"calendar_days":calendar_days,"frequency_exceptions":frequency_exceptions,"weekly_volume_feasibility":volume_feasibility,"hard_session_spacing":_hard_session_spacing(sessions),"sessions":sessions,"weekly_totals":totals,"warnings":warnings+[{"level":"info","message":w} for w in power.get("warnings",[])],"plan_impacts":impacts,"schedule_moves":schedule_moves,"schedule_candidate_audits":schedule_candidate_audits,"evidence_methodology":METHODOLOGY_STATEMENT,"evidence_rules":RULES,"algorithm_versions":{"planner":"0.7.0","phase_weekly_intent":PLANNING_MODEL_VERSION,"session_selection":SELECTION_VERSION,"archetype_catalog":"0.1.0","progression":"deterministic-piece-duration-0.1.0","load_transformation":TRANSFORMATION_VERSION,"taper_rule":"role-sensitive-taper-0.1.0","recovery_rule":"role-sensitive-recovery-0.1.0","power_profile":power.get("algorithm_version"),"config":config["config_version"]}}
