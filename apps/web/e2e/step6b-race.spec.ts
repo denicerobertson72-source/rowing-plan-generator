@@ -53,6 +53,29 @@ test("Week presents semantic cards without internal role labels or narrow-screen
   }
 });
 
+test("Week navigation advances within the saved PlanVersion and preserves its URL week", async ({page}) => {
+  await page.goto("/week");
+  await expect(page.getByText("Previous week")).toBeDisabled();
+  const first=await page.locator(".week-nav b").innerText();
+  await page.getByText("Next week").click();
+  await expect(page.locator(".week-nav b")).not.toHaveText(first);
+  const second=await page.locator(".week-nav b").innerText();
+  await expect(page).toHaveURL(/week=\d{4}-\d{2}-\d{2}/);
+  await page.reload();
+  await expect(page.locator(".week-nav b")).toHaveText(second);
+  await page.getByText("Previous week").click();
+  await expect(page.locator(".week-nav b")).toHaveText(first);
+});
+
+test("Season recovers a missing local plan ID from the selected athlete", async ({page}) => {
+  await page.goto("/profile");
+  const session=await page.evaluate(() => JSON.parse(localStorage.getItem("rowing-plan-session-v1")||"{}"));
+  await page.evaluate(value => localStorage.setItem("rowing-plan-session-v1",JSON.stringify({...value,planId:"missing-plan"})),session);
+  await page.goto("/season");
+  await expect(page.getByText("Season plan")).toBeVisible();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("rowing-plan-session-v1")||"{}").planId)).not.toBe("missing-plan");
+});
+
 test("Onboarding recovers the account athlete when this origin has no local session", async ({page}) => {
   let creates=0;
   page.on("request", request => { if (request.method()==="POST" && request.url().endsWith("/athletes")) creates++; });

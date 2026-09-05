@@ -137,6 +137,14 @@ def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: s
     plan=build_plan(PlanGenerationRequest(athlete_profile=profile, locked_sessions=locked))
     return PlanResponse(plan_id=REPOSITORIES.save_plan(athlete_id,plan), plan=plan)
 
+@app.get("/api/v1/athletes/{athlete_id}/plans/latest")
+def latest_plan_for_athlete(athlete_id: str, user_id: str = Depends(current_user_id)) -> dict:
+    owned_athlete(athlete_id,user_id)
+    record=REPOSITORIES.latest_plan_for_athlete(athlete_id)
+    if not record: raise HTTPException(404,"No PlanVersion exists for this athlete.")
+    profile=REPOSITORIES.get(athlete_id) or {}
+    return {**record,"plan_needs_update":plan_needs_update(record,profile)}
+
 @app.get("/api/v1/plans/{plan_id}")
 def get_plan(plan_id: str, user_id: str = Depends(current_user_id)) -> dict:
     record=owned_plan(plan_id,user_id)
@@ -152,14 +160,20 @@ def today(plan_id: str, on: Optional[date] = None, user_id: str = Depends(curren
     return {"plan_id": plan_id, "plan_version":record["version_number"],"plan_needs_update":plan_needs_update(record,profile),"date": target, "sessions": sessions, "cached_at": date.today().isoformat()}
 
 @app.get("/api/v1/plans/{plan_id}/week")
-def week(plan_id: str, week_number: int, user_id: str = Depends(current_user_id)) -> dict:
+def week(plan_id: str, week_number: Optional[int] = None, week_start: Optional[date] = None, user_id: str = Depends(current_user_id)) -> dict:
     record = owned_plan(plan_id,user_id)
-    sessions = [s for s in record["plan"]["sessions"] if date.fromisoformat(s["date"]).isocalendar().week == week_number]
-    if not sessions: return {"plan_id": plan_id, "week": week_number, "days": []}
+    sessions = record["plan"]["sessions"]
+    if week_start:
+        monday=week_start-timedelta(days=week_start.weekday())
+        sessions=[s for s in sessions if monday <= date.fromisoformat(s["date"]) < monday+timedelta(days=7)]
+    else:
+        if week_number is None: raise HTTPException(422,"Provide week_start or week_number")
+        sessions=[s for s in sessions if date.fromisoformat(s["date"]).isocalendar().week == week_number]
+        if not sessions: return {"plan_id": plan_id, "week": week_number, "days": []}
+        first=min(date.fromisoformat(s["date"]) for s in sessions)
+        monday=first-timedelta(days=first.weekday())
     profile=REPOSITORIES.get(record["athlete_id"]) or {}
     calendar={item["date"]:item for item in record["plan"].get("calendar_days",[])}
-    first=min(date.fromisoformat(s["date"]) for s in sessions)
-    monday=first-timedelta(days=first.weekday())
     # The newest saved override for this week takes precedence.  It is applied
     # only to this read model; the underlying plan and permanent profile stay intact.
     matching_override=next((item["payload"] for item in REPOSITORIES.weekly_overrides(record["athlete_id"])
@@ -172,7 +186,7 @@ def week(plan_id: str, week_number: int, user_id: str = Depends(current_user_id)
         current=monday+timedelta(days=offset); day_sessions=[s for s in sessions if s["date"]==current.isoformat()]
         state=calendar.get(current.isoformat(),{}).get("state","no_additional_session")
         days.append({"date":current.isoformat(),"day":current.strftime("%A"),"state":state,"sessions":day_sessions})
-    return {"plan_id": plan_id,"plan_version":record["version_number"],"plan_needs_update":plan_needs_update(record,profile), "week": week_number, "days": days, "weekly_override_applied":bool(matching_override)}
+    return {"plan_id": plan_id,"plan_version":record["version_number"],"plan_needs_update":plan_needs_update(record,profile), "week": monday.isocalendar().week, "week_start":monday.isoformat(), "days": days, "weekly_override_applied":bool(matching_override)}
 
 @app.get("/api/v1/plans/{plan_id}/calendar")
 def calendar(plan_id: str, user_id: str = Depends(current_user_id)) -> dict:

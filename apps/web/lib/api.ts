@@ -13,9 +13,10 @@ export function getCurrentAthlete(): Promise<AthleteResponse & {plan_id:string|n
 export function getAccountAthletes(): Promise<{athletes:AthleteCandidate[]}> { return request("/account/athletes"); }
 export function updateAthlete(athleteId:string, athlete_profile:Record<string,unknown>, expected_revision:number): Promise<AthleteResponse> { return request(`/athletes/${athleteId}`,{method:"PUT",body:JSON.stringify({athlete_profile,expected_revision})}); }
 export function generateAthletePlan(athleteId:string): Promise<PlanResponse> { return request(`/athletes/${athleteId}/plans/generate`,{method:"POST",body:"{}"}); }
+export function getLatestAthletePlan(athleteId:string): Promise<{plan_id:string;athlete_id:string;version_number:number;plan_needs_update:boolean;plan:Plan}> { return request(`/athletes/${athleteId}/plans/latest`); }
 export function getPlan(planId:string): Promise<{plan_id:string; athlete_id:string; version_number:number; plan_needs_update:boolean; plan:Plan}> { return request(`/plans/${planId}`); }
 export async function getToday(planId:string): Promise<{sessions:PlanSession[];plan_needs_update:boolean;plan_version:number}> { return request(`/plans/${planId}/today`); }
-export function getWeek(planId:string, weekNumber:number): Promise<{plan_needs_update:boolean;plan_version:number;days:{date:string;day:string;state:CalendarDay["state"];sessions:PlanSession[]}[]}> { return request(`/plans/${planId}/week?week_number=${weekNumber}`); }
+export function getWeek(planId:string, weekStart:string): Promise<{plan_needs_update:boolean;plan_version:number;week_start:string;days:{date:string;day:string;state:CalendarDay["state"];sessions:PlanSession[]}[]}> { return request(`/plans/${planId}/week?week_start=${encodeURIComponent(weekStart)}`); }
 export function getCalendar(planId:string): Promise<{plan_needs_update:boolean;plan_version:number;days:(CalendarDay&{sessions:PlanSession[]})[];phases:{date:string;phase:string;race_event?:string}[]}> { return request(`/plans/${planId}/calendar`); }
 export type RacePosting={posting_id:string;title:string;start_date:string;end_date:string;location:string;notes:string;audience_levels:("beginner"|"intermediate"|"advanced")[];updated_at?:string};
 export function getRacePostings():Promise<{postings:RacePosting[]}>{return request("/race-postings");}
