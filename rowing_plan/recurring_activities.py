@@ -35,6 +35,15 @@ def normalize_recurring_schedule_for_planning(profile: dict) -> dict:
             # Materialise it only in this planning/save adapter so validation
             # and placement see the same safe candidate set.
             activity["allowed_days"] = available_days
+        if activity.get("activity_type") == "strength":
+            rules = activity.get("same_day_rules", {})
+            # The legacy flag granted permission for an easy add-on; it never
+            # meant the athlete requested a required 35-minute prescription.
+            # The explicit modern object wins whenever it exists.  This runs
+            # on a planning copy for old Profiles and becomes durable only on
+            # an explicit Profile save.
+            if not isinstance(activity.get("alternate_cardio"), dict) and rules.get("alternate_ut2_allowed"):
+                activity["alternate_cardio"] = {"mode": "optional", "compatibility_source": "legacy_alternate_ut2_allowed"}
         if activity.get("activity_type") != "rest":
             continue
         flexible_rest = True

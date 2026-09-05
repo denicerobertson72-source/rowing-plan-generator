@@ -2,6 +2,7 @@
 from __future__ import annotations
 from datetime import date, timedelta, datetime
 from collections import defaultdict
+import re
 from .periodization import phase_for_day, parse, build_phases, build_season_phases, build_weekly_training_intents, PLANNING_MODEL_VERSION
 from .session_selector import load_library, select_session
 from .power_profile import target_for_band
@@ -32,7 +33,7 @@ def _recurring_commitments(profile, start, end):
     if activities is None: return {}, []
     commitments=defaultdict(list); moves=[]; audits=[]; week_start=start-timedelta(days=start.weekday())
     available_days=[item.get("weekday") for item in profile.get("weekly_availability",[]) if item.get("available",True) and item.get("weekday")]
-    preferred_long_days=set(profile.get("preferences",{}).get("preferred_long_session_days",[]))
+    preferred_long_days=set(profile.get("preferences",{}).get("preferred_long_session_days",[])) & set(available_days)
     while week_start<=end:
         fixed_days={day for activity in activities if activity.get("scheduling_status")=="fixed" for day in activity.get("fixed_days",[])}
         # Tuesday is the engine's normal quality-row candidate; scorer avoids
@@ -74,6 +75,16 @@ def _commitment(activity_type, day, phase, avail, activity):
     if activity_type=="strength":
         return {"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":activity.get("scheduling_status")=="fixed","mode":"strength","session_id":"LIFT","title":"Heavy lifting","total_cardio_minutes":0,"rowing_minutes":0,"quality_minutes":0,"band":"STRENGTH","structure":"Scheduled strength commitment."}
     return {"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":activity.get("scheduling_status")=="fixed","mode":"on_water","session_id":"COACHED","title":"Private coaching" if activity_type=="private_coaching" else "Coached row","total_cardio_minutes":min(50,avail.get("max_training_minutes",50)),"rowing_minutes":min(50,avail.get("max_training_minutes",50)),"quality_minutes":0,"band":"UT2/UT1","structure":"Coach-led technique and aerobic work.","warning":"Coach instructions take priority."}
+
+def _concrete_template_structure(template: dict, minutes: int) -> str:
+    """Resolve catalog ranges before a fallback workout reaches a PlanVersion."""
+    structure=template["work_structure"]
+    match=re.search(r"(\d+)\s*×\s*(\d+)–(\d+)\s*minutes",structure)
+    if match:
+        repetitions,low,high=(int(value) for value in match.groups())
+        work=max(low,min(high,round(max(1,minutes-12)/repetitions)))
+        structure=structure[:match.start()]+f"{repetitions} × {work} min"+structure[match.end():]
+    return re.sub(r"(\d+)–(\d+)\s*minutes",lambda item:f"{item.group(1)} min",structure)
 def _session(day, phase, avail, library, band, power, race_type, structure_preference="varied", fixed=False, title=None, role=None, experience="intermediate", history=None):
     mode=next((m for m in avail.get("rowing_modes",[]) if m in ("on_water","erg")),"erg")
     minutes=min(avail.get("max_training_minutes",60), 90 if role=="LONG_AEROBIC" else 60 if band in ("UT2","UT1") else 50)
@@ -88,7 +99,7 @@ def _session(day, phase, avail, library, band, power, race_type, structure_prefe
     if not template: return None
     anchor=target_for_band(power,band) if mode=="erg" else None
     watts = round((anchor["target_watts_low"]+anchor["target_watts_high"])/2,1) if anchor else None
-    return {"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":fixed,"mode":mode,"session_id":template["session_id"],"title":title or template["title"],"total_cardio_minutes":minutes,"rowing_minutes":minutes,"quality_minutes":minutes if band in ("AT","TR","AN","PP") else 0,"band":band,"structure":template["work_structure"],"recovery":template["recovery_structure"],"technical_cue":template["technical_cues"][0],"rate_guide":template.get("spm_guidance"),"source_basis_ids":template["source_basis_ids"],"power_target_method":anchor["formula"] if anchor else "Intensity provider / HRR-RPE guidance", "source_anchor":anchor["source_test"] if anchor else None,"target_watts":watts,"split_guide":format_split(watts_to_split_seconds(watts)) if watts else None,"confidence":anchor["confidence"] if anchor else "low","assumptions":anchor["assumptions"] if anchor else ["Follow rate, breathing, and RPE where exact power is unavailable."]}
+    return {"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":fixed,"mode":mode,"session_id":template["session_id"],"title":title or template["title"],"total_cardio_minutes":minutes,"rowing_minutes":minutes,"quality_minutes":minutes if band in ("AT","TR","AN","PP") else 0,"band":band,"structure":_concrete_template_structure(template,minutes),"recovery":re.sub(r"(\d+)–(\d+)\s*minutes",lambda item:f"{item.group(1)} min",template["recovery_structure"]),"technical_cue":template["technical_cues"][0],"rate_guide":template.get("spm_guidance"),"source_basis_ids":template["source_basis_ids"],"power_target_method":anchor["formula"] if anchor else "Intensity provider / HRR-RPE guidance", "source_anchor":anchor["source_test"] if anchor else None,"target_watts":watts,"split_guide":format_split(watts_to_split_seconds(watts)) if watts else None,"confidence":anchor["confidence"] if anchor else "low","assumptions":anchor["assumptions"] if anchor else ["Follow rate, breathing, and RPE where exact power is unavailable."]}
 
 def _calendar_days(profile, start, end, commitments, modern_schedule):
     """Persist an explicit day state; an empty day is not automatically rest."""
@@ -206,7 +217,10 @@ def _ordinary_row_dates(profile, start, end, commitments, modern_schedule, inten
             strength = next((item for item in activities if item.get("activity_type") == "strength"), None)
             coached = any(item.get("activity_type") in ("private_coaching", "coached_row") for item in activities)
             legacy = availability.get(WEEKDAY[day.weekday()], {})
-            unavailable = not modern_schedule and (not legacy.get("available", False) or legacy.get("fixed_rest", False))
+            # Availability is a capacity constraint for every profile model;
+            # recurring cards choose commitments, but cannot make an otherwise
+            # unavailable day usable for an independent row.
+            unavailable = not legacy.get("available", True) or (not modern_schedule and legacy.get("fixed_rest", False))
             strength_blocks = bool(strength and not strength.get("same_day_rules", {}).get("rowing_allowed", True))
             strength_blocks = strength_blocks or (not modern_schedule and bool(legacy.get("heavy_lifting")) and not legacy.get("row_on_lifting_day", True))
             if rest or unavailable or strength_blocks:
@@ -253,7 +267,7 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
             sessions.append(_commitment("strength",day,phase,a,strength))
             rules=strength.get("same_day_rules",{})
             alternate=strength.get("alternate_cardio",{}) if isinstance(strength.get("alternate_cardio"),dict) else {}
-            alternate_mode=alternate.get("mode", "planned" if rules.get("alternate_ut2_allowed") else "off")
+            alternate_mode=alternate.get("mode", "optional" if rules.get("alternate_ut2_allowed") else "off")
             if alternate_mode in {"optional","planned"}:
                 cap=int(alternate.get("max_minutes", 20 if alternate_mode=="optional" else 35))
                 minutes=max(0,min(cap,a.get("max_training_minutes",60)-int(strength.get("lifting_minutes",0))))

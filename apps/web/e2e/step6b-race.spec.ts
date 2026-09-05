@@ -108,3 +108,31 @@ test("explicit duplicate-profile selection remains active through Profile naviga
   await expect(page.getByText("Synthetic Step 6B Rower")).toBeVisible();
   expect(creates).toBe(0);
 });
+
+test("Profile scheduling editor keeps weekday labels clickable and preserves alternate-aerobic mode", async ({page}) => {
+  await page.setViewportSize({width:375,height:812});
+  await page.goto("/profile");
+  const strength=page.locator(".activity-card").filter({hasText:"STRENGTH"});
+  await strength.getByRole("button",{name:"Edit scheduling"}).click();
+  const preferred=page.getByRole("group",{name:"Preferred days"});
+  const monday=preferred.getByRole("checkbox",{name:"Monday"});
+  await expect(monday).toBeChecked();
+  for (const width of [375,390,430,768,1280]) {
+    await page.setViewportSize({width,height:900});
+    expect(await page.locator(".day-choice").evaluateAll(rows => rows.every(row => {
+      const input=row.querySelector("input")?.getBoundingClientRect(), text=row.querySelector("span")?.getBoundingClientRect();
+      return Boolean(input && text && input.left < text.left && Math.abs(input.top-text.top) < 14);
+    }))).toBeTruthy();
+  }
+  await preferred.getByText("Monday",{exact:true}).click();
+  await expect(monday).not.toBeChecked();
+  await preferred.getByText("Monday",{exact:true}).click();
+  await expect(monday).toBeChecked();
+  await expect(page.getByText("Alternate aerobic after strength")).toBeVisible();
+  await page.getByLabel("Plan setting").selectOption("planned");
+  await page.getByRole("button",{name:"Save activity"}).click();
+  await expect(page.getByRole("status")).toContainText("Training schedule saved");
+  await strength.getByRole("button",{name:"Edit scheduling"}).click();
+  await expect(page.getByRole("group",{name:"Preferred days"}).getByRole("checkbox",{name:"Monday"})).toBeChecked();
+  await expect(page.getByLabel("Plan setting")).toHaveValue("planned");
+});
