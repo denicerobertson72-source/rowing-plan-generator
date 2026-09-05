@@ -1,6 +1,7 @@
 """API-first adapter around the preserved deterministic planning engine."""
 from __future__ import annotations
 import json
+import logging
 import os
 import sys
 from datetime import date, timedelta
@@ -22,10 +23,11 @@ from rowing_plan.workbook import build_workbook
 from .repositories import REPOSITORIES, profile_revision, public_profile, with_profile_revision
 from .auth import current_user_id
 from rowing_plan.training_load import load_summary, session_load_au
-from rowing_plan.recurring_activities import schedule_signature
+from rowing_plan.recurring_activities import normalize_recurring_schedule_for_planning, schedule_signature
 from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, AthleteUpdateRequest, PlanGenerationRequest, PlanResponse, PrivateCheckInRequest, RacePostingRequest, RegenerateRequest, WeeklyOverrideRequest, WorkoutLogRequest
 
 CONFIG = json.loads((ROOT / "config/defaults.json").read_text())
+logger = logging.getLogger(__name__)
 app = FastAPI(title="Rowing Plan API", version="0.4.0", openapi_url="/api/v1/openapi.json", docs_url="/docs")
 allowed_origins=[origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if origin.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
@@ -37,14 +39,15 @@ async def prevent_dynamic_api_caching(request, call_next):
     return response
 
 def build_plan(request: PlanGenerationRequest) -> dict:
-    errors = validate_profile(request.athlete_profile)
-    if errors: raise HTTPException(status_code=422, detail={"validation_errors": errors})
-    bands = build_intensity_profile(request.athlete_profile, CONFIG)
-    power = build_power_profile(request.athlete_profile, CONFIG)
-    try: plan = generate_plan(request.athlete_profile, CONFIG, bands, power, request.locked_sessions)
-    except ValueError as error: raise HTTPException(status_code=422, detail={"planning_conflicts":[str(error)]}) from error
-    hard_errors = hard_constraint_errors(plan, request.athlete_profile)
-    if hard_errors: raise HTTPException(status_code=422, detail={"constraint_errors": hard_errors})
+    profile = normalize_recurring_schedule_for_planning(request.athlete_profile)
+    errors = validate_profile(profile)
+    if errors: raise HTTPException(status_code=422, detail={"error_code":"profile_validation","validation_errors": errors})
+    bands = build_intensity_profile(profile, CONFIG)
+    power = build_power_profile(profile, CONFIG)
+    try: plan = generate_plan(profile, CONFIG, bands, power, request.locked_sessions)
+    except ValueError as error: raise HTTPException(status_code=422, detail={"error_code":"planning_conflict","planning_conflicts":[str(error)]}) from error
+    hard_errors = hard_constraint_errors(plan, profile)
+    if hard_errors: raise HTTPException(status_code=422, detail={"error_code":"hard_constraint","constraint_errors": hard_errors})
     return plan
 
 def owned_athlete(athlete_id: str, user_id: str) -> dict:
@@ -134,7 +137,13 @@ def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: s
     if previous:
         completed={entry["session_key"] for entry in REPOSITORIES.logs_for_plan(previous["plan_id"]) if entry["payload"].get("status")=="completed"}
         locked.extend(session for session in previous["plan"].get("sessions",[]) if f'{session["date"]}:{session.get("session_id")}:{session.get("mode")}' in completed)
-    plan=build_plan(PlanGenerationRequest(athlete_profile=profile, locked_sessions=locked))
+    try:
+        plan=build_plan(PlanGenerationRequest(athlete_profile=profile, locked_sessions=locked))
+    except HTTPException as error:
+        detail=error.detail if isinstance(error.detail, dict) else {}
+        code=detail.get("error_code", "planning_rejected" if error.status_code == 422 else "request_rejected")
+        logger.warning("plan_generation_failed endpoint=athlete_regenerate status=%s code=%s diagnostic=%s", error.status_code, code, "request_rejected")
+        raise
     return PlanResponse(plan_id=REPOSITORIES.save_plan(athlete_id,plan), plan=plan)
 
 @app.get("/api/v1/athletes/{athlete_id}/plans/latest")

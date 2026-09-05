@@ -55,6 +55,7 @@ test("Week presents semantic cards without internal role labels or narrow-screen
 
 test("Week navigation advances within the saved PlanVersion and preserves its URL week", async ({page}) => {
   await page.goto("/week");
+  await expect(page.locator(".week-nav b")).not.toHaveText("Plan week");
   await expect(page.getByText("Previous week")).toBeDisabled();
   const first=await page.locator(".week-nav b").innerText();
   await page.getByText("Next week").click();

@@ -3,9 +3,41 @@ from __future__ import annotations
 from uuid import uuid4
 import hashlib
 import json
+from copy import deepcopy
+
+
+def normalize_recurring_schedule_for_planning(profile: dict) -> dict:
+    """Canonicalize legacy rest metadata for planning without mutating storage.
+
+    Early recurring-activity saves could retain an old fixed Saturday marker on
+    a now-flexible rest card.  The modern card is authoritative; its empty
+    allowed-day list means every available weekday, as it does in the Profile
+    editor.  This adapter is deliberately narrow so invalid modern schedules
+    still reach normal validation unchanged.
+    """
+    if profile.get("recurring_activities") is None:
+        return profile
+    normalized = deepcopy(profile)
+    availability = normalized.get("weekly_availability", [])
+    available_days = [item.get("weekday") for item in availability if item.get("available", True) and item.get("weekday")]
+    flexible_rest = False
+    for activity in normalized["recurring_activities"]:
+        if activity.get("activity_type") != "rest" or activity.get("scheduling_status") == "fixed":
+            continue
+        flexible_rest = True
+        activity["fixed_days"] = []
+        activity["planner_may_choose_day"] = activity.get("scheduling_status") == "flexible"
+        if activity.get("scheduling_status") == "flexible" and not activity.get("allowed_days"):
+            activity["allowed_days"] = available_days
+    if flexible_rest:
+        normalized.setdefault("preferences", {})["fixed_rest_weekdays"] = []
+        for item in availability:
+            item["fixed_rest"] = False
+    return normalized
 
 def schedule_signature(profile: dict) -> str:
     """Stable fingerprint of fields that change future-plan placement."""
+    profile = normalize_recurring_schedule_for_planning(profile)
     source={
         "recurring_activities":migrate_legacy_availability(profile),
         "season":{key:profile.get("season",{}).get(key) for key in ("start_date","end_date","current_weekly_endurance_minutes","target_peak_weekly_endurance_minutes","default_block_pattern")},

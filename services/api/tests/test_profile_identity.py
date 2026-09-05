@@ -56,3 +56,37 @@ def test_revision_conflict_preserves_newer_profile_and_reload_can_save():
     assert stale_b.status_code == 409
     assert latest["athlete_profile"]["athlete"]["display_name"] == "Saved by A"
     assert saved_b.status_code == 200 and saved_b.json()["profile_revision"] == 2
+
+
+def test_real_profile_shaped_regeneration_normalizes_legacy_flexible_rest_without_mutating_profile():
+    """Exercise the PWA regeneration route, not the direct planner helper."""
+    with TemporaryDirectory() as directory:
+        client, previous=client_for_database(Path(directory)/"regeneration.sqlite3")
+        try:
+            profile=exported_runtime_profile()
+            # This is the deployed-profile shape: the flexible rest card still
+            # carries old Saturday markers, while coaching uses modern cards.
+            profile["recurring_activities"].extend([
+                {"activity_id":"private","activity_type":"private_coaching","sessions_per_week":1,"scheduling_status":"fixed","fixed_days":["wednesday"],"preferred_days":[],"allowed_days":[],"prohibited_days":[],"planner_may_choose_day":False},
+                {"activity_id":"coach","activity_type":"coached_row","sessions_per_week":1,"scheduling_status":"flexible","fixed_days":[],"preferred_days":[],"allowed_days":["tuesday","thursday"],"prohibited_days":[],"planner_may_choose_day":True},
+            ])
+            created=client.post("/api/v1/athletes",json={"athlete_profile":profile})
+            athlete_id=created.json()["athlete_id"]
+            initial=client.post(f"/api/v1/athletes/{athlete_id}/plans/generate",json={})
+            generated=client.post(f"/api/v1/athletes/{athlete_id}/plans/generate",json={})
+            plan_id=generated.json()["plan_id"]
+            persisted=REPOSITORIES.get_plan(plan_id)
+            original=REPOSITORIES.get_plan(initial.json()["plan_id"])
+            week=client.get(f"/api/v1/plans/{plan_id}/week?week_start=2026-09-07")
+            season=client.get(f"/api/v1/plans/{plan_id}/season")
+            stored=REPOSITORIES.get(athlete_id)
+        finally:
+            REPOSITORIES._instance=previous
+    assert created.status_code == initial.status_code == generated.status_code == week.status_code == season.status_code == 200
+    assert initial.json()["plan_id"] != plan_id
+    assert original and original["version_number"] == 1
+    assert persisted and persisted["athlete_id"] == athlete_id and persisted["version_number"] == 2
+    intent=next(item for item in persisted["plan"]["weekly_training_intents"] if item["week_start"] == "2026-09-07")
+    assert {"target_total_rowing_exposures","target_coached_rowing_exposures","target_independent_rowing_exposures"} <= intent.keys()
+    assert stored["recurring_activities"][1]["fixed_days"] == ["saturday"]
+    assert next(item for item in stored["weekly_availability"] if item["weekday"] == "saturday")["fixed_rest"] is True
