@@ -109,6 +109,60 @@ def test_real_profile_shaped_regeneration_normalizes_legacy_flexible_rest_withou
     assert next(item for item in stored["weekly_availability"] if item["weekday"] == "saturday")["fixed_rest"] is False
 
 
+def test_legacy_profile_explicit_save_canonicalizes_capability_without_changing_read_time_data():
+    """A sanitized production-shaped legacy Profile upgrades only on explicit save."""
+    with TemporaryDirectory() as directory:
+        client, previous=client_for_database(Path(directory)/"legacy-upgrade.sqlite3")
+        try:
+            profile=exported_runtime_profile()
+            profile["athlete"]["current_rowing_sessions_per_week"]=3
+            profile["athlete"].pop("current_approx_weekly_rowing_minutes")
+            profile["races"]=[]
+            profile["season"].update({"start_date":"2026-09-07","end_date":"2026-10-18"})
+            profile["preferences"]["future_compatible_fixture"]={"preserve":True}
+            profile["recurring_activities"].extend([
+                {"activity_id":"private","activity_type":"private_coaching","sessions_per_week":1,"scheduling_status":"fixed","fixed_days":[],"preferred_days":[],"allowed_days":["wednesday"],"prohibited_days":[],"planner_may_choose_day":False,"same_day_rules":{"rowing_allowed":False}},
+                {"activity_id":"coach","activity_type":"coached_row","sessions_per_week":1,"scheduling_status":"flexible","fixed_days":[],"preferred_days":[],"allowed_days":["tuesday","thursday"],"prohibited_days":[],"planner_may_choose_day":True},
+            ])
+            created=client.post("/api/v1/athletes",json={"athlete_profile":profile})
+            athlete_id=created.json()["athlete_id"]
+            # Generating uses a non-mutating planning copy: the persisted raw
+            # legacy flag and unknown fields are untouched before the user saves.
+            legacy_plan=client.post(f"/api/v1/athletes/{athlete_id}/plans/generate",json={})
+            before=REPOSITORIES.get(athlete_id)
+            current=client.get(f"/api/v1/athletes/{athlete_id}").json()
+            upgraded=copy.deepcopy(current["athlete_profile"])
+            upgraded["athlete"].update({"current_rowing_sessions_per_week":4,"current_approx_weekly_rowing_minutes":220})
+            upgraded.setdefault("preferences",{})["preferred_long_session_days"]=["sunday"]
+            sunday=next(item for item in upgraded["weekly_availability"] if item["weekday"] == "sunday")
+            sunday["max_training_minutes"]=150
+            saved=client.put(f"/api/v1/athletes/{athlete_id}",json={"athlete_profile":upgraded,"expected_revision":current["profile_revision"]})
+            generated=client.post(f"/api/v1/athletes/{athlete_id}/plans/generate",json={})
+            stored=REPOSITORIES.get(athlete_id)
+            plan=REPOSITORIES.get_plan(generated.json()["plan_id"])["plan"]
+        finally:
+            REPOSITORIES._instance=previous
+
+    assert created.status_code == legacy_plan.status_code == saved.status_code == generated.status_code == 200
+    legacy_strength=next(item for item in before["recurring_activities"] if item["activity_id"] == "lift")
+    assert legacy_strength.get("alternate_cardio") is None
+    assert legacy_strength["same_day_rules"]["alternate_ut2_allowed"] is True
+    stored_strength=next(item for item in stored["recurring_activities"] if item["activity_id"] == "lift")
+    assert stored_strength["alternate_cardio"]["mode"] == "optional"
+    assert stored_strength["alternate_cardio"]["compatibility_source"] == "legacy_alternate_ut2_allowed"
+    assert stored_strength["allowed_days"] == ["monday","friday","tuesday","thursday"]  # ambiguous legacy restriction is retained.
+    assert stored["athlete"]["current_rowing_sessions_per_week"] == 4
+    assert stored["athlete"]["current_approx_weekly_rowing_minutes"] == 220
+    assert stored["preferences"]["preferred_long_session_days"] == ["sunday"]
+    assert stored["preferences"]["future_compatible_fixture"] == {"preserve":True}
+    assert all(item["structure"].find("–") == -1 for item in plan["sessions"])
+    complete=[intent for intent in plan["weekly_training_intents"] if intent["week_start"] <= "2026-10-12"]
+    assert len(complete) == 6
+    assert all(intent["target_independent_rowing_exposures"] >= 2 for intent in complete)
+    sunday_sessions=[item for item in plan["sessions"] if item["date"].endswith(("09-13","09-20","09-27","10-04","10-11","10-18"))]
+    assert any(item.get("session_role") == "LONG_AEROBIC" and item["total_cardio_minutes"] > 60 for item in sunday_sessions)
+
+
 def test_generation_conflict_preserves_safe_scheduler_diagnostic_and_creates_no_plan(caplog):
     profile=synthetic_profile()
     profile["recurring_activities"] = [
