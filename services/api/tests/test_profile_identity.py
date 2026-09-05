@@ -71,6 +71,7 @@ def test_real_profile_shaped_regeneration_normalizes_legacy_flexible_rest_withou
                 {"activity_id":"private","activity_type":"private_coaching","sessions_per_week":1,"scheduling_status":"fixed","fixed_days":["wednesday"],"preferred_days":[],"allowed_days":[],"prohibited_days":[],"planner_may_choose_day":False},
                 {"activity_id":"coach","activity_type":"coached_row","sessions_per_week":1,"scheduling_status":"flexible","fixed_days":[],"preferred_days":[],"allowed_days":["tuesday","thursday"],"prohibited_days":[],"planner_may_choose_day":True},
             ])
+            next(item for item in profile["weekly_availability"] if item["weekday"] == "wednesday")["fixed_coached_row"] = True
             created=client.post("/api/v1/athletes",json={"athlete_profile":profile})
             athlete_id=created.json()["athlete_id"]
             initial=client.post(f"/api/v1/athletes/{athlete_id}/plans/generate",json={})
@@ -79,16 +80,21 @@ def test_real_profile_shaped_regeneration_normalizes_legacy_flexible_rest_withou
             persisted=REPOSITORIES.get_plan(plan_id)
             original=REPOSITORIES.get_plan(initial.json()["plan_id"])
             week=client.get(f"/api/v1/plans/{plan_id}/week?week_start=2026-09-07")
+            first_week=client.get(f"/api/v1/plans/{plan_id}/week?week_start=2026-08-31")
             season=client.get(f"/api/v1/plans/{plan_id}/season")
             stored=REPOSITORIES.get(athlete_id)
         finally:
             REPOSITORIES._instance=previous
-    assert created.status_code == initial.status_code == generated.status_code == week.status_code == season.status_code == 200
+    assert created.status_code == initial.status_code == generated.status_code == week.status_code == first_week.status_code == season.status_code == 200
     assert initial.json()["plan_id"] != plan_id
     assert original and original["version_number"] == 1
     assert persisted and persisted["athlete_id"] == athlete_id and persisted["version_number"] == 2
     intent=next(item for item in persisted["plan"]["weekly_training_intents"] if item["week_start"] == "2026-09-07")
     assert {"target_total_rowing_exposures","target_coached_rowing_exposures","target_independent_rowing_exposures"} <= intent.keys()
+    assert [item["title"] for day in first_week.json()["days"] if day["date"] == "2026-09-02" for item in day["sessions"]] == ["Private coaching"]
+    assert [item["title"] for day in week.json()["days"] if day["date"] == "2026-09-09" for item in day["sessions"]] == ["Private coaching"]
+    commitments=[item for day in persisted["plan"]["calendar_days"] if "2026-09-07" <= day["date"] <= "2026-09-13" for item in day["commitments"]]
+    assert {kind:sum(item["activity_type"] == kind for item in commitments) for kind in ("strength","private_coaching","coached_row","rest")} == {"strength":2,"private_coaching":1,"coached_row":1,"rest":1}
     assert stored["recurring_activities"][1]["fixed_days"] == ["saturday"]
     assert next(item for item in stored["weekly_availability"] if item["weekday"] == "saturday")["fixed_rest"] is True
 
@@ -121,3 +127,4 @@ def test_generation_conflict_preserves_safe_scheduler_diagnostic_and_creates_no_
     assert "code=planning_conflict" in caplog.text
     assert "conflict_type=recurring_activity_placement" in caplog.text
     assert "activity_type=coached_row" in caplog.text
+    assert "fixed_days=[]" in caplog.text

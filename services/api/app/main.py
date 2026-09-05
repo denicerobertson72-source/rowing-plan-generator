@@ -144,7 +144,7 @@ def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: s
         detail=error.detail if isinstance(error.detail, dict) else {}
         code=detail.get("error_code", "planning_rejected" if error.status_code == 422 else "request_rejected")
         diagnostic=detail.get("diagnostic") if isinstance(detail.get("diagnostic"), dict) else {}
-        logger.warning("plan_generation_failed endpoint=athlete_regenerate status=%s code=%s conflict_type=%s reason=%s activity_type=%s scheduling_status=%s requested_frequency=%s week_start=%s validation_rule=%s", error.status_code, code, diagnostic.get("conflict_type","request_rejected"), diagnostic.get("reason","request_rejected"), diagnostic.get("activity_type"), diagnostic.get("scheduling_status"), diagnostic.get("requested_frequency"), diagnostic.get("week_start"), diagnostic.get("validation_rule"))
+        logger.warning("plan_generation_failed endpoint=athlete_regenerate status=%s code=%s conflict_type=%s reason=%s activity_type=%s scheduling_status=%s requested_frequency=%s candidate_days=%s prohibited_days=%s fixed_days=%s week_start=%s validation_rule=%s", error.status_code, code, diagnostic.get("conflict_type","request_rejected"), diagnostic.get("reason","request_rejected"), diagnostic.get("activity_type"), diagnostic.get("scheduling_status"), diagnostic.get("requested_frequency"), diagnostic.get("candidate_days"), diagnostic.get("prohibited_days"), diagnostic.get("fixed_days"), diagnostic.get("week_start"), diagnostic.get("validation_rule"))
         raise
     return PlanResponse(plan_id=REPOSITORIES.save_plan(athlete_id,plan), plan=plan)
 
