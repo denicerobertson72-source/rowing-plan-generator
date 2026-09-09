@@ -98,7 +98,9 @@ def test_pass55_top_weekly_candidates_explain_the_stable_normal_week_layout():
         winner,runner_up=candidates[:2]
         assert winner["placements"]["lift"]==["monday","friday"]
         assert winner["placements"]["rest"]==["saturday"]
-        assert winner["score"]-runner_up["score"]==4
+        # Tuesday quality is now an actual weekly demand, so the score gap is
+        # smaller without changing the genuinely best normal-week layout.
+        assert winner["score"]-runner_up["score"]==2
         assert winner["score_components"]["rest_recovery_score"]==4
         assert winner["score_components"]["strength_preference_score"]==6
 

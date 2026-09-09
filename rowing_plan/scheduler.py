@@ -24,7 +24,7 @@ def _availability(profile): return {x["weekday"]:x for x in profile["weekly_avai
 def _race(day,races): return next((r for r in races if day in race_dates(r)),None)
 def _practice(day,races):
     return next((session for race in races for session in race.get("practice_sessions", []) if session.get("date") == day.isoformat()), None)
-def _recurring_commitments(profile, start, end):
+def _recurring_commitments(profile, start, end, weekly_hard_session_days=None, weekly_unavailable_days=None, weekly_suppressed_activity_types=None):
     """Choose recurring placements for each calendar week before sessions are built.
 
     Legacy profiles keep their weekday matrix unchanged.  A profile with the
@@ -36,24 +36,29 @@ def _recurring_commitments(profile, start, end):
     commitments=defaultdict(list); moves=[]; audits=[]; week_start=start-timedelta(days=start.weekday())
     available_days=[item.get("weekday") for item in profile.get("weekly_availability",[]) if item.get("available",True) and item.get("weekday")]
     preferred_long_days=set(profile.get("preferences",{}).get("preferred_long_session_days",[])) & set(available_days)
+    weekly_hard_session_days=weekly_hard_session_days or {}
+    weekly_unavailable_days=weekly_unavailable_days or {}
+    weekly_suppressed_activity_types=weekly_suppressed_activity_types or {}
     while week_start<=end:
         fixed_days={day for activity in activities if activity.get("scheduling_status")=="fixed" for day in activity.get("fixed_days",[])}
-        # Tuesday is the engine's normal quality-row candidate; scorer avoids
-        # placing movable stress there when another athlete-approved day exists.
-        quality_days={"tuesday"}
+        # In the initial intent pass Tuesday is the normal quality candidate.
+        # The final pass supplies current-week quality/race demands instead.
+        quality_days=weekly_hard_session_days.get(week_start.isoformat(), {"tuesday"})
+        current_available=[day for day in available_days if day not in weekly_unavailable_days.get(week_start.isoformat(),set())]
         # Fixed commitments establish the weekly frame before any preferences
         # are scored.  Movable cards are then placed one-by-one without overlap.
         # Flexible rest is placed after strength and coaching commitments. This
         # lets its candidate score preserve independent-row recovery spacing
         # instead of prematurely consuming the only useful gap.
-        ordered=sorted(activities,key=lambda item:(item.get("scheduling_status")!="fixed",item.get("activity_type")=="rest"))
-        ranked=weekly_candidates(ordered,available_days,quality_days,preferred_long_days,hard_session_days=set())
+        active=[item for item in activities if item.get("activity_type") not in weekly_suppressed_activity_types.get(week_start.isoformat(),set())]
+        ordered=sorted(active,key=lambda item:(item.get("scheduling_status")!="fixed",item.get("activity_type")=="rest"))
+        ranked=weekly_candidates(ordered,current_available,quality_days,preferred_long_days & set(current_available),hard_session_days=quality_days)
         if not ranked:
             # Preserve the established conflict diagnostic: identify the first
             # card that fails under the deterministic commitment ordering.
             occupied_days=set(); activity=ordered[0]
             for candidate in ordered:
-                placement=choose(candidate,quality_days,fixed_days,occupied_days,available_days)
+                placement=choose(candidate,quality_days,fixed_days,occupied_days,current_available)
                 activity=candidate
                 if len(placement["scheduled_days"]) != candidate.get("sessions_per_week",1): break
                 occupied_days.update(placement["scheduled_days"])
@@ -245,6 +250,33 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
     library=load_library(); avails=_availability(profile); races=profile.get("races",[]); locked={(s["date"],s.get("session_id")):s for s in (locked_sessions or [])}; sessions=[]; warnings=[]
     start,end=parse(profile["season"]["start_date"]),parse(profile["season"]["end_date"]); commitments,schedule_moves,schedule_candidate_audits=_recurring_commitments(profile,start,end); modern_schedule=profile.get("recurring_activities") is not None
     phases=build_phases(profile); season_phases=build_season_phases(profile); weekly_training_intents=build_weekly_training_intents(profile,season_phases,commitments,modern_schedule)
+    # Commitments used to be scored once against a permanent empty hard-day
+    # set.  Re-run the whole-week placement after intent is known so strength
+    # and rest respond to threshold/race-specific work and actual race or
+    # practice dates.  This is intentionally a placement pass, not a profile
+    # mutation.
+    hard_by_week={}; unavailable_by_week={}; suppressed_by_week={}
+    for intent in weekly_training_intents:
+        week_start=date.fromisoformat(intent["week_start"])
+        hard=set()
+        if set(intent.get("primary_session_roles",[])) & {"THRESHOLD","RACE_PACE","SPRINT_POWER"}:
+            hard.add("tuesday")
+        blocked=set()
+        for offset in range(7):
+            current=week_start+timedelta(days=offset)
+            if _race(current,races):
+                hard.add(WEEKDAY[current.weekday()]); blocked.add(WEEKDAY[current.weekday()])
+            if _practice(current,races):
+                blocked.add(WEEKDAY[current.weekday()])
+        hard_by_week[week_start.isoformat()]=hard
+        unavailable_by_week[week_start.isoformat()]=blocked
+        if {entry["phase_type"] for entry in intent.get("phase_mix",[])} & {"taper","race"}:
+            # A race week prioritizes freshness.  Strength is omitted only
+            # where actual taper/race days make its normal recurrence an
+            # inappropriate commitment; post-race recovery remains separate.
+            suppressed_by_week[week_start.isoformat()]={"strength"}
+    commitments,schedule_moves,schedule_candidate_audits=_recurring_commitments(profile,start,end,hard_by_week,unavailable_by_week,suppressed_by_week)
+    weekly_training_intents=build_weekly_training_intents(profile,season_phases,commitments,modern_schedule)
     ordinary_row_dates=_ordinary_row_dates(profile,start,end,commitments,modern_schedule,weekly_training_intents)
     day_roles={}
     for intent in weekly_training_intents:

@@ -25,7 +25,9 @@ test("Step 6B race draft create, failure guard, duplicate guard, and plan invali
   await expect(page.locator(".race-editor").last()).toContainText("Synthetic Nov A");
   await page.getByRole("button",{name:"Save race"}).click();
   await expect(page.getByRole("status")).toContainText("Race saved");
-  expect((await page.locator(".race-editor").first().innerText())).toContain("Synthetic Nov A");
+  // Races render chronologically, so verify the edited card independent of
+  // its position after its date moves earlier.
+  await expect(page.locator(".race-editor", {hasText:"Synthetic Nov A"})).toContainText("2026-09-15");
   await page.getByRole("button",{name:"Edit race"}).first().click();
   await page.getByLabel("Race name").fill("Failure stays local");
   await page.route("**/api/v1/athletes/**", route => route.fulfill({status:500,body:"failure"}));

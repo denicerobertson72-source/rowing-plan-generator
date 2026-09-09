@@ -22,7 +22,7 @@ def score(activity: dict, selected: tuple[str,...], quality_days: set[str], fixe
         if day in preferred: points+=3
         else: points-=1; reasons.append("moved_from_preferred_day")
         if day in fixed_days: points-=8; reasons.append("avoids_fixed_commitment")
-        if day in quality_days: points-=6; reasons.append("improved_spacing_before_quality_row")
+        if day in quality_days: points-=10; reasons.append("improved_spacing_before_quality_row")
         if day in activity.get("discouraged_days",[]): points-=12; reasons.append("protects_preferred_long_training_day")
     return points,reasons
 

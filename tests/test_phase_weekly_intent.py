@@ -102,7 +102,9 @@ def test_flexible_commitments_and_mixed_taper_week_are_reflected_in_intent():
     normal = next(item for item in plan["weekly_training_intents"] if item["week_start"] == "2026-10-05")
     assert (normal["target_strength_sessions"], normal["target_private_coaching_sessions"], normal["target_coached_row_sessions"], normal["target_rest_days"]) == (2, 1, 1, 1)
     normal_sessions = [item for item in plan["sessions"] if "2026-10-05" <= item["date"] <= "2026-10-11"]
-    assert [item["day"] for item in normal_sessions if item["session_id"] == "LIFT"] == ["Monday", "Friday"]
+    # Threshold/race-specific demand now reaches whole-week placement, so the
+    # movable Monday lift can move to Saturday to protect Tuesday quality.
+    assert [item["day"] for item in normal_sessions if item["session_id"] == "LIFT"] == ["Friday", "Saturday"]
     assert [item["day"] for item in normal_sessions if item["title"] == "Private coaching"] == ["Wednesday"]
     assert [item["day"] for item in normal_sessions if item["title"] == "Coached row"] == ["Thursday"]
     assert not any(item["day"] == "Sunday" for item in normal_sessions)
