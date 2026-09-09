@@ -2,6 +2,7 @@ import json
 from rowing_plan.intensity import build_intensity_profile
 from rowing_plan.power_profile import build_power_profile
 from rowing_plan.scheduler import generate_plan
+from rowing_plan.load_transformations import ensure_concrete_prescription
 from services.api.tests.disposable_browser_fixture import exported_runtime_profile
 
 
@@ -37,3 +38,9 @@ def test_strength_duration_is_distinct_from_rowing_minutes():
     config=json.load(open("config/defaults.json")); plan=generate_plan(profile,config,build_intensity_profile(profile,config),build_power_profile(profile,config))
     lift=next(item for item in plan["sessions"] if item["session_id"]=="LIFT")
     assert lift["strength_minutes"]==55 and lift["total_training_minutes"]==55 and lift["rowing_minutes"]==0 and lift["total_cardio_minutes"]==0
+
+
+def test_final_layer_rewrites_a_stale_concrete_duration_mismatch():
+    session=ensure_concrete_prescription({"structure":"1 × 63 min UT2; 0 min easy recovery.","total_cardio_minutes":46,"modeled_overhead_minutes":12})
+    assert session["structure"]=="1 × 34 min UT2; 0 min easy recovery."
+    assert session["modeled_overhead_minutes"]+34+session["modeled_cooldown_minutes"]==46

@@ -11,7 +11,7 @@ from .recurring_activities import migrate_legacy_availability, schedule_signatur
 from .schedule_scoring import choose, weekly_candidates
 from .conversions import watts_to_split_seconds, format_split
 from .session_selection import VERSION as SELECTION_VERSION, assign_week_roles, select_and_instantiate
-from .load_transformations import VERSION as TRANSFORMATION_VERSION, transform
+from .load_transformations import VERSION as TRANSFORMATION_VERSION, transform, ensure_concrete_prescription
 
 WEEKDAY=["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
 class PlanningConflict(ValueError):
@@ -348,6 +348,10 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
     lock_dates={s["date"] for s in locked_sessions or []}
     if lock_dates:
         sessions=[s for s in sessions if s["date"] not in lock_dates]+[s for s in locked_sessions if s["date"] in lock_dates]
+    # Final PlanVersion invariant: no later reconciliation, lock restoration,
+    # or future transformation may leave an athlete-facing interval string at
+    # odds with its serialized duration.
+    sessions=[ensure_concrete_prescription(s) for s in sessions]
     sessions.sort(key=lambda s:(s["date"],str(s.get("session_id"))))
     byweek=defaultdict(list)
     for s in sessions: byweek[date.fromisoformat(s["date"]).isocalendar().week].append(s)
