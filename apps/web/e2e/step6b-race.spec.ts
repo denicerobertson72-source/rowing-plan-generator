@@ -136,3 +136,18 @@ test("Profile scheduling editor keeps weekday labels clickable and preserves alt
   await expect(page.getByRole("group",{name:"Preferred days"}).getByRole("checkbox",{name:"Monday"})).toBeChecked();
   await expect(page.getByLabel("Plan setting")).toHaveValue("planned");
 });
+
+test("Race editor distinguishes event dates, competition dates, and course practice", async ({page}) => {
+  await page.goto("/profile");
+  await page.getByRole("button",{name:"Add race"}).click();
+  await page.getByLabel("Race name").fill("Two-day course event");
+  await page.getByLabel("Event start date").fill("2026-10-16");
+  await page.getByLabel("Event end date").fill("2026-10-17");
+  const competition=page.getByRole("group",{name:"Actual competition day(s)"}).locator('input[type="checkbox"]');
+  const practice=page.getByRole("group",{name:"Optional event sessions"}).locator('input[type="checkbox"]');
+  await competition.nth(0).uncheck();
+  await competition.nth(1).check();
+  await practice.nth(0).check();
+  await page.getByRole("button",{name:"Save race"}).click();
+  await expect(page.getByRole("status")).toContainText("Race saved");
+});

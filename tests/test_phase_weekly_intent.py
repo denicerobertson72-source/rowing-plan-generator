@@ -89,7 +89,7 @@ def test_flexible_commitments_and_mixed_taper_week_are_reflected_in_intent():
     profile["races"] = [
         {"event_name": "September C", "start_date": "2026-09-26", "end_date": "2026-09-26", "priority": "C", "race_type": "head_5k"},
         {"event_name": "October B", "start_date": "2026-10-17", "end_date": "2026-10-17", "priority": "B", "race_type": "head_5k"},
-        {"event_name": "November A", "start_date": "2026-11-07", "end_date": "2026-11-08", "priority": "A", "race_type": "head_5k"},
+        {"event_name": "November A", "start_date": "2026-11-07", "end_date": "2026-11-08", "race_dates": ["2026-11-07", "2026-11-08"], "priority": "A", "race_type": "head_5k"},
     ]
     profile["recurring_activities"] = [
         {"activity_id": "private", "activity_type": "private_coaching", "sessions_per_week": 1, "scheduling_status": "fixed", "fixed_days": ["wednesday"], "preferred_days": [], "allowed_days": [], "prohibited_days": []},

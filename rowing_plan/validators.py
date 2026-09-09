@@ -14,6 +14,12 @@ def validate_profile(profile: dict) -> list[str]:
             continue
         if r.get("start_date","") > r.get("end_date",""): errors.append(f"Race {r.get('event_name','')} ends before it starts.")
         if r.get("priority") not in ("A","B","C"): errors.append(f"Race {r.get('event_name','')} needs an A, B, or C priority.")
+        if "race_dates" in r and not r["race_dates"]: errors.append(f"Race {r.get('event_name','')} needs at least one actual competition date.")
+        for race_date in r.get("race_dates", []):
+            if not isinstance(race_date, str) or not r["start_date"] <= race_date <= r["end_date"]: errors.append(f"Race date for {r.get('event_name','')} must be inside its event dates.")
+        for practice in r.get("practice_sessions", []):
+            practice_date=practice.get("date") if isinstance(practice,dict) else None
+            if not isinstance(practice_date, str) or not r["start_date"] <= practice_date <= r["end_date"]: errors.append(f"Practice date for {r.get('event_name','')} must be inside its event dates.")
     for t in (profile.get("tests",{}).get("multi_duration_power_tests") or {}).values():
         if isinstance(t,dict) and t.get("value_watts") is not None and t["value_watts"] <= 0: errors.append("Test watts must be positive.")
     athlete=profile.get("athlete",{})

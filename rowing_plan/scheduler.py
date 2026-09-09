@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta, datetime
 from collections import defaultdict
 import re
-from .periodization import phase_for_day, parse, build_phases, build_season_phases, build_weekly_training_intents, PLANNING_MODEL_VERSION
+from .periodization import phase_for_day, parse, race_dates, first_race_date, last_race_date, build_phases, build_season_phases, build_weekly_training_intents, PLANNING_MODEL_VERSION
 from .session_selector import load_library, select_session
 from .power_profile import target_for_band
 from .evidence import METHODOLOGY_STATEMENT, RULES
@@ -21,7 +21,9 @@ class PlanningConflict(ValueError):
         self.details = details
 
 def _availability(profile): return {x["weekday"]:x for x in profile["weekly_availability"]}
-def _race(day,races): return next((r for r in races if parse(r["start_date"])<=day<=parse(r["end_date"])),None)
+def _race(day,races): return next((r for r in races if day in race_dates(r)),None)
+def _practice(day,races):
+    return next((session for race in races for session in race.get("practice_sessions", []) if session.get("date") == day.isoformat()), None)
 def _recurring_commitments(profile, start, end):
     """Choose recurring placements for each calendar week before sessions are built.
 
@@ -210,7 +212,7 @@ def _ordinary_row_dates(profile, start, end, commitments, modern_schedule, inten
         ordinary_candidates = []
         for offset in range(7):
             day = week_start + timedelta(days=offset)
-            if not start <= day <= end or _race(day, races):
+            if not start <= day <= end or _race(day, races) or _practice(day, races):
                 continue
             activities = commitments.get(day.isoformat(), []) if modern_schedule else []
             rest = any(item.get("activity_type") == "rest" for item in activities)
@@ -247,15 +249,18 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
     day_roles={}
     for intent in weekly_training_intents:
         week_start=date.fromisoformat(intent["week_start"]); dates=[d for d in ordinary_row_dates if week_start<=date.fromisoformat(d)<=week_start+timedelta(days=6)]
-        next_race_type=next((r.get("race_type","head_5k") for r in races if parse(r["end_date"])>=week_start),"head_5k")
+        next_race_type=next((r.get("race_type","head_5k") for r in races if last_race_date(r)>=week_start),"head_5k")
         preferred_long_dates=[d for d in dates if WEEKDAY[date.fromisoformat(d).weekday()] in profile.get("preferences",{}).get("preferred_long_session_days",[])]
         day_roles.update(assign_week_roles(dates,intent,next_race_type,preferred_long_dates))
     selection_history=[]; day=start
     while day<=end:
-        phase,next_race=phase_for_day(day,races); a=avails.get(WEEKDAY[day.weekday()],{}); race=_race(day,races); key_race_type=(next_race or races[0] if races else {}).get("race_type","head_5k")
+        phase,next_race=phase_for_day(day,races); a=avails.get(WEEKDAY[day.weekday()],{}); race=_race(day,races); practice=_practice(day,races); key_race_type=(next_race or races[0] if races else {}).get("race_type","head_5k")
         if race:
             starts=int(race.get("expected_starts",1)); estimated=starts*20
             sessions.append({"date":day.isoformat(),"day":day.strftime("%A"),"phase":"race","fixed":True,"mode":"race","session_id":"RACE","title":race["event_name"],"total_cardio_minutes":estimated,"rowing_minutes":estimated,"quality_minutes":estimated,"band":"RACE","structure":"Race day; no ordinary training.","race_distance":race.get("race_type"),"race_priority":race.get("priority"),"expected_starts":starts,"warmup_guidance":"Use the athlete's practiced race warm-up.","cooldown_guidance":"Easy movement and recovery between starts.","warning":None}); day+=timedelta(days=1); continue
+        if practice:
+            minutes=int(practice.get("duration_minutes", 30))
+            sessions.append({"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":True,"mode":"on_water","session_id":"COURSE_PRACTICE","title":practice.get("title") or "Course practice","total_cardio_minutes":minutes,"rowing_minutes":minutes,"quality_minutes":0,"band":"TECHNIQUE","structure":practice.get("notes") or "Course familiarization; keep the load controlled and preserve race readiness.","warning":"Athlete/coach-directed familiarization; not counted as race load.","optional_add_on":False,"race_event_practice":True}); day+=timedelta(days=1); continue
         today_activities=commitments.get(day.isoformat(),[]) if modern_schedule else []
         rest=next((item for item in today_activities if item.get("activity_type")=="rest"),None)
         strength=next((item for item in today_activities if item.get("activity_type")=="strength"),None)
@@ -300,7 +305,7 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
         day+=timedelta(days=1)
     # Transform fixed strength after placement; ordinary rows were transformed
     # at instantiation. Locked/completed sessions are restored unchanged below.
-    sessions=[transform(s,phase=s.get("phase",""),race_priority=(next((r for r in races if parse(r["start_date"])>=date.fromisoformat(s["date"])),{}) or {}).get("priority")) if s.get("session_id")=="LIFT" else s for s in sessions]
+    sessions=[transform(s,phase=s.get("phase",""),race_priority=(next((r for r in races if first_race_date(r)>=date.fromisoformat(s["date"])),{}) or {}).get("priority")) if s.get("session_id")=="LIFT" else s for s in sessions]
     # restore locked sessions by exact date, preserving byte-identical dictionaries
     lock_dates={s["date"] for s in locked_sessions or []}
     if lock_dates:

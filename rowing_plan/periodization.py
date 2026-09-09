@@ -30,21 +30,42 @@ def _race_id(race: dict) -> str:
 
 
 def _ordered_races(profile: dict) -> list[dict]:
-    return sorted(profile.get("races", []), key=lambda item: (item.get("start_date", ""), item.get("end_date", ""), item.get("event_name", "")))
+    return sorted(profile.get("races", []), key=lambda item: (first_race_date(item), last_race_date(item), item.get("event_name", "")))
+
+
+def race_dates(race: dict) -> list[date]:
+    """Actual competition dates, never every day of an event window.
+
+    Older profiles only have an event start/end range.  A single-day range is
+    unambiguous; for a multi-day legacy event, plan conservatively for the
+    final day and let the Profile editor ask the athlete to confirm it.
+    """
+    explicit = race.get("race_dates")
+    if isinstance(explicit, list) and explicit:
+        return sorted({parse(value) for value in explicit})
+    return [parse(race["end_date"])]
+
+
+def first_race_date(race: dict) -> date:
+    return race_dates(race)[0]
+
+
+def last_race_date(race: dict) -> date:
+    return race_dates(race)[-1]
 
 
 def phase_for_day(day: date, races: list[dict]) -> tuple[str, dict | None]:
     """Legacy labels used by the current scheduler; do not repurpose them."""
     for race in races:
-        start, end = parse(race["start_date"]), parse(race["end_date"])
-        if start <= day <= end:
+        first, last = first_race_date(race), last_race_date(race)
+        if day in race_dates(race):
             return "race", race
-        if start - timedelta(days=TAPER[race["priority"]]) <= day < start:
+        if first - timedelta(days=TAPER[race["priority"]]) <= day < first:
             return "taper_sharpen", race
-        if end < day <= end + timedelta(days=RECOVERY[race["priority"]]):
+        if last < day <= last + timedelta(days=RECOVERY[race["priority"]]):
             return "race_recovery", race
-    future = [race for race in races if parse(race["start_date"]) > day]
-    return ("race_build" if future and (parse(future[0]["start_date"]) - day).days < 28 else "specific_preparation"), (future[0] if future else None)
+    future = [race for race in races if first_race_date(race) > day]
+    return ("race_build" if future and (first_race_date(future[0]) - day).days < 28 else "specific_preparation"), (future[0] if future else None)
 
 
 def build_phases(profile: dict) -> list[dict]:
@@ -73,16 +94,16 @@ PHASE_DETAILS = {
 
 def _season_phase_for_day(day: date, profile: dict, races: list[dict]) -> tuple[str, dict | None, str]:
     for race in races:
-        start, end, priority = parse(race["start_date"]), parse(race["end_date"]), race.get("priority", "B")
-        if start <= day <= end:
-            return "race", race, "The date falls within this race event."
-        if end < day <= end + timedelta(days=RECOVERY[priority]):
+        first, last, priority = first_race_date(race), last_race_date(race), race.get("priority", "B")
+        if day in race_dates(race):
+            return "race", race, "The date is an actual competition day."
+        if last < day <= last + timedelta(days=RECOVERY[priority]):
             return "post_race_recovery", race, f"Recovery follows the {priority}-priority race."
-        if start - timedelta(days=TAPER[priority]) <= day < start:
+        if first - timedelta(days=TAPER[priority]) <= day < first:
             return "taper", race, f"The {priority}-priority race is within its configurable taper window."
-    future = next((race for race in races if parse(race["start_date"]) > day), None)
+    future = next((race for race in races if first_race_date(race) > day), None)
     if future:
-        days_to_race = (parse(future["start_date"]) - day).days
+        days_to_race = (first_race_date(future) - day).days
         if days_to_race <= 21:
             return "race_specific_preparation", future, "The next race is within 21 days, before its taper window."
         if days_to_race <= 42:
@@ -248,7 +269,7 @@ def build_weekly_training_intents(profile: dict, season_phases: list[dict], comm
     while week_start <= end:
         phase_mix = _phase_mix_for_week(week_start, start, end, season_phases)
         phase = _primary_phase(phase_mix)
-        next_race = next((race for race in races if parse(race["end_date"]) >= week_start), None)
+        next_race = next((race for race in races if last_race_date(race) >= week_start), None)
         rest_days = strength_days = rowing_slots = private_sessions = coached_sessions = 0
         events = []
         for offset in range(7):
@@ -256,16 +277,19 @@ def build_weekly_training_intents(profile: dict, season_phases: list[dict], comm
             if not start <= day <= end:
                 continue
             rest, unavailable, strength_blocks, coached, strength_count, private_count, coached_count = _commitment_state(profile, commitments, day, modern_schedule)
-            race = next((item for item in races if parse(item["start_date"]) <= day <= parse(item["end_date"])), None)
+            race = next((item for item in races if day in race_dates(item)), None)
+            practice = next((session for item in races for session in item.get("practice_sessions", []) if session.get("date") == day.isoformat()), None)
             rest_days += int(rest)
             strength_days += strength_count
             private_sessions += private_count
             coached_sessions += coached_count
             if race:
                 events.append({"type": "race", "date": day.isoformat(), "event_name": race.get("event_name"), "priority": race.get("priority")})
+            if practice:
+                events.append({"type": "event_practice", "date": day.isoformat(), "title": practice.get("title") or "Course practice"})
             if coached:
                 events.append({"type": "coached_commitment", "date": day.isoformat()})
-            if not (rest or unavailable or strength_blocks or race):
+            if not (rest or unavailable or strength_blocks or race or practice):
                 rowing_slots += 1
         week_index = (week_start - first_monday).days // 7
         experience = profile.get("athlete", {}).get("experience_level", "intermediate")
