@@ -55,7 +55,16 @@ def _recurring_commitments(profile, start, end, weekly_hard_session_days=None, w
         # Flexible rest is placed after strength and coaching commitments. This
         # lets its candidate score preserve independent-row recovery spacing
         # instead of prematurely consuming the only useful gap.
-        active=[item for item in activities if item.get("activity_type") not in weekly_suppressed_activity_types.get(week_start.isoformat(),set())]
+        active=[]
+        for item in activities:
+            if item.get("activity_type") in weekly_suppressed_activity_types.get(week_start.isoformat(),set()):
+                continue
+            if item.get("activity_type") == "strength" and (item.get("duration_minutes") is not None or item.get("typical_strength_minutes") is not None):
+                availability_by_day=_availability(profile)
+                too_short={day for day in current_available if int(availability_by_day.get(day,{}).get("max_training_minutes",0)) < _strength_minutes(item,availability_by_day.get(day,{}))}
+                if too_short:
+                    item={**item,"prohibited_days":list(dict.fromkeys([*item.get("prohibited_days",[]),*too_short]))}
+            active.append(item)
         ordered=sorted(active,key=lambda item:(item.get("scheduling_status")!="fixed",item.get("activity_type")=="rest"))
         ranked=weekly_candidates(ordered,current_available,quality_days,preferred_long_days & set(current_available),hard_session_days=quality_days)
         if not ranked:

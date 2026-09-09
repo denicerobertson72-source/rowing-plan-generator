@@ -131,11 +131,14 @@ test("Profile scheduling editor keeps weekday labels clickable and preserves alt
   await preferred.getByText("Monday",{exact:true}).click();
   await expect(monday).toBeChecked();
   await expect(page.getByText("Alternate aerobic after strength")).toBeVisible();
+  await expect(page.getByLabel("Typical strength session duration")).toHaveValue("60");
+  await page.getByLabel("Typical strength session duration").fill("45");
   await page.getByLabel("Plan setting").selectOption("planned");
   await page.getByRole("button",{name:"Save activity"}).click();
   await expect(page.getByRole("status")).toContainText("Training schedule saved");
   await strength.getByRole("button",{name:"Edit scheduling"}).click();
   await expect(page.getByRole("group",{name:"Preferred days"}).getByRole("checkbox",{name:"Monday"})).toBeChecked();
+  await expect(page.getByLabel("Typical strength session duration")).toHaveValue("45");
   await expect(page.getByLabel("Plan setting")).toHaveValue("planned");
 });
 
