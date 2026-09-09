@@ -75,8 +75,27 @@ test("Season recovers a missing local plan ID from the selected athlete", async 
   const session=await page.evaluate(() => JSON.parse(localStorage.getItem("rowing-plan-session-v1")||"{}"));
   await page.evaluate(value => localStorage.setItem("rowing-plan-session-v1",JSON.stringify({...value,planId:"missing-plan"})),session);
   await page.goto("/season");
-  await expect(page.getByText("Season plan")).toBeVisible();
+  await expect(page.getByRole("heading",{name:"Season arc"})).toBeVisible();
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("rowing-plan-session-v1")||"{}").planId)).not.toBe("missing-plan");
+});
+
+test("Season roadmap uses the saved PlanVersion and links to its weeks", async ({page}) => {
+  let regenerations=0;
+  page.on("request", request => { if (request.method()==="POST" && request.url().includes("/plans/generate")) regenerations++; });
+  await page.goto("/profile");
+  await expect(page.getByText("Synthetic Step 6B Rower")).toBeVisible();
+  await page.goto("/season");
+  await expect(page.getByRole("heading",{name:"Season arc"})).toBeVisible();
+  await expect(page.getByRole("heading",{name:"Weekly rowing minutes"})).toBeVisible();
+  await expect(page.getByText("Final planned rowing minutes only; strength and optional cardio are excluded.")).toBeVisible();
+  await expect(page.getByText(/peak \/ key race/)).toBeVisible();
+  const links=page.locator("a.season-week");
+  await expect(links).toHaveCount(10);
+  await links.nth(2).click();
+  await expect(page).toHaveURL(/\/week\?week=2026-09-14/);
+  await expect(page.locator(".week-nav b")).toContainText("Sep 14");
+  expect(regenerations).toBe(0);
+  for (const width of [375,390,430,768,1280]) { await page.setViewportSize({width,height:900}); expect(await page.locator("body").evaluate(element=>element.scrollWidth<=window.innerWidth)).toBeTruthy(); }
 });
 
 test("Onboarding recovers the account athlete when this origin has no local session", async ({page}) => {
