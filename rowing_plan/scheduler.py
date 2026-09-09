@@ -24,6 +24,11 @@ def _availability(profile): return {x["weekday"]:x for x in profile["weekly_avai
 def _race(day,races): return next((r for r in races if day in race_dates(r)),None)
 def _practice(day,races):
     return next((session for race in races for session in race.get("practice_sessions", []) if session.get("date") == day.isoformat()), None)
+def _strength_minutes(activity, avail):
+    return max(1,int(activity.get("duration_minutes") or activity.get("typical_strength_minutes") or avail.get("lifting_minutes") or 60))
+def _legacy_lift(day, phase, avail):
+    minutes=max(1,int(avail.get("lifting_minutes") or 60))
+    return {"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":True,"mode":"strength","session_id":"LIFT","title":"Heavy lifting","total_cardio_minutes":0,"total_training_minutes":minutes,"strength_minutes":minutes,"rowing_minutes":0,"quality_minutes":0,"band":"STRENGTH","structure":"Fixed strength session."}
 def _recurring_commitments(profile, start, end, weekly_hard_session_days=None, weekly_unavailable_days=None, weekly_suppressed_activity_types=None):
     """Choose recurring placements for each calendar week before sessions are built.
 
@@ -80,7 +85,8 @@ def _recurring_commitments(profile, start, end, weekly_hard_session_days=None, w
     return commitments,moves,audits
 def _commitment(activity_type, day, phase, avail, activity):
     if activity_type=="strength":
-        return {"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":activity.get("scheduling_status")=="fixed","mode":"strength","session_id":"LIFT","title":"Heavy lifting","total_cardio_minutes":0,"rowing_minutes":0,"quality_minutes":0,"band":"STRENGTH","structure":"Scheduled strength commitment."}
+        minutes=_strength_minutes(activity,avail)
+        return {"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":activity.get("scheduling_status")=="fixed","mode":"strength","session_id":"LIFT","title":"Heavy lifting","total_cardio_minutes":0,"total_training_minutes":minutes,"strength_minutes":minutes,"rowing_minutes":0,"quality_minutes":0,"band":"STRENGTH","structure":"Scheduled strength commitment."}
     return {"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":activity.get("scheduling_status")=="fixed","mode":"on_water","session_id":"COACHED","title":"Private coaching" if activity_type=="private_coaching" else "Coached row","total_cardio_minutes":min(50,avail.get("max_training_minutes",50)),"rowing_minutes":min(50,avail.get("max_training_minutes",50)),"quality_minutes":0,"band":"UT2/UT1","structure":"Coach-led technique and aerobic work.","warning":"Coach instructions take priority."}
 
 def _concrete_template_structure(template: dict, minutes: int) -> str:
@@ -101,7 +107,7 @@ def _session(day, phase, avail, library, band, power, race_type, structure_prefe
         anchor=target_for_band(power,band) if mode=="erg" else None
         watts=round((anchor["target_watts_low"]+anchor["target_watts_high"])/2,1) if anchor else None
         rate=archetype["rate_range_spm"]
-        return {"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":fixed,"mode":mode,"session_id":archetype["archetype_id"],"title":title or archetype["name"],"total_cardio_minutes":selected["total_minutes"],"rowing_minutes":selected["total_minutes"],"quality_minutes":selected["total_minutes"] if band in ("AT","TR","AN","PP") else 0,"band":band,"structure":f"{selected['repetitions']} × {selected['work_interval_duration']} min {band}; {selected['recovery_duration']} min easy recovery.","recovery":archetype["minimum_recovery_guidance"],"technical_cue":"Maintain posture and connection as the session develops.","rate_guide":rate,"source_basis_ids":archetype["source_ids"],"power_target_method":anchor["formula"] if anchor else "Intensity provider / HRR-RPE guidance","source_anchor":anchor["source_test"] if anchor else None,"target_watts":watts,"split_guide":format_split(watts_to_split_seconds(watts)) if watts else None,"confidence":anchor["confidence"] if anchor else "low","assumptions":anchor["assumptions"] if anchor else ["Follow rate, breathing, and RPE where exact power is unavailable."],"archetype_id":archetype["archetype_id"],"session_role":role,"phase_role":phase,"progression_dimension":selected["progression_dimension"],"selection_reason":selected["selection_reason"],"preference_effect":selected["preference_effect"],"selection_reason_codes":["weekly_intent_role","deterministic_archetype_selection"],"candidate_scores":selected["candidate_scores"],"session_fingerprint":selected["fingerprint"]}
+        return {"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":fixed,"mode":mode,"session_id":archetype["archetype_id"],"title":title or archetype["name"],"total_cardio_minutes":selected["total_minutes"],"rowing_minutes":selected["total_minutes"],"quality_minutes":selected["total_minutes"] if band in ("AT","TR","AN","PP") else 0,"band":band,"structure":f"{selected['repetitions']} × {selected['work_interval_duration']} min {band}; {selected['recovery_duration']} min easy recovery.","modeled_overhead_minutes":12,"recovery":archetype["minimum_recovery_guidance"],"technical_cue":"Maintain posture and connection as the session develops.","rate_guide":rate,"source_basis_ids":archetype["source_ids"],"power_target_method":anchor["formula"] if anchor else "Intensity provider / HRR-RPE guidance","source_anchor":anchor["source_test"] if anchor else None,"target_watts":watts,"split_guide":format_split(watts_to_split_seconds(watts)) if watts else None,"confidence":anchor["confidence"] if anchor else "low","assumptions":anchor["assumptions"] if anchor else ["Follow rate, breathing, and RPE where exact power is unavailable."],"archetype_id":archetype["archetype_id"],"session_role":role,"phase_role":phase,"progression_dimension":selected["progression_dimension"],"selection_reason":selected["selection_reason"],"preference_effect":selected["preference_effect"],"selection_reason_codes":["weekly_intent_role","deterministic_archetype_selection"],"candidate_scores":selected["candidate_scores"],"session_fingerprint":selected["fingerprint"]}
     template=select_session(library,band,phase,race_type,[mode],minutes,structure_preference) or select_session(library,band,"all",race_type,[mode],minutes,structure_preference)
     if not template: return None
     anchor=target_for_band(power,band) if mode=="erg" else None
@@ -298,7 +304,7 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
         strength=next((item for item in today_activities if item.get("activity_type")=="strength"),None)
         coached=next((item for item in today_activities if item.get("activity_type") in ("private_coaching","coached_row")),None)
         if rest or (not modern_schedule and (not a.get("available",False) or a.get("fixed_rest",False))):
-            if not modern_schedule and a.get("heavy_lifting"): sessions.append({"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":True,"mode":"strength","session_id":"LIFT","title":"Heavy lifting","total_cardio_minutes":0,"rowing_minutes":0,"quality_minutes":0,"band":"STRENGTH","structure":"Fixed strength session."})
+            if not modern_schedule and a.get("heavy_lifting"): sessions.append(_legacy_lift(day,phase,a))
             day+=timedelta(days=1); continue
         if modern_schedule and strength:
             sessions.append(_commitment("strength",day,phase,a,strength))
@@ -314,10 +320,10 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
         if modern_schedule and coached:
             sessions.append(_commitment(coached.get("activity_type"),day,phase,a,coached)); day+=timedelta(days=1); continue
         if not modern_schedule and not a.get("available",False):
-            if a.get("heavy_lifting"): sessions.append({"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":True,"mode":"strength","session_id":"LIFT","title":"Heavy lifting","total_cardio_minutes":0,"rowing_minutes":0,"quality_minutes":0,"band":"STRENGTH","structure":"Fixed strength session."})
+            if a.get("heavy_lifting"): sessions.append(_legacy_lift(day,phase,a))
             day+=timedelta(days=1); continue
         if not modern_schedule and a.get("heavy_lifting"):
-            sessions.append({"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":True,"mode":"strength","session_id":"LIFT","title":"Heavy lifting","total_cardio_minutes":0,"rowing_minutes":0,"quality_minutes":0,"band":"STRENGTH","structure":"Fixed strength session."})
+            sessions.append(_legacy_lift(day,phase,a))
             if a.get("alternate_ut2_allowed"):
                 sessions.append({"date":day.isoformat(),"day":day.strftime("%A"),"phase":phase,"fixed":False,"mode":a["alternate_ut2_modes"][0],"session_id":"XL-UT2-01","title":"Post-lifting alternate UT2","total_cardio_minutes":min(35,a["max_training_minutes"]-a.get("lifting_minutes",0)),"rowing_minutes":0,"quality_minutes":0,"band":"UT2","structure":"Continuous easy-to-steady cross-training."})
             day+=timedelta(days=1); continue
@@ -328,7 +334,7 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
         # Taper protection prioritizes easy technical work.
         band = "UT3" if phase in ("taper_sharpen","race_recovery") else ("TR" if day.weekday()==1 and phase in ("race_build","specific_preparation") else "UT2")
         if day.weekday()==3: band="UT2" # Thursday is intentionally optional/easy.
-        role=day_roles.get(day.isoformat())
+        role="RECOVERY" if phase=="race_recovery" else day_roles.get(day.isoformat())
         made=_session(day,phase,a,library,band,power,key_race_type,profile.get("preferences",{}).get("workout_structure_preference","varied"),role=role,experience=profile.get("athlete",{}).get("experience_level","intermediate"),history=selection_history)
         if made:
             made=transform(made,phase=phase,race_priority=(next_race or {}).get("priority"))
