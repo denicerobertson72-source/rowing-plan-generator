@@ -1,5 +1,15 @@
 import { test, expect } from "@playwright/test";
 
+test("Account login uses password-manager fields without app password storage", async ({page}) => {
+  await page.goto("/account");
+  const email=page.getByLabel("Email"), password=page.getByLabel("Password");
+  await expect(email).toHaveAttribute("autocomplete","username");
+  await expect(password).toHaveAttribute("autocomplete","current-password");
+  await password.fill("never-store-this-password");
+  expect(await page.evaluate(() => Object.keys(localStorage).every(key => !localStorage.getItem(key)?.includes("never-store-this-password")))).toBeTruthy();
+  expect(await page.evaluate(() => Object.keys(sessionStorage).every(key => !sessionStorage.getItem(key)?.includes("never-store-this-password")))).toBeTruthy();
+});
+
 test("Step 6B race draft create, failure guard, duplicate guard, and plan invalidation", async ({page}) => {
   let writes=0;
   page.on("request", request => { if (request.method()==="PUT" && request.url().includes("/athletes/")) writes++; });
@@ -72,11 +82,42 @@ test("Week navigation advances within the saved PlanVersion and preserves its UR
 
 test("Season recovers a missing local plan ID from the selected athlete", async ({page}) => {
   await page.goto("/profile");
+  await expect(page.getByText("Synthetic Step 6B Rower")).toBeVisible();
   const session=await page.evaluate(() => JSON.parse(localStorage.getItem("rowing-plan-session-v1")||"{}"));
   await page.evaluate(value => localStorage.setItem("rowing-plan-session-v1",JSON.stringify({...value,planId:"missing-plan"})),session);
   await page.goto("/season");
   await expect(page.getByRole("heading",{name:"Season arc"})).toBeVisible();
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("rowing-plan-session-v1")||"{}").planId)).not.toBe("missing-plan");
+});
+
+test("Season keeps a loaded PlanVersion when selected-profile metadata fails", async ({page}) => {
+  let regenerations=0, accountProfileReads=0;
+  page.on("request", request => { if (request.method()==="POST" && request.url().includes("/plans/generate")) regenerations++; if (request.url().endsWith("/account/athlete")) accountProfileReads++; });
+  await page.goto("/profile");
+  await expect(page.getByText("Synthetic Step 6B Rower")).toBeVisible();
+  const session=await page.evaluate(() => JSON.parse(localStorage.getItem("rowing-plan-session-v1")||"{}"));
+  accountProfileReads=0;
+  await page.route(`**/api/v1/athletes/${session.athleteId}`, route => route.fulfill({status:500,body:"profile metadata unavailable"}));
+  await page.goto("/season");
+  await expect(page.getByRole("heading",{name:"Season arc"})).toBeVisible();
+  await expect(page.getByText("Training season")).toBeVisible();
+  expect(accountProfileReads).toBe(0);
+  expect(regenerations).toBe(0);
+});
+
+test("Season reserves error and empty states for required PlanVersion failures", async ({page}) => {
+  await page.goto("/profile");
+  await expect(page.getByText("Synthetic Step 6B Rower")).toBeVisible();
+  const session=await page.evaluate(() => JSON.parse(localStorage.getItem("rowing-plan-session-v1")||"{}"));
+  await page.evaluate(value => localStorage.setItem("rowing-plan-session-v1",JSON.stringify({...value,planId:"forced-plan-id"})),session);
+  await page.route("**/api/v1/plans/forced-plan-id", route => route.fulfill({status:500,body:"plan unavailable"}));
+  await page.goto("/season");
+  await expect(page.getByText("Couldn’t load this season. Please try again.")).toBeVisible();
+  await page.unroute("**/api/v1/plans/forced-plan-id");
+  await page.evaluate(() => { const saved=JSON.parse(localStorage.getItem("rowing-plan-session-v1")||"{}"); localStorage.setItem("rowing-plan-session-v1",JSON.stringify({...saved,planId:""})); });
+  await page.route(`**/api/v1/athletes/${session.athleteId}/plans/latest`, route => route.fulfill({status:404,body:"No PlanVersion exists"}));
+  await page.goto("/season");
+  await expect(page.getByText("No Plan Version Exists Yet")).toBeVisible();
 });
 
 test("Season roadmap uses the saved PlanVersion and links to its weeks", async ({page}) => {

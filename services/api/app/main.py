@@ -63,7 +63,8 @@ def athlete_summary(record: dict) -> dict:
     athlete=profile.get("athlete",{})
     season=profile.get("season",{})
     blocks=profile.get("tests",{}).get("testing_blocks",[])
-    return {"athlete_id":record["athlete_id"],"updated_at":record["updated_at"],"display_name":athlete.get("display_name") or "Unnamed rower","season_name":season.get("season_name") or "","season_start":season.get("start_date"),"season_end":season.get("end_date"),"race_count":len(profile.get("races",[])),"recurring_activity_count":len(profile.get("recurring_activities",[])),"performance_test_count":sum(len(block.get("performance_tests",[])) for block in blocks if isinstance(block,dict)),"plan_id":record.get("plan_id")}
+    deletion_status=REPOSITORIES.deletion_status(record["athlete_id"])
+    return {"athlete_id":record["athlete_id"],"created_at":record["created_at"],"updated_at":record["updated_at"],"display_name":athlete.get("display_name") or "Unnamed rower","season_name":season.get("season_name") or "","season_start":season.get("start_date"),"season_end":season.get("end_date"),"race_count":len(profile.get("races",[])),"recurring_activity_count":len(profile.get("recurring_activities",[])),"performance_test_count":sum(len(block.get("performance_tests",[])) for block in blocks if isinstance(block,dict)),"plan_id":record.get("plan_id"),"deletion_status":deletion_status,"can_delete":deletion_status=="eligible"}
 def owned_plan(plan_id: str, user_id: str) -> dict:
     record=REPOSITORIES.get_plan(plan_id)
     if not record: raise HTTPException(404,"Plan not found")
@@ -116,6 +117,17 @@ def get_current_athlete(user_id: str = Depends(current_user_id)) -> dict:
 @app.get("/api/v1/account/athletes")
 def get_account_athletes(user_id: str = Depends(current_user_id)) -> dict:
     return {"athletes":[athlete_summary(record) for record in REPOSITORIES.list_for_user(user_id)]}
+
+@app.delete("/api/v1/account/athletes/{athlete_id}")
+def delete_account_athlete(athlete_id: str, selected_athlete_id: Optional[str] = None, user_id: str = Depends(current_user_id)) -> dict:
+    owned_athlete(athlete_id, user_id)
+    if selected_athlete_id == athlete_id:
+        raise HTTPException(409, "Select another athlete profile before deleting this one.")
+    status=REPOSITORIES.delete_empty_athlete(athlete_id)
+    if status == "deleted": return {"status":"deleted","athlete_id":athlete_id}
+    if status == "not_found": raise HTTPException(404,"Athlete not found")
+    reasons={"plan_versions":"Profiles with generated plans cannot be deleted.","athlete_records":"Profiles with saved athlete records cannot be deleted.","meaningful_profile":"Only empty test profiles can be deleted from Account."}
+    raise HTTPException(409, reasons.get(status,"This athlete profile cannot be deleted."))
 
 @app.put("/api/v1/athletes/{athlete_id}", response_model=AthleteResponse)
 def update_athlete(athlete_id: str, request: AthleteUpdateRequest, user_id: str = Depends(current_user_id)) -> AthleteResponse:

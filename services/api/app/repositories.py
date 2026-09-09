@@ -26,12 +26,27 @@ def public_profile(profile: dict[str, Any]) -> dict[str, Any]:
     result.pop(REVISION_KEY, None)
     return result
 
+def profile_has_meaningful_configuration(profile: dict[str, Any]) -> bool:
+    """Keep account cleanup deliberately narrower than ordinary profile editing."""
+    athlete=profile.get("athlete", {}) if isinstance(profile.get("athlete"), dict) else {}
+    season=profile.get("season", {}) if isinstance(profile.get("season"), dict) else {}
+    tests=profile.get("tests", {}) if isinstance(profile.get("tests"), dict) else {}
+    name=str(athlete.get("display_name") or "").strip().lower()
+    if name and name not in {"rower", "unnamed rower"}: return True
+    if any(profile.get(key) for key in ("races", "recurring_activities", "goals", "locked_weeks")): return True
+    if any(athlete.get(key) not in (None, "", 0, False) for key in ("current_rowing_sessions_per_week", "current_approx_weekly_rowing_minutes", "recent_training_consistency")): return True
+    if any(season.get(key) not in (None, "", 0, False) for key in ("season_name", "start_date", "end_date", "current_weekly_endurance_minutes", "target_peak_weekly_endurance_minutes")): return True
+    if any(tests.get(key) not in (None, "", {}, []) for key in ("resting_hr", "max_hr", "erg_2k_seconds", "multi_duration_power_tests", "testing_blocks")): return True
+    return any(isinstance(day, dict) and (day.get("available") or day.get("fixed_rest") or day.get("heavy_lifting") or day.get("fixed_coached_row")) for day in profile.get("weekly_availability", []))
+
 class AthleteRepository(Protocol):
     def create(self, profile: dict[str, Any], user_id: str | None = None) -> str: ...
     def save(self, athlete_id: str, profile: dict[str, Any]) -> None: ...
     def get(self, athlete_id: str) -> dict[str, Any] | None: ...
     def save_if_revision(self, athlete_id: str, profile: dict[str, Any], expected_revision: int) -> bool: ...
     def list_for_user(self, user_id: str) -> list[dict[str, Any]]: ...
+    def deletion_status(self, athlete_id: str) -> str: ...
+    def delete_empty_athlete(self, athlete_id: str) -> str: ...
 
 class PlanRepository(Protocol):
     def save(self, athlete_id: str, plan: dict[str, Any]) -> str: ...
@@ -89,6 +104,24 @@ class SQLiteRepositories:
                 plan=db.execute("SELECT plan_id FROM plan_versions WHERE athlete_id=? ORDER BY version_number DESC LIMIT 1",(row["athlete_id"],)).fetchone()
                 result.append({"athlete_id":row["athlete_id"],"athlete_profile":json.loads(row["profile_json"]),"created_at":row["created_at"],"updated_at":row["updated_at"],"plan_id":plan["plan_id"] if plan else None})
         return result
+    def deletion_status(self, athlete_id: str) -> str:
+        with self._connect() as db:
+            row=db.execute("SELECT profile_json FROM athletes WHERE athlete_id=?",(athlete_id,)).fetchone()
+            if not row: return "not_found"
+            if db.execute("SELECT 1 FROM plan_versions WHERE athlete_id=? LIMIT 1",(athlete_id,)).fetchone(): return "plan_versions"
+            if db.execute("SELECT 1 FROM private_check_ins WHERE athlete_id=? LIMIT 1",(athlete_id,)).fetchone(): return "athlete_records"
+            if db.execute("SELECT 1 FROM weekly_overrides WHERE athlete_id=? LIMIT 1",(athlete_id,)).fetchone(): return "athlete_records"
+        return "meaningful_profile" if profile_has_meaningful_configuration(json.loads(row["profile_json"])) else "eligible"
+    def delete_empty_athlete(self, athlete_id: str) -> str:
+        with self._connect() as db:
+            row=db.execute("SELECT profile_json FROM athletes WHERE athlete_id=?",(athlete_id,)).fetchone()
+            if not row: return "not_found"
+            if db.execute("SELECT 1 FROM plan_versions WHERE athlete_id=? LIMIT 1",(athlete_id,)).fetchone(): return "plan_versions"
+            if db.execute("SELECT 1 FROM private_check_ins WHERE athlete_id=? LIMIT 1",(athlete_id,)).fetchone(): return "athlete_records"
+            if db.execute("SELECT 1 FROM weekly_overrides WHERE athlete_id=? LIMIT 1",(athlete_id,)).fetchone(): return "athlete_records"
+            if profile_has_meaningful_configuration(json.loads(row["profile_json"])): return "meaningful_profile"
+            db.execute("DELETE FROM athletes WHERE athlete_id=?",(athlete_id,))
+        return "deleted"
     def save_plan(self, athlete_id: str, plan: dict[str, Any]) -> str:
         with self._connect() as db:
             version=db.execute("SELECT COALESCE(MAX(version_number),0)+1 FROM plan_versions WHERE athlete_id=?",(athlete_id,)).fetchone()[0]
@@ -214,6 +247,30 @@ class PostgresRepositories:
                 cursor.execute("SELECT plan_id FROM plan_versions WHERE athlete_id=%s ORDER BY version_number DESC LIMIT 1",(row["athlete_id"],)); plan=cursor.fetchone()
                 result.append({"athlete_id":row["athlete_id"],"athlete_profile":row["profile_json"],"created_at":row["created_at"].isoformat(),"updated_at":row["updated_at"].isoformat(),"plan_id":plan["plan_id"] if plan else None})
         return result
+    def deletion_status(self, athlete_id: str) -> str:
+        with self._connect() as db, db.cursor() as cursor:
+            cursor.execute("SELECT profile_json FROM athletes WHERE athlete_id=%s",(athlete_id,)); row=cursor.fetchone()
+            if not row: return "not_found"
+            cursor.execute("SELECT 1 FROM plan_versions WHERE athlete_id=%s LIMIT 1",(athlete_id,))
+            if cursor.fetchone(): return "plan_versions"
+            cursor.execute("SELECT 1 FROM private_check_ins WHERE athlete_id=%s LIMIT 1",(athlete_id,))
+            if cursor.fetchone(): return "athlete_records"
+            cursor.execute("SELECT 1 FROM weekly_overrides WHERE athlete_id=%s LIMIT 1",(athlete_id,))
+            if cursor.fetchone(): return "athlete_records"
+        return "meaningful_profile" if profile_has_meaningful_configuration(row["profile_json"]) else "eligible"
+    def delete_empty_athlete(self, athlete_id: str) -> str:
+        with self._connect() as db, db.cursor() as cursor:
+            cursor.execute("SELECT profile_json FROM athletes WHERE athlete_id=%s FOR UPDATE",(athlete_id,)); row=cursor.fetchone()
+            if not row: return "not_found"
+            cursor.execute("SELECT 1 FROM plan_versions WHERE athlete_id=%s LIMIT 1",(athlete_id,))
+            if cursor.fetchone(): return "plan_versions"
+            cursor.execute("SELECT 1 FROM private_check_ins WHERE athlete_id=%s LIMIT 1",(athlete_id,))
+            if cursor.fetchone(): return "athlete_records"
+            cursor.execute("SELECT 1 FROM weekly_overrides WHERE athlete_id=%s LIMIT 1",(athlete_id,))
+            if cursor.fetchone(): return "athlete_records"
+            if profile_has_meaningful_configuration(row["profile_json"]): return "meaningful_profile"
+            cursor.execute("DELETE FROM athletes WHERE athlete_id=%s",(athlete_id,))
+        return "deleted"
     def save_plan(self, athlete_id: str, plan: dict[str, Any]) -> str:
         from psycopg.types.json import Jsonb
         plan_id=str(uuid4())

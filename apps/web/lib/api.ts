@@ -4,7 +4,7 @@ export type CalendarDay = {date:string;state:"designated_rest"|"unavailable"|"no
 export type Plan = { plan_version?:string; schedule_signature?:string; sessions: PlanSession[]; phases: {date:string;phase:string;race_event?:string}[]; calendar_days?:CalendarDay[]; plan_impacts?:string[] };
 export type PlanResponse = { plan_id: string; plan: Plan };
 export type AthleteResponse = { athlete_id: string; athlete_profile: Record<string, unknown>; profile_revision: number };
-export type AthleteCandidate = { athlete_id:string; updated_at:string; display_name:string; season_name:string; season_start?:string; season_end?:string; race_count:number; recurring_activity_count:number; performance_test_count:number; plan_id?:string|null };
+export type AthleteCandidate = { athlete_id:string; created_at?:string; updated_at:string; display_name:string; season_name:string; season_start?:string; season_end?:string; race_count:number; recurring_activity_count:number; performance_test_count:number; plan_id?:string|null; deletion_status?:string; can_delete?:boolean };
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? (process.env.NODE_ENV === "development" ? "http://localhost:8000/api/v1" : "https://rowing-plan-api.vercel.app/api/v1");
 export class ApiRequestError extends Error { constructor(public readonly status:number, public readonly endpoint:string, public readonly code:string, message:string){super(message);} }
 export function apiErrorMessage(error:unknown, fallback:string):string { if (!(error instanceof ApiRequestError)) return fallback; if (error.status===409) return "Your profile changed in another tab or session. Reload it, then try again."; if (error.status===422) return "Your saved schedule needs attention. Review it and try again."; return fallback; }
@@ -13,6 +13,7 @@ export function createAthlete(athlete_profile: Record<string, unknown>): Promise
 export function getAthlete(athleteId:string): Promise<AthleteResponse> { return request(`/athletes/${athleteId}`); }
 export function getCurrentAthlete(): Promise<AthleteResponse & {plan_id:string|null}> { return request("/account/athlete"); }
 export function getAccountAthletes(): Promise<{athletes:AthleteCandidate[]}> { return request("/account/athletes"); }
+export function deleteAccountAthlete(athleteId:string, selectedAthleteId?:string): Promise<{status:string;athlete_id:string}> { const query=selectedAthleteId?`?selected_athlete_id=${encodeURIComponent(selectedAthleteId)}`:""; return request(`/account/athletes/${encodeURIComponent(athleteId)}${query}`,{method:"DELETE"}); }
 export function updateAthlete(athleteId:string, athlete_profile:Record<string,unknown>, expected_revision:number): Promise<AthleteResponse> { return request(`/athletes/${athleteId}`,{method:"PUT",body:JSON.stringify({athlete_profile,expected_revision})}); }
 export function generateAthletePlan(athleteId:string): Promise<PlanResponse> { return request(`/athletes/${athleteId}/plans/generate`,{method:"POST",body:"{}"}); }
 export function getLatestAthletePlan(athleteId:string): Promise<{plan_id:string;athlete_id:string;version_number:number;plan_needs_update:boolean;plan:Plan}> { return request(`/athletes/${athleteId}/plans/latest`); }

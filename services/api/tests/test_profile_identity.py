@@ -35,6 +35,34 @@ def test_account_listing_is_owner_scoped_and_reports_safe_duplicate_metadata():
     assert candidates[0]["recurring_activity_count"] == 2
 
 
+def test_account_can_delete_only_an_owned_empty_unselected_test_profile():
+    with TemporaryDirectory() as directory:
+        client, previous=client_for_database(Path(directory)/"account-delete.sqlite3")
+        try:
+            empty=REPOSITORIES.create({"athlete":{"display_name":"Rower"},"season":{},"tests":{},"weekly_availability":[],"races":[],"recurring_activities":[]},"development-user")
+            selected=REPOSITORIES.create({"athlete":{"display_name":"Rower"},"season":{},"tests":{},"weekly_availability":[],"races":[],"recurring_activities":[]},"development-user")
+            protected=REPOSITORIES.create({"athlete":{"display_name":"Protected profile"},"season":{},"tests":{},"weekly_availability":[],"races":[],"recurring_activities":[]},"development-user")
+            planned=REPOSITORIES.create({"athlete":{"display_name":"Rower"},"season":{},"tests":{},"weekly_availability":[],"races":[],"recurring_activities":[]},"development-user")
+            other=REPOSITORIES.create({"athlete":{"display_name":"Rower"},"season":{},"tests":{},"weekly_availability":[],"races":[],"recurring_activities":[]},"another-user")
+            REPOSITORIES.save_plan(planned,{"sessions":[]})
+            listing=client.get("/api/v1/account/athletes")
+            deleted=client.delete(f"/api/v1/account/athletes/{empty}?selected_athlete_id={selected}")
+            remaining=client.get("/api/v1/account/athletes")
+            selected_attempt=client.delete(f"/api/v1/account/athletes/{selected}?selected_athlete_id={selected}")
+            protected_attempt=client.delete(f"/api/v1/account/athletes/{protected}")
+            planned_attempt=client.delete(f"/api/v1/account/athletes/{planned}")
+            foreign_attempt=client.delete(f"/api/v1/account/athletes/{other}")
+        finally:
+            REPOSITORIES._instance=previous
+    candidates={item["athlete_id"]:item for item in listing.json()["athletes"]}
+    assert candidates[empty]["can_delete"] is True and candidates[planned]["deletion_status"] == "plan_versions"
+    assert deleted.status_code == 200
+    assert empty not in {item["athlete_id"] for item in remaining.json()["athletes"]}
+    assert selected in {item["athlete_id"] for item in remaining.json()["athletes"]}
+    assert selected_attempt.status_code == protected_attempt.status_code == planned_attempt.status_code == 409
+    assert foreign_attempt.status_code == 403
+
+
 def test_revision_conflict_preserves_newer_profile_and_reload_can_save():
     with TemporaryDirectory() as directory:
         client, previous=client_for_database(Path(directory)/"revision.sqlite3")
