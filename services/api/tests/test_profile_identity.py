@@ -35,6 +35,21 @@ def test_account_listing_is_owner_scoped_and_reports_safe_duplicate_metadata():
     assert candidates[0]["recurring_activity_count"] == 2
 
 
+def test_onboarding_creation_is_idempotent_for_retries():
+    with TemporaryDirectory() as directory:
+        client, previous=client_for_database(Path(directory)/"onboarding.sqlite3")
+        try:
+            profile=synthetic_profile()
+            first=client.post("/api/v1/account/onboarding-athlete",json={"athlete_profile":profile})
+            retry=client.post("/api/v1/account/onboarding-athlete",json={"athlete_profile":profile})
+            listing=client.get("/api/v1/account/athletes")
+        finally:
+            REPOSITORIES._instance=previous
+    assert first.status_code == retry.status_code == listing.status_code == 200
+    assert first.json()["athlete_id"] == retry.json()["athlete_id"]
+    assert len(listing.json()["athletes"]) == 1
+
+
 def test_account_can_delete_only_an_owned_empty_unselected_test_profile():
     with TemporaryDirectory() as directory:
         client, previous=client_for_database(Path(directory)/"account-delete.sqlite3")

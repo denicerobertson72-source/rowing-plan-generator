@@ -41,6 +41,7 @@ def profile_has_meaningful_configuration(profile: dict[str, Any]) -> bool:
 
 class AthleteRepository(Protocol):
     def create(self, profile: dict[str, Any], user_id: str | None = None) -> str: ...
+    def get_or_create_for_user(self, profile: dict[str, Any], user_id: str) -> tuple[str, dict[str, Any], bool]: ...
     def save(self, athlete_id: str, profile: dict[str, Any]) -> None: ...
     def get(self, athlete_id: str) -> dict[str, Any] | None: ...
     def save_if_revision(self, athlete_id: str, profile: dict[str, Any], expected_revision: int) -> bool: ...
@@ -79,6 +80,15 @@ class SQLiteRepositories:
         athlete_id=str(uuid4()); now=self._now()
         with self._connect() as db: db.execute("INSERT INTO athletes VALUES (?, ?, ?, ?, ?)",(athlete_id,user_id,json.dumps(profile),now,now))
         return athlete_id
+    def get_or_create_for_user(self, profile: dict[str, Any], user_id: str) -> tuple[str, dict[str, Any], bool]:
+        """Serialize first-profile creation so retries cannot create duplicates."""
+        athlete_id=str(uuid4()); now=self._now()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row=db.execute("SELECT athlete_id, profile_json FROM athletes WHERE user_id=? ORDER BY created_at ASC LIMIT 1",(user_id,)).fetchone()
+            if row: return row["athlete_id"], json.loads(row["profile_json"]), False
+            db.execute("INSERT INTO athletes VALUES (?, ?, ?, ?, ?)",(athlete_id,user_id,json.dumps(profile),now,now))
+        return athlete_id, profile, True
     def save(self, athlete_id: str, profile: dict[str, Any]) -> None:
         with self._connect() as db: db.execute("UPDATE athletes SET profile_json=?, updated_at=? WHERE athlete_id=?",(json.dumps(profile),self._now(),athlete_id))
     def save_if_revision(self, athlete_id: str, profile: dict[str, Any], expected_revision: int) -> bool:
@@ -216,6 +226,15 @@ class PostgresRepositories:
         with self._connect() as db, db.cursor() as cursor:
             cursor.execute("INSERT INTO athletes (athlete_id, user_id, profile_json) VALUES (%s, %s, %s)",(athlete_id,user_id,Jsonb(profile)))
         return athlete_id
+    def get_or_create_for_user(self, profile: dict[str, Any], user_id: str) -> tuple[str, dict[str, Any], bool]:
+        from psycopg.types.json import Jsonb
+        athlete_id=str(uuid4())
+        with self._connect() as db, db.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",(f"onboarding:{user_id}",))
+            cursor.execute("SELECT athlete_id, profile_json FROM athletes WHERE user_id=%s ORDER BY created_at ASC LIMIT 1",(user_id,)); row=cursor.fetchone()
+            if row: return row["athlete_id"], row["profile_json"], False
+            cursor.execute("INSERT INTO athletes (athlete_id, user_id, profile_json) VALUES (%s, %s, %s)",(athlete_id,user_id,Jsonb(profile)))
+        return athlete_id, profile, True
     def save(self, athlete_id: str, profile: dict[str, Any]) -> None:
         from psycopg.types.json import Jsonb
         with self._connect() as db, db.cursor() as cursor:

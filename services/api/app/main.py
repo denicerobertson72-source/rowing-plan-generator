@@ -103,6 +103,15 @@ def create_athlete(request: AthleteCreateRequest, user_id: str = Depends(current
     athlete_id=REPOSITORIES.create(profile, user_id)
     return athlete_response(athlete_id, profile)
 
+@app.post("/api/v1/account/onboarding-athlete", response_model=AthleteResponse)
+def get_or_create_onboarding_athlete(request: AthleteCreateRequest, user_id: str = Depends(current_user_id)) -> AthleteResponse:
+    """The only creation path used by first-run onboarding; safe under retries."""
+    errors=validate_profile(request.athlete_profile)
+    if errors: raise HTTPException(status_code=422, detail={"validation_errors":errors})
+    profile=with_profile_revision(request.athlete_profile, 0)
+    athlete_id, stored_profile, _=REPOSITORIES.get_or_create_for_user(profile, user_id)
+    return athlete_response(athlete_id, stored_profile)
+
 @app.get("/api/v1/athletes/{athlete_id}", response_model=AthleteResponse)
 def get_athlete(athlete_id: str, user_id: str = Depends(current_user_id)) -> AthleteResponse:
     profile=owned_athlete(athlete_id,user_id)

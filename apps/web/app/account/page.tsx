@@ -10,6 +10,7 @@ import { supabase } from "../../lib/supabase";
 
 const genericEmailMessage="If that address can receive this email, we sent the next step. Check spam as well.";
 const redirectUrl=()=>typeof window === "undefined" ? undefined : `${window.location.origin}/account`;
+const authMessage=(error:any,signup:boolean)=>{if(!error)return signup?"Check your email to confirm your account, then sign in with the password you chose.":"Signed in.";const text=String(error.message??"").toLowerCase();if(text.includes("email not confirmed"))return "Confirm your email, then sign in with the password you chose.";if(text.includes("invalid login credentials"))return "That email or password did not match. You can reset your password if needed.";if(text.includes("network")||text.includes("fetch"))return "Authentication could not be reached. Check your connection and try again.";return signup?genericEmailMessage:"We couldn’t sign you in right now. Please try again.";};
 
 export default function Account(){
   const [email,setEmail]=useState(""); const [password,setPassword]=useState(""); const [newPassword,setNewPassword]=useState("");
@@ -27,7 +28,7 @@ export default function Account(){
     const result=signup
       ?await supabase.auth.signUp({email,password,options:{emailRedirectTo:redirectUrl()}})
       :await supabase.auth.signInWithPassword({email,password});
-    setMessage(result.error?.message??(signup?genericEmailMessage:"Signed in."));
+    setMessage(authMessage(result.error,signup));
   };
   const resend=async()=>{if(!supabase||!email){setMessage("Enter your email address first.");return;}await supabase.auth.resend({type:"signup",email,options:{emailRedirectTo:redirectUrl()}});setMessage(genericEmailMessage);};
   const reset=async()=>{if(!supabase||!email){setMessage("Enter your email address first.");return;}await supabase.auth.resetPasswordForEmail(email,{redirectTo:redirectUrl()});setMessage(genericEmailMessage);};
