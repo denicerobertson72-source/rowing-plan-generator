@@ -59,8 +59,8 @@ test("Week presents semantic cards without internal role labels or narrow-screen
   await expect(page.locator(".week-card").first()).toBeVisible();
   await expect(page.getByText("AEROBIC_BASE")).toHaveCount(0);
   expect(await page.locator("body").evaluate(element=>element.scrollWidth<=window.innerWidth)).toBeTruthy();
-  for (const width of [390,430,768,1280]) {
-    await page.setViewportSize({width,height:900});
+  for (const [width,height] of [[375,667],[390,844],[430,932],[844,390],[768,1024],[1280,900]]) {
+    await page.setViewportSize({width,height});
     expect(await page.locator("body").evaluate(element=>element.scrollWidth<=window.innerWidth)).toBeTruthy();
   }
 });
@@ -136,7 +136,7 @@ test("Season roadmap uses the saved PlanVersion and links to its weeks", async (
   await expect(page).toHaveURL(/\/week\?week=2026-09-14/);
   await expect(page.locator(".week-nav b")).toContainText("Sep 14");
   expect(regenerations).toBe(0);
-  for (const width of [375,390,430,768,1280]) { await page.setViewportSize({width,height:900}); expect(await page.locator("body").evaluate(element=>element.scrollWidth<=window.innerWidth)).toBeTruthy(); }
+  for (const [width,height] of [[375,667],[390,844],[430,932],[844,390],[768,1024],[1280,900]]) { await page.setViewportSize({width,height}); expect(await page.locator("body").evaluate(element=>element.scrollWidth<=window.innerWidth)).toBeTruthy(); }
 });
 
 test("Onboarding recovers the account athlete when this origin has no local session", async ({page}) => {
@@ -179,8 +179,8 @@ test("Profile scheduling editor keeps weekday labels clickable and preserves alt
   const preferred=page.getByRole("group",{name:"Preferred days"});
   const monday=preferred.getByRole("checkbox",{name:"Monday"});
   await expect(monday).toBeChecked();
-  for (const width of [375,390,430,768,1280]) {
-    await page.setViewportSize({width,height:900});
+  for (const [width,height] of [[375,667],[390,844],[430,932],[844,390],[768,1024],[1280,900]]) {
+    await page.setViewportSize({width,height});
     expect(await page.locator(".day-choice").evaluateAll(rows => rows.every(row => {
       const input=row.querySelector("input")?.getBoundingClientRect(), text=row.querySelector("span")?.getBoundingClientRect();
       return Boolean(input && text && input.left < text.left && Math.abs(input.top-text.top) < 14);
