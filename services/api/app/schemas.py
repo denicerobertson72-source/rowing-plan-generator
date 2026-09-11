@@ -28,6 +28,17 @@ class AthleteUpdateRequest(BaseModel):
 class RegenerateRequest(BaseModel):
     locked_sessions: list[dict[str, Any]] = Field(default_factory=list)
 
+class ActualSessionSegment(BaseModel):
+    segment_type: Literal["warm_up","technical_drill","easy_rowing","aerobic_rowing","work_piece","recovery","cooldown_return","other"]
+    repetitions: int = Field(default=1, ge=1, le=99)
+    duration_seconds: Optional[int] = Field(default=None, ge=0)
+    distance_meters: Optional[int] = Field(default=None, ge=0)
+    intensity_band: Optional[Literal["UT3","UT2","UT1","AT","TR","AN","PP"]] = None
+    rate_min: Optional[int] = Field(default=None, ge=0)
+    rate_max: Optional[int] = Field(default=None, ge=0)
+    effort_label: str = ""
+    notes: str = ""
+
 class WorkoutLogRequest(BaseModel):
     status: Literal["completed", "modified", "skipped"]
     actual_duration_min: Optional[int] = Field(default=None, ge=0)
@@ -47,6 +58,7 @@ class WorkoutLogRequest(BaseModel):
     technical_focus_tags: list[str] = Field(default_factory=list)
     coach_cues: str = ""
     carry_cue_forward: bool = False
+    actual_segments: list[ActualSessionSegment] = Field(default_factory=list)
 
 class PrivateCheckInRequest(BaseModel):
     entry_date: str

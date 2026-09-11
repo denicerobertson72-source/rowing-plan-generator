@@ -20,7 +20,8 @@ def test_coached_actual_is_idempotent_and_only_acceptance_versions_future_week()
             ]
             plan_id=REPOSITORIES.save_plan(athlete,{"sessions":sessions,"calendar_days":[]})
             client=TestClient(app); key="2026-06-03:COACHED:on_water"
-            payload={"status":"completed","completion":"yes","actual_duration_min":55,"actual_intensity":"AT","rpe":8,"coach_cues":"Place then push.","carry_cue_forward":True}
+            tuesday=client.post(f"/api/v1/plans/{plan_id}/sessions/2026-06-02:AT:erg/log",json={"status":"completed","completion":"yes","actual_duration_min":50,"actual_intensity":"AT","rpe":7})
+            payload={"status":"completed","completion":"yes","actual_duration_min":60,"actual_intensity":"mixed_unsure","rpe":8,"coach_cues":"Place then push.","carry_cue_forward":True,"actual_segments":[{"segment_type":"technical_drill","duration_seconds":900},{"segment_type":"aerobic_rowing","duration_seconds":1620,"intensity_band":"UT2"},{"segment_type":"work_piece","repetitions":2,"duration_seconds":510,"intensity_band":"TR","rate_min":26,"rate_max":28,"effort_label":"Full pressure"}]}
             logged=client.post(f"/api/v1/plans/{plan_id}/sessions/{key}/log",json=payload)
             edited=client.post(f"/api/v1/plans/{plan_id}/sessions/{key}/log",json={**payload,"rpe":9})
             original=client.get(f"/api/v1/plans/{plan_id}")
@@ -30,9 +31,12 @@ def test_coached_actual_is_idempotent_and_only_acceptance_versions_future_week()
             logs=client.get(f"/api/v1/plans/{plan_id}/logs")
         finally:
             REPOSITORIES._instance=previous
-    assert logged.status_code == edited.status_code == applied.status_code == 200
+    assert tuesday.status_code == logged.status_code == edited.status_code == applied.status_code == 200
     assert logged.json()["adjustment"]["recommendation"] == "review"
-    assert len(logs.json()["logs"]) == 1 and logs.json()["logs"][0]["payload"]["rpe"] == 9
+    assert logged.json()["adjustment"]["composition"]["quality_seconds"] == 1020
+    assert "already completed 2 quality" in logged.json()["adjustment"]["explanation"]
+    coached_logs=[entry for entry in logs.json()["logs"] if entry["session_key"] == key]
+    assert len(coached_logs) == 1 and coached_logs[0]["payload"]["rpe"] == 9
     assert original.json()["plan"]["sessions"] == sessions
     assert updated.json()["version_number"] == 2
     assert updated.json()["plan"]["sessions"][0:3] == sessions[0:3]

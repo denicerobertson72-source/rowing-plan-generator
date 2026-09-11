@@ -90,22 +90,67 @@ def actual_by_key(plan_id: str) -> dict[str, dict]:
     return actuals
 def session_load_classification(payload: dict) -> str:
     if payload.get("completion")=="no" or payload.get("status")=="skipped": return "missed"
+    composition=actual_composition(payload)
+    if composition["quality_seconds"] >= 8*60: return "unusually_hard_or_long" if composition["quality_seconds"] >= 25*60 else "quality_hard"
     intensity=payload.get("actual_intensity")
     rpe=payload.get("rpe") or 0
     minutes=payload.get("actual_duration_min") or 0
     if intensity in {"AT","TR","AN","PP"} or (intensity=="mixed_unsure" and rpe>=7): return "unusually_hard_or_long" if minutes>=75 or rpe>=9 else "quality_hard"
     if intensity in {"UT2","UT1"} or (intensity=="mixed_unsure" and rpe>=5): return "aerobic_moderate"
     return "easy_technical"
+def actual_composition(payload: dict) -> dict:
+    """Describe athlete-entered segments without inferring unknown portions."""
+    totals={"easy_technical_seconds":0,"aerobic_seconds":0,"quality_seconds":0,"unclassified_seconds":0}
+    for segment in payload.get("actual_segments",[]):
+        seconds=(segment.get("duration_seconds") or 0)*max(1,segment.get("repetitions") or 1)
+        band=segment.get("intensity_band")
+        if band in {"AT","TR","AN","PP"}: bucket="quality_seconds"
+        elif band in {"UT2","UT1"}: bucket="aerobic_seconds"
+        elif band=="UT3" or segment.get("segment_type") in {"warm_up","technical_drill","easy_rowing","recovery","cooldown_return"}: bucket="easy_technical_seconds"
+        else: bucket="unclassified_seconds"
+        totals[bucket]+=seconds
+    known=sum(totals.values())
+    if payload.get("actual_duration_min") and known < payload["actual_duration_min"]*60: totals["unclassified_seconds"]+=payload["actual_duration_min"]*60-known
+    return {**totals,"total_seconds":sum(totals.values())}
+def impact_explanation(record: dict, source: dict, classification: str, changes: list[dict], payload: dict) -> str:
+    composition=actual_composition(payload); quality=composition["quality_seconds"]//60
+    after=sorted((s for s in record["plan"].get("sessions",[]) if s["date"]>source["date"]),key=lambda s:s["date"])
+    next_row=next((s for s in after if s.get("mode") in {"erg","on_water"}),None)
+    recovery=[s.get("title","session").lower() for s in after if next_row and s["date"]<next_row["date"]]
+    detail=f"This session included about {quality} minutes of high-intensity rowing." if quality else "The logged load fits the planned coaching session."
+    weekly=weekly_quality_context(record,source,payload)
+    if changes and weekly["completed_exposures"]>=2: return f"Review recommended. You have already completed {weekly['completed_exposures']} quality rowing exposures this week: {', '.join(weekly['labels'])}. Sunday quality work would create a third exposure, so a lower-intensity stimulus is suggested instead."
+    if changes: return f"{detail} Your next rowing session is quality work, so its spacing should be reviewed."
+    if next_row: return f"{detail} The next rowing session is {next_row.get('band','planned work')}; {' and '.join(recovery) or 'the available spacing'} supports keeping the current plan."
+    return f"{detail} No later rowing session this week needs changing."
+def weekly_quality_context(record: dict, source: dict, source_payload: dict) -> dict:
+    """Count completed quality exposures, including partial coached quality work."""
+    source_date=date.fromisoformat(source["date"]); monday=source_date-timedelta(days=source_date.weekday())
+    actuals=actual_by_key(record["plan_id"]); actuals[stable_session_key(source)]=source_payload
+    labels=[]; minutes=0
+    for session in record["plan"].get("sessions",[]):
+        session_date=date.fromisoformat(session["date"])
+        if not monday<=session_date<=source_date: continue
+        actual=actuals.get(stable_session_key(session))
+        if not actual or actual.get("completion")=="no" or actual.get("status")=="skipped": continue
+        composition=actual_composition(actual)
+        quality_seconds=composition["quality_seconds"]
+        is_quality=quality_seconds>=8*60 or (not actual.get("actual_segments") and any(b in str(actual.get("actual_intensity") or session.get("band","")) for b in ("AT","TR","AN","PP")))
+        if is_quality:
+            labels.append(session.get("title") or session.get("session_role") or "quality work")
+            minutes+=quality_seconds//60
+    return {"completed_exposures":len(labels),"quality_minutes":minutes,"labels":labels}
 def bounded_coached_proposal(record: dict, session_key: str, payload: dict) -> dict:
     source=next((s for s in record["plan"].get("sessions",[]) if stable_session_key(s)==session_key),None)
     if not source or not coached_session(source): raise HTTPException(422,"Only coached rows and private coaching sessions can use this log.")
     classification=session_load_classification(payload)
-    if classification not in {"quality_hard","unusually_hard_or_long"}: return {"recommendation":"none","classification":classification,"changes":[]}
+    if classification not in {"quality_hard","unusually_hard_or_long"}: return {"recommendation":"none","classification":classification,"changes":[],"composition":actual_composition(payload),"explanation":impact_explanation(record,source,classification,[],payload)}
     source_date=date.fromisoformat(source["date"]); monday=source_date-timedelta(days=source_date.weekday())
     candidates=[s for s in record["plan"].get("sessions",[]) if monday < date.fromisoformat(s["date"]) < monday+timedelta(days=7) and date.fromisoformat(s["date"])>source_date and any(b in str(s.get("band","")) for b in ("AT","TR","AN","PP"))]
-    if not candidates: return {"recommendation":"none","classification":classification,"changes":[]}
+    if not candidates: return {"recommendation":"none","classification":classification,"changes":[],"composition":actual_composition(payload),"explanation":impact_explanation(record,source,classification,[],payload)}
     current=candidates[0]; suggested={**current,"band":"UT2","title":"Long aerobic","structure":"60 min UT2","description":"Adjusted after an unexpectedly hard coached session.","adjustment_reason":"coached_session_actual"}
-    return {"recommendation":"review","classification":classification,"source_session_id":session_key,"changes":[{"session_key":stable_session_key(current),"date":current["date"],"current":current,"suggested":suggested,"why":"Coaching added an unexpected hard rowing exposure; this preserves recovery spacing."}]}
+    changes=[{"session_key":stable_session_key(current),"date":current["date"],"current":current,"suggested":suggested,"why":"Coaching added an unexpected hard rowing exposure; this preserves recovery spacing."}]
+    return {"recommendation":"review","classification":classification,"source_session_id":session_key,"changes":changes,"composition":actual_composition(payload),"explanation":impact_explanation(record,source,classification,changes,payload)}
 def enrich_sessions(plan_id: str, sessions: list[dict]) -> list[dict]:
     actuals=actual_by_key(plan_id); enriched=[]; cues=[]
     for session in sessions:
