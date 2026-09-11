@@ -56,12 +56,15 @@ def test_account_can_delete_only_an_owned_empty_unselected_test_profile():
         try:
             empty=REPOSITORIES.create({"athlete":{"display_name":"Rower"},"season":{},"tests":{},"weekly_availability":[],"races":[],"recurring_activities":[]},"development-user")
             selected=REPOSITORIES.create({"athlete":{"display_name":"Rower"},"season":{},"tests":{},"weekly_availability":[],"races":[],"recurring_activities":[]},"development-user")
+            configured=REPOSITORIES.create({"athlete":{"display_name":"Old duplicate"},"season":{"season_name":"Spring"},"tests":{"erg_2k_seconds":496},"weekly_availability":[{"weekday":"monday","available":True}],"races":[{"name":"Test race"}],"recurring_activities":[{"activity_type":"lift"}]},"development-user")
             protected=REPOSITORIES.create({"athlete":{"display_name":"Protected profile"},"season":{},"tests":{},"weekly_availability":[],"races":[],"recurring_activities":[]},"development-user")
             planned=REPOSITORIES.create({"athlete":{"display_name":"Rower"},"season":{},"tests":{},"weekly_availability":[],"races":[],"recurring_activities":[]},"development-user")
             other=REPOSITORIES.create({"athlete":{"display_name":"Rower"},"season":{},"tests":{},"weekly_availability":[],"races":[],"recurring_activities":[]},"another-user")
+            REPOSITORIES.save_private_check_in(protected,{})
             REPOSITORIES.save_plan(planned,{"sessions":[]})
             listing=client.get("/api/v1/account/athletes")
             deleted=client.delete(f"/api/v1/account/athletes/{empty}?selected_athlete_id={selected}")
+            configured_deleted=client.delete(f"/api/v1/account/athletes/{configured}?selected_athlete_id={selected}")
             remaining=client.get("/api/v1/account/athletes")
             selected_attempt=client.delete(f"/api/v1/account/athletes/{selected}?selected_athlete_id={selected}")
             protected_attempt=client.delete(f"/api/v1/account/athletes/{protected}")
@@ -71,8 +74,10 @@ def test_account_can_delete_only_an_owned_empty_unselected_test_profile():
             REPOSITORIES._instance=previous
     candidates={item["athlete_id"]:item for item in listing.json()["athletes"]}
     assert candidates[empty]["can_delete"] is True and candidates[planned]["deletion_status"] == "plan_versions"
-    assert deleted.status_code == 200
+    assert candidates[configured]["deletion_status"] == "configured" and candidates[configured]["can_delete"] is True
+    assert deleted.status_code == configured_deleted.status_code == 200
     assert empty not in {item["athlete_id"] for item in remaining.json()["athletes"]}
+    assert configured not in {item["athlete_id"] for item in remaining.json()["athletes"]}
     assert selected in {item["athlete_id"] for item in remaining.json()["athletes"]}
     assert selected_attempt.status_code == protected_attempt.status_code == planned_attempt.status_code == 409
     assert foreign_attempt.status_code == 403

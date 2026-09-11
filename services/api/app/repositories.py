@@ -121,7 +121,7 @@ class SQLiteRepositories:
             if db.execute("SELECT 1 FROM plan_versions WHERE athlete_id=? LIMIT 1",(athlete_id,)).fetchone(): return "plan_versions"
             if db.execute("SELECT 1 FROM private_check_ins WHERE athlete_id=? LIMIT 1",(athlete_id,)).fetchone(): return "athlete_records"
             if db.execute("SELECT 1 FROM weekly_overrides WHERE athlete_id=? LIMIT 1",(athlete_id,)).fetchone(): return "athlete_records"
-        return "meaningful_profile" if profile_has_meaningful_configuration(json.loads(row["profile_json"])) else "eligible"
+        return "configured" if profile_has_meaningful_configuration(json.loads(row["profile_json"])) else "eligible"
     def delete_empty_athlete(self, athlete_id: str) -> str:
         with self._connect() as db:
             row=db.execute("SELECT profile_json FROM athletes WHERE athlete_id=?",(athlete_id,)).fetchone()
@@ -129,7 +129,6 @@ class SQLiteRepositories:
             if db.execute("SELECT 1 FROM plan_versions WHERE athlete_id=? LIMIT 1",(athlete_id,)).fetchone(): return "plan_versions"
             if db.execute("SELECT 1 FROM private_check_ins WHERE athlete_id=? LIMIT 1",(athlete_id,)).fetchone(): return "athlete_records"
             if db.execute("SELECT 1 FROM weekly_overrides WHERE athlete_id=? LIMIT 1",(athlete_id,)).fetchone(): return "athlete_records"
-            if profile_has_meaningful_configuration(json.loads(row["profile_json"])): return "meaningful_profile"
             db.execute("DELETE FROM athletes WHERE athlete_id=?",(athlete_id,))
         return "deleted"
     def save_plan(self, athlete_id: str, plan: dict[str, Any]) -> str:
@@ -276,7 +275,7 @@ class PostgresRepositories:
             if cursor.fetchone(): return "athlete_records"
             cursor.execute("SELECT 1 FROM weekly_overrides WHERE athlete_id=%s LIMIT 1",(athlete_id,))
             if cursor.fetchone(): return "athlete_records"
-        return "meaningful_profile" if profile_has_meaningful_configuration(row["profile_json"]) else "eligible"
+        return "configured" if profile_has_meaningful_configuration(row["profile_json"]) else "eligible"
     def delete_empty_athlete(self, athlete_id: str) -> str:
         with self._connect() as db, db.cursor() as cursor:
             cursor.execute("SELECT profile_json FROM athletes WHERE athlete_id=%s FOR UPDATE",(athlete_id,)); row=cursor.fetchone()
@@ -287,7 +286,6 @@ class PostgresRepositories:
             if cursor.fetchone(): return "athlete_records"
             cursor.execute("SELECT 1 FROM weekly_overrides WHERE athlete_id=%s LIMIT 1",(athlete_id,))
             if cursor.fetchone(): return "athlete_records"
-            if profile_has_meaningful_configuration(row["profile_json"]): return "meaningful_profile"
             cursor.execute("DELETE FROM athletes WHERE athlete_id=%s",(athlete_id,))
         return "deleted"
     def save_plan(self, athlete_id: str, plan: dict[str, Any]) -> str:
