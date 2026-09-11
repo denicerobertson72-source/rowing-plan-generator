@@ -10,6 +10,42 @@ test("Account login uses password-manager fields without app password storage", 
   expect(await page.evaluate(() => Object.keys(sessionStorage).every(key => !sessionStorage.getItem(key)?.includes("never-store-this-password")))).toBeTruthy();
 });
 
+test("Profile accepts an empty preferred long-session day through save and generation", async ({page}) => {
+  await page.goto("/profile");
+  const days=page.locator('input[name^="preferred-long-"]');
+  for (let index=0;index<await days.count();index++) if (await days.nth(index).isChecked()) await days.nth(index).uncheck();
+  let savedPreference:unknown;
+  page.on("request",request=>{if(request.method()==="PUT"&&request.url().includes("/athletes/")) savedPreference=JSON.parse(request.postData()||"{}").athlete_profile?.preferences?.preferred_long_session_days;});
+  await page.getByRole("button",{name:"Save scheduling preferences"}).click();
+  await expect(page.getByRole("status")).toContainText("Scheduling preferences saved");
+  expect(savedPreference).toEqual([]);
+  await page.getByRole("button",{name:"Update plan with these choices"}).click();
+  await expect(page.getByRole("status")).toContainText("Plan updated");
+  expect(await days.evaluateAll(items=>items.every(item=>!(item as HTMLInputElement).checked))).toBeTruthy();
+});
+
+test("Profile maps server capacity validation errors to the field", async ({page}) => {
+  await page.setViewportSize({width:390,height:844}); await page.goto("/profile");
+  await page.route("**/api/v1/athletes/**",route=>route.fulfill({status:422,contentType:"application/json",body:JSON.stringify({detail:{validation_errors:["Current rowing sessions per week must be a non-negative whole number."]}})}));
+  await page.getByRole("button",{name:"Save profile details"}).click();
+  const field=page.getByLabel("Current rowing sessions/week");
+  await expect(field).toHaveAttribute("aria-invalid","true");
+  const described=await field.getAttribute("aria-describedby"); expect(described).toBeTruthy();
+  await expect(page.locator(`#${described}`)).toContainText("must be a non-negative whole number");
+  expect(await field.evaluate(element=>document.activeElement===element)).toBeTruthy();
+  expect(await field.evaluate(element=>{const box=element.getBoundingClientRect();return box.top>=0&&box.bottom<window.innerHeight-56;})).toBeTruthy();
+  expect(await page.locator("body").evaluate(element=>element.scrollWidth<=window.innerWidth)).toBeTruthy();
+});
+
+test("Profile shows an unmapped server validation error without marking fields", async ({page}) => {
+  await page.goto("/profile");
+  await page.route("**/api/v1/athletes/**",route=>route.fulfill({status:422,contentType:"application/json",body:JSON.stringify({detail:{validation_errors:["Maximum heart rate must be greater than resting heart rate."]}})}));
+  await page.getByRole("button",{name:"Save profile details"}).click();
+  await expect(page.getByText("Maximum heart rate must be greater than resting heart rate.")).toBeVisible();
+  await expect(page.locator('[aria-invalid="true"]')).toHaveCount(0);
+  await expect(page.getByText("highlighted",{exact:false})).toHaveCount(0);
+});
+
 test("Step 6B race draft create, failure guard, duplicate guard, and plan invalidation", async ({page}) => {
   let writes=0;
   page.on("request", request => { if (request.method()==="PUT" && request.url().includes("/athletes/")) writes++; });

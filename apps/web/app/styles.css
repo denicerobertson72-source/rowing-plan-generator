@@ -12,3 +12,5 @@
 /* A transparency-only derivative of the canonical icon prevents its opaque source field from reading as a panel. */
 body:before{background-image:url("/icons/rowing-wallpaper.png");background-size:clamp(20rem,92vw,38rem);opacity:.18;mix-blend-mode:normal}
 @media(max-width:430px){body:before{background-size:92vw}}
+.server-invalid { border: 2px solid #b42318 !important; }
+.field-error { margin: .3rem 0; font-size: .9rem; font-weight: 600; color: #b42318; }

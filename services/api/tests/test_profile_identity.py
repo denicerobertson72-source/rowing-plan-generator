@@ -50,6 +50,17 @@ def test_onboarding_creation_is_idempotent_for_retries():
     assert len(listing.json()["athletes"]) == 1
 
 
+def test_empty_or_missing_long_session_preference_is_valid_and_does_not_mutate_profile():
+    from services.api.app.main import build_plan
+    from services.api.app.schemas import PlanGenerationRequest
+    profile=synthetic_profile()
+    profile.setdefault("preferences", {})["preferred_long_session_days"]=[]
+    original=copy.deepcopy(profile)
+    plan=build_plan(PlanGenerationRequest(athlete_profile=profile))
+    assert profile == original
+    assert any(session.get("session_role") == "LONG_AEROBIC" for session in plan["sessions"])
+
+
 def test_account_can_delete_only_an_owned_empty_unselected_test_profile():
     with TemporaryDirectory() as directory:
         client, previous=client_for_database(Path(directory)/"account-delete.sqlite3")
