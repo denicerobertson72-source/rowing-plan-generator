@@ -104,7 +104,7 @@ test("Week presents semantic cards without internal role labels or narrow-screen
 test("Week navigation advances within the saved PlanVersion and preserves its URL week", async ({page}) => {
   await page.goto("/week");
   await expect(page.locator(".week-nav b")).not.toHaveText("Plan week");
-  await expect(page.getByText("Previous week")).toBeDisabled();
+  await expect(page.getByText("Previous week")).toBeEnabled();
   const first=await page.locator(".week-nav b").innerText();
   await page.getByText("Next week").click();
   await expect(page.locator(".week-nav b")).not.toHaveText(first);
@@ -114,6 +114,18 @@ test("Week navigation advances within the saved PlanVersion and preserves its UR
   await expect(page.locator(".week-nav b")).toHaveText(second);
   await page.getByText("Previous week").click();
   await expect(page.locator(".week-nav b")).toHaveText(first);
+});
+
+test("Week defaults to the browser-local current week while explicit links stay authoritative", async ({page}) => {
+  await page.goto("/week?week=2026-08-31");
+  await expect(page.locator(".week-nav b")).toContainText("Aug 31");
+  await page.getByRole("link",{name:"Week",exact:true}).click();
+  await expect(page.locator(".week-nav b")).toContainText("Sep 7");
+  await page.goto("/week?week=2026-09-14");
+  await expect(page.locator(".week-nav b")).toContainText("Sep 14");
+  await page.goto("/week?week=2026-08-31");
+  await page.getByRole("button",{name:"This week",exact:true}).click();
+  await expect(page.locator(".week-nav b")).toContainText("Sep 7");
 });
 
 test("Season recovers a missing local plan ID from the selected athlete", async ({page}) => {
