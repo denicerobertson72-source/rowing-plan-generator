@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sys
+from copy import deepcopy
 from datetime import date, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -72,6 +73,49 @@ def owned_plan(plan_id: str, user_id: str) -> dict:
     return record
 def plan_needs_update(record: dict, profile: dict) -> bool:
     return record["plan"].get("schedule_signature") != schedule_signature(profile)
+def stable_session_key(session: dict) -> str:
+    return f'{session["date"]}:{session.get("session_id")}:{session.get("mode")}'
+def coached_session(session: dict) -> bool:
+    return session.get("session_id")=="COACHED" or session.get("coached") is True
+def actual_by_key(plan_id: str) -> dict[str, dict]:
+    actuals={entry["session_key"]:entry["payload"] for entry in REPOSITORIES.logs_for_plan(plan_id)}
+    # An accepted adjustment is a new immutable PlanVersion.  Its source log
+    # remains canonical on the source version, so inherit it for display
+    # rather than cloning a second completion record.
+    record=REPOSITORIES.get_plan(plan_id)
+    for provenance in (record or {}).get("plan",{}).get("adjustment_provenance",[]):
+        source=provenance.get("source_plan_id")
+        if source:
+            actuals={**{entry["session_key"]:entry["payload"] for entry in REPOSITORIES.logs_for_plan(source)},**actuals}
+    return actuals
+def session_load_classification(payload: dict) -> str:
+    if payload.get("completion")=="no" or payload.get("status")=="skipped": return "missed"
+    intensity=payload.get("actual_intensity")
+    rpe=payload.get("rpe") or 0
+    minutes=payload.get("actual_duration_min") or 0
+    if intensity in {"AT","TR","AN","PP"} or (intensity=="mixed_unsure" and rpe>=7): return "unusually_hard_or_long" if minutes>=75 or rpe>=9 else "quality_hard"
+    if intensity in {"UT2","UT1"} or (intensity=="mixed_unsure" and rpe>=5): return "aerobic_moderate"
+    return "easy_technical"
+def bounded_coached_proposal(record: dict, session_key: str, payload: dict) -> dict:
+    source=next((s for s in record["plan"].get("sessions",[]) if stable_session_key(s)==session_key),None)
+    if not source or not coached_session(source): raise HTTPException(422,"Only coached rows and private coaching sessions can use this log.")
+    classification=session_load_classification(payload)
+    if classification not in {"quality_hard","unusually_hard_or_long"}: return {"recommendation":"none","classification":classification,"changes":[]}
+    source_date=date.fromisoformat(source["date"]); monday=source_date-timedelta(days=source_date.weekday())
+    candidates=[s for s in record["plan"].get("sessions",[]) if monday < date.fromisoformat(s["date"]) < monday+timedelta(days=7) and date.fromisoformat(s["date"])>source_date and any(b in str(s.get("band","")) for b in ("AT","TR","AN","PP"))]
+    if not candidates: return {"recommendation":"none","classification":classification,"changes":[]}
+    current=candidates[0]; suggested={**current,"band":"UT2","title":"Long aerobic","structure":"60 min UT2","description":"Adjusted after an unexpectedly hard coached session.","adjustment_reason":"coached_session_actual"}
+    return {"recommendation":"review","classification":classification,"source_session_id":session_key,"changes":[{"session_key":stable_session_key(current),"date":current["date"],"current":current,"suggested":suggested,"why":"Coaching added an unexpected hard rowing exposure; this preserves recovery spacing."}]}
+def enrich_sessions(plan_id: str, sessions: list[dict]) -> list[dict]:
+    actuals=actual_by_key(plan_id); enriched=[]; cues=[]
+    for session in sessions:
+        item=deepcopy(session); actual=actuals.get(stable_session_key(session))
+        if actual: item["actual"]=actual
+        if actual and actual.get("carry_cue_forward") and (actual.get("coach_cues") or actual.get("technical_note")):
+            cues.append(actual.get("coach_cues") or actual.get("technical_note"))
+        elif cues and session.get("mode") in {"on_water","erg"}: item["technical_cues"]=cues[-1:]
+        enriched.append(item)
+    return enriched
 def require_coach_admin(user_id: str = Depends(current_user_id)) -> str:
     allowed={value.strip() for value in os.getenv("COACH_ADMIN_USER_IDS","").split(",") if value.strip()}
     if user_id not in allowed: raise HTTPException(403,"Coach/admin access is required for race postings.")
@@ -190,7 +234,7 @@ def today(plan_id: str, on: Optional[date] = None, user_id: str = Depends(curren
     target = (on or date.today()).isoformat()
     sessions = [s for s in record["plan"]["sessions"] if s["date"] == target]
     profile=REPOSITORIES.get(record["athlete_id"]) or {}
-    return {"plan_id": plan_id, "plan_version":record["version_number"],"plan_needs_update":plan_needs_update(record,profile),"date": target, "sessions": sessions, "cached_at": date.today().isoformat()}
+    return {"plan_id": plan_id, "plan_version":record["version_number"],"plan_needs_update":plan_needs_update(record,profile),"date": target, "sessions": enrich_sessions(plan_id,sessions), "cached_at": date.today().isoformat()}
 
 @app.get("/api/v1/plans/{plan_id}/week")
 def week(plan_id: str, week_number: Optional[int] = None, week_start: Optional[date] = None, user_id: str = Depends(current_user_id)) -> dict:
@@ -214,9 +258,10 @@ def week(plan_id: str, week_number: Optional[int] = None, week_start: Optional[d
     if matching_override:
         from rowing_plan.weekly_overrides import apply_to_sessions
         sessions=apply_to_sessions(sessions,matching_override)
+    enriched_sessions=enrich_sessions(plan_id,sessions)
     days=[]
     for offset in range(7):
-        current=monday+timedelta(days=offset); day_sessions=[s for s in sessions if s["date"]==current.isoformat()]
+        current=monday+timedelta(days=offset); day_sessions=[s for s in enriched_sessions if s["date"]==current.isoformat()]
         state=calendar.get(current.isoformat(),{}).get("state","no_additional_session")
         days.append({"date":current.isoformat(),"day":current.strftime("%A"),"state":state,"sessions":day_sessions})
     return {"plan_id": plan_id,"plan_version":record["version_number"],"plan_needs_update":plan_needs_update(record,profile), "week": monday.isocalendar().week, "week_start":monday.isoformat(), "days": days, "weekly_override_applied":bool(matching_override)}
@@ -241,9 +286,25 @@ def session_detail(plan_id: str, session_date: date, session_id: str, mode: str,
 
 @app.post("/api/v1/plans/{plan_id}/sessions/{session_key}/log")
 def log_workout(plan_id: str, session_key: str, log: WorkoutLogRequest, user_id: str = Depends(current_user_id)) -> dict:
-    owned_plan(plan_id,user_id)
+    record=owned_plan(plan_id,user_id)
     payload=log.model_dump()
-    return {"status": "accepted", "log_id": REPOSITORIES.save_log(plan_id, session_key, payload), "session_load_au":session_load_au(payload)}
+    source=next((s for s in record["plan"].get("sessions",[]) if stable_session_key(s)==session_key),None)
+    if not source: raise HTTPException(404,"Session not found")
+    proposal=bounded_coached_proposal(record,session_key,payload) if coached_session(source) else {"recommendation":"none","classification":"logged","changes":[]}
+    return {"status": "accepted", "log_id": REPOSITORIES.save_log(plan_id, session_key, payload), "session_load_au":session_load_au(payload), "adjustment":proposal}
+
+@app.post("/api/v1/plans/{plan_id}/coached-session-adjustment/apply")
+def apply_coached_session_adjustment(plan_id: str, session_key: str, user_id: str = Depends(current_user_id)) -> dict:
+    """Create a new version only after the athlete accepts the bounded proposal."""
+    record=owned_plan(plan_id,user_id); actual=actual_by_key(plan_id).get(session_key)
+    if not actual: raise HTTPException(422,"Log the coached session before reviewing the remaining week.")
+    proposal=bounded_coached_proposal(record,session_key,actual)
+    if proposal["recommendation"]!="review": return {"status":"no_change","plan_id":plan_id,"proposal":proposal}
+    plan=deepcopy(record["plan"]); changes={item["session_key"]:item["suggested"] for item in proposal["changes"]}
+    plan["sessions"]=[changes.get(stable_session_key(session),session) for session in plan.get("sessions",[])]
+    plan.setdefault("adjustment_provenance",[]).append({"reason":"coached_session_actual","source_session_id":session_key,"source_plan_id":plan_id,"changes":[item["session_key"] for item in proposal["changes"]]})
+    new_plan_id=REPOSITORIES.save_plan(record["athlete_id"],plan)
+    return {"status":"applied","plan_id":new_plan_id,"proposal":proposal}
 
 @app.get("/api/v1/plans/{plan_id}/logs")
 def workout_logs(plan_id: str, user_id: str = Depends(current_user_id)) -> dict:

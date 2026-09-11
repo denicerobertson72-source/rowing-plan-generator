@@ -41,6 +41,12 @@ class WorkoutLogRequest(BaseModel):
     technical_note: str = ""
     conditions: str = ""
     notes: str = ""
+    actual_intensity: Optional[Literal["UT3","UT2","UT1","AT","TR","AN","PP","mixed_unsure"]] = None
+    completion: Optional[Literal["yes","partial","no"]] = None
+    stroke_rate_range: str = ""
+    technical_focus_tags: list[str] = Field(default_factory=list)
+    coach_cues: str = ""
+    carry_cue_forward: bool = False
 
 class PrivateCheckInRequest(BaseModel):
     entry_date: str

@@ -146,9 +146,13 @@ class SQLiteRepositories:
         with self._connect() as db: row=db.execute("SELECT a.user_id FROM plan_versions p JOIN athletes a ON a.athlete_id=p.athlete_id WHERE p.plan_id=?",(plan_id,)).fetchone()
         return row["user_id"] if row else None
     def save_log(self, plan_id: str, session_key: str, payload: dict[str, Any]) -> str:
-        log_id=str(uuid4())
-        with self._connect() as db: db.execute("INSERT INTO workout_logs VALUES (?, ?, ?, ?, ?)",(log_id,plan_id,session_key,json.dumps(payload),self._now()))
-        return log_id
+        with self._connect() as db:
+            row=db.execute("SELECT log_id FROM workout_logs WHERE plan_id=? AND session_key=? ORDER BY created_at DESC LIMIT 1",(plan_id,session_key)).fetchone()
+            if row:
+                db.execute("UPDATE workout_logs SET payload_json=?,created_at=? WHERE log_id=?",(json.dumps(payload),self._now(),row["log_id"]))
+                return row["log_id"]
+            log_id=str(uuid4()); db.execute("INSERT INTO workout_logs VALUES (?, ?, ?, ?, ?)",(log_id,plan_id,session_key,json.dumps(payload),self._now()))
+            return log_id
     def logs_for_plan(self, plan_id: str) -> list[dict[str, Any]]:
         with self._connect() as db: rows=db.execute("SELECT * FROM workout_logs WHERE plan_id=? ORDER BY created_at DESC",(plan_id,)).fetchall()
         return [{"log_id":row["log_id"],"session_key":row["session_key"],"created_at":row["created_at"],"payload":json.loads(row["payload_json"])} for row in rows]
@@ -311,9 +315,12 @@ class PostgresRepositories:
         return row["user_id"] if row else None
     def save_log(self, plan_id: str, session_key: str, payload: dict[str, Any]) -> str:
         from psycopg.types.json import Jsonb
-        log_id=str(uuid4())
         with self._connect() as db, db.cursor() as cursor:
-            cursor.execute("INSERT INTO workout_logs (log_id, plan_id, session_key, payload_json) VALUES (%s, %s, %s, %s)",(log_id,plan_id,session_key,Jsonb(payload)))
+            cursor.execute("SELECT log_id FROM workout_logs WHERE plan_id=%s AND session_key=%s ORDER BY created_at DESC LIMIT 1 FOR UPDATE",(plan_id,session_key)); row=cursor.fetchone()
+            if row:
+                cursor.execute("UPDATE workout_logs SET payload_json=%s,created_at=NOW() WHERE log_id=%s",(Jsonb(payload),row["log_id"]))
+                return row["log_id"]
+            log_id=str(uuid4()); cursor.execute("INSERT INTO workout_logs (log_id, plan_id, session_key, payload_json) VALUES (%s, %s, %s, %s)",(log_id,plan_id,session_key,Jsonb(payload)))
         return log_id
     def logs_for_plan(self, plan_id: str) -> list[dict[str, Any]]:
         with self._connect() as db, db.cursor() as cursor:
