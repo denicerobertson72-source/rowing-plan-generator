@@ -192,7 +192,8 @@ def require_coach_admin(user_id: str = Depends(current_user_id)) -> str:
     return user_id
 
 @app.get("/api/v1/health", response_model=ApiHealth)
-def health() -> ApiHealth: return ApiHealth(status="ok", api_version="v1", planner_version=PLANNER_VERSION)
+def health() -> ApiHealth:
+    return ApiHealth(status="ok", api_version="v1", planner_version=PLANNER_VERSION, build_id=os.getenv("VERCEL_GIT_COMMIT_SHA", "local")[:12])
 
 @app.get("/api/v1/ready")
 def ready() -> dict:
