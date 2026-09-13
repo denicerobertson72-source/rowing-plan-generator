@@ -37,7 +37,9 @@ def _recurring_commitments(profile, start, end, weekly_hard_session_days=None, w
     source of strength, coaching, and rest commitments.
     """
     activities=profile.get("recurring_activities")
-    if activities is None: return {}, []
+    # The scheduler's modern and legacy paths share the same three-part
+    # contract.  Older onboarding profiles omit activity cards entirely.
+    if activities is None: return {}, [], []
     commitments=defaultdict(list); moves=[]; audits=[]; week_start=start-timedelta(days=start.weekday())
     available_days=[item.get("weekday") for item in profile.get("weekly_availability",[]) if item.get("available",True) and item.get("weekday")]
     preferred_long_days=set(profile.get("preferences",{}).get("preferred_long_session_days",[])) & set(available_days)
@@ -138,7 +140,7 @@ def _calendar_days(profile, start, end, commitments, modern_schedule):
 def _validate_weekly_frequencies(profile, start, end, calendar_days, phases):
     """Reject a normal complete week that loses a requested recurring session."""
     activities=profile.get("recurring_activities")
-    if activities is None: return []
+    if activities is None: return [], []
     expected={item.get("activity_type"):item.get("sessions_per_week",0) for item in activities}
     phase_by_date={item["date"]:item["phase"] for item in phases}; errors=[]; exceptions=[]
     monday=start-timedelta(days=start.weekday())

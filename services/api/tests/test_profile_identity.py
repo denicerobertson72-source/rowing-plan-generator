@@ -61,6 +61,59 @@ def test_empty_or_missing_long_session_preference_is_valid_and_does_not_mutate_p
     assert any(session.get("session_role") == "LONG_AEROBIC" for session in plan["sessions"])
 
 
+def test_tester_shaped_profile_with_varied_structure_saves_and_generates():
+    with TemporaryDirectory() as directory:
+        client, previous=client_for_database(Path(directory)/"tester-profile.sqlite3")
+        try:
+            profile=synthetic_profile()
+            profile["athlete"].update({"birth_year":1979,"boat_classes":["1x"],"training_environment":"mixed","current_rowing_sessions_per_week":5,"current_approx_weekly_rowing_minutes":400})
+            profile["season"].update({"season_name":"Fall","start_date":"2026-09-10","end_date":"2026-11-30"})
+            profile["tests"]["erg_2k_seconds"]=479
+            profile["races"]=[]
+            profile["preferences"]={"workout_structure_preference":"varied","preferred_long_session_days":["sunday"]}
+            profile["recurring_activities"]= [{"activity_id":"strength","activity_type":"strength","sessions_per_week":2,"scheduling_status":"preferred","fixed_days":[],"preferred_days":["monday","thursday"],"allowed_days":["monday","thursday"],"prohibited_days":[]},{"activity_id":"rest","activity_type":"rest","sessions_per_week":1,"scheduling_status":"fixed","fixed_days":["saturday"],"preferred_days":[],"allowed_days":[],"prohibited_days":[]}]
+            created=client.post("/api/v1/athletes",json={"athlete_profile":profile})
+            athlete_id=created.json()["athlete_id"]
+            saved=client.put(f"/api/v1/athletes/{athlete_id}",json={"athlete_profile":profile,"expected_revision":0})
+            generated=client.post(f"/api/v1/athletes/{athlete_id}/plans/generate",json={})
+        finally:
+            REPOSITORIES._instance=previous
+    assert created.status_code == saved.status_code == generated.status_code == 200
+    assert saved.json()["athlete_profile"]["preferences"]["workout_structure_preference"] == "varied"
+
+
+def test_legacy_profile_without_recurring_activities_uses_three_part_schedule_contract():
+    from services.api.app.main import build_plan
+    from services.api.app.schemas import PlanGenerationRequest
+    profile=synthetic_profile()
+    profile.pop("recurring_activities")
+    profile["athlete"].update({"birth_year":1979,"current_rowing_sessions_per_week":5,"current_approx_weekly_rowing_minutes":400})
+    profile["season"].update({"start_date":"2026-09-10","end_date":"2026-11-30"})
+    profile["races"]= [{"event_name":"November 5k","start_date":"2026-11-06","end_date":"2026-11-06","priority":"A","race_type":"head_5k"}]
+    profile["weekly_availability"]=[{"weekday":day,"available":True,"max_training_minutes":90,"rowing_modes":["erg"],"heavy_lifting":day in {"monday","thursday"},"fixed_rest":day=="saturday"} for day in ("monday","tuesday","wednesday","thursday","friday","saturday","sunday")]
+    plan=build_plan(PlanGenerationRequest(athlete_profile=profile))
+    assert plan["sessions"] and plan["schedule_candidate_audits"] == []
+
+
+def test_unexpected_generation_failure_is_safe_and_creates_no_plan(monkeypatch):
+    def raise_unexpected(*_args, **_kwargs):
+        raise RuntimeError("not enough values to unpack (expected 3, got 2)")
+
+    monkeypatch.setattr("services.api.app.main.generate_plan", raise_unexpected)
+    with TemporaryDirectory() as directory:
+        client, previous=client_for_database(Path(directory)/"generation-failure.sqlite3")
+        try:
+            athlete_id=client.post("/api/v1/athletes",json={"athlete_profile":synthetic_profile()}).json()["athlete_id"]
+            response=client.post(f"/api/v1/athletes/{athlete_id}/plans/generate",json={})
+            latest=REPOSITORIES.latest_plan_for_athlete(athlete_id)
+        finally:
+            REPOSITORIES._instance=previous
+    assert response.status_code == 500
+    assert response.json() == {"detail":{"error_code":"plan_generation_failed"}}
+    assert "not enough values to unpack" not in response.text
+    assert latest is None
+
+
 def test_account_can_delete_only_an_owned_empty_unselected_test_profile():
     with TemporaryDirectory() as directory:
         client, previous=client_for_database(Path(directory)/"account-delete.sqlite3")

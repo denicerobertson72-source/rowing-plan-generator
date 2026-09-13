@@ -59,6 +59,15 @@ test("Profile distinguishes a generation 422 from a profile-save validation fail
   expect(await page.evaluate(()=>JSON.parse(localStorage.getItem("rowing-plan-session-v1")||"{}"))).toEqual(before);
 });
 
+test("Profile generation does not expose an unexpected server exception", async ({page}) => {
+  await page.goto("/profile");
+  await page.route("**/api/v1/athletes/*/plans/generate",route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({detail:{error_code:"plan_generation_failed"}})}));
+  await page.getByRole("button",{name:"Update plan with these choices"}).click();
+  const alert=page.getByRole("alert").filter({hasText:"Your profile was saved, but the plan couldn't be updated."});
+  await expect(alert).toBeVisible();
+  await expect(alert).not.toContainText("not enough values to unpack");
+});
+
 test("Step 6B race draft create, failure guard, duplicate guard, and plan invalidation", async ({page}) => {
   let writes=0;
   page.on("request", request => { if (request.method()==="PUT" && request.url().includes("/athletes/")) writes++; });
