@@ -8,6 +8,8 @@ from copy import deepcopy
 from datetime import date, timedelta
 from io import BytesIO
 from pathlib import Path
+from secrets import token_urlsafe
+from traceback import extract_tb
 from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,9 +49,6 @@ def build_plan(request: PlanGenerationRequest) -> dict:
     power = build_power_profile(profile, CONFIG)
     try: plan = generate_plan(profile, CONFIG, bands, power, request.locked_sessions)
     except PlanningConflict as error: raise HTTPException(status_code=422, detail={"error_code":"planning_conflict","planning_conflicts":[str(error)],"diagnostic":error.details}) from error
-    except ValueError as error:
-        logger.exception("plan_generation_failed stage=generate_plan code=plan_generation_failed")
-        raise HTTPException(status_code=500, detail={"error_code":"plan_generation_failed"}) from error
     hard_errors = hard_constraint_errors(plan, profile)
     if hard_errors: raise HTTPException(status_code=422, detail={"error_code":"hard_constraint","constraint_errors": hard_errors})
     return plan
@@ -59,6 +58,30 @@ def owned_athlete(athlete_id: str, user_id: str) -> dict:
     if not profile: raise HTTPException(404,"Athlete not found")
     if REPOSITORIES.athlete_owner(athlete_id) != user_id: raise HTTPException(403,"This athlete belongs to another account.")
     return profile
+
+def safe_generation_metadata(profile: dict) -> dict:
+    """Log only structural planner context for an unexpected generation failure."""
+    activities=profile.get("recurring_activities")
+    tests=profile.get("tests") if isinstance(profile.get("tests"),dict) else {}
+    return {
+        "recurring_activities_present":activities is not None,
+        "recurring_activity_count":len(activities) if isinstance(activities,list) else 0,
+        "race_count":len(profile.get("races",[])) if isinstance(profile.get("races"),list) else 0,
+        "performance_test_count":len(tests.get("multi_duration_power_tests",[])) if isinstance(tests.get("multi_duration_power_tests"),list) else 0,
+        "season_dates_present":bool(profile.get("season",{}).get("start_date") and profile.get("season",{}).get("end_date")),
+    }
+
+def unexpected_generation_error(error: Exception, profile: dict, athlete_id: str | None, stage: str, planversion_creation_started: bool) -> HTTPException:
+    error_id=f"pg_{token_urlsafe(6).replace('-', '').replace('_', '')}"
+    trace=extract_tb(error.__traceback__)
+    source=f"{trace[-1].filename}:{trace[-1].lineno}" if trace else "unknown"
+    metadata=safe_generation_metadata(profile)
+    logger.exception(
+        "plan_generation_failed error_id=%s exception_class=%s exception_message=%s source=%s stage=%s athlete_id_present=%s planversion_creation_started=%s recurring_activities_present=%s recurring_activity_count=%s race_count=%s performance_test_count=%s season_dates_present=%s",
+        error_id, type(error).__name__, str(error), source, stage, bool(athlete_id), planversion_creation_started,
+        metadata["recurring_activities_present"], metadata["recurring_activity_count"], metadata["race_count"], metadata["performance_test_count"], metadata["season_dates_present"],
+    )
+    return HTTPException(500, detail={"error_code":"plan_generation_failed","error_id":error_id})
 def athlete_response(athlete_id: str, profile: dict) -> AthleteResponse:
     return AthleteResponse(athlete_id=athlete_id, athlete_profile=public_profile(profile), profile_revision=profile_revision(profile))
 def athlete_summary(record: dict) -> dict:
@@ -246,12 +269,14 @@ def update_athlete(athlete_id: str, request: AthleteUpdateRequest, user_id: str 
 @app.post("/api/v1/athletes/{athlete_id}/plans/generate", response_model=PlanResponse)
 def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: str = Depends(current_user_id)) -> PlanResponse:
     profile=owned_athlete(athlete_id,user_id)
-    previous=REPOSITORIES.latest_plan_for_athlete(athlete_id)
-    locked=list(request.locked_sessions)
-    if previous:
-        completed={entry["session_key"] for entry in REPOSITORIES.logs_for_plan(previous["plan_id"]) if entry["payload"].get("status")=="completed"}
-        locked.extend(session for session in previous["plan"].get("sessions",[]) if f'{session["date"]}:{session.get("session_id")}:{session.get("mode")}' in completed)
+    stage="locked_session_loading"; planversion_creation_started=False
     try:
+        previous=REPOSITORIES.latest_plan_for_athlete(athlete_id)
+        locked=list(request.locked_sessions)
+        if previous:
+            completed={entry["session_key"] for entry in REPOSITORIES.logs_for_plan(previous["plan_id"]) if entry["payload"].get("status")=="completed"}
+            locked.extend(session for session in previous["plan"].get("sessions",[]) if f'{session["date"]}:{session.get("session_id")}:{session.get("mode")}' in completed)
+        stage="plan_generation"
         plan=build_plan(PlanGenerationRequest(athlete_profile=profile, locked_sessions=locked))
     except HTTPException as error:
         detail=error.detail if isinstance(error.detail, dict) else {}
@@ -259,10 +284,14 @@ def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: s
         diagnostic=detail.get("diagnostic") if isinstance(detail.get("diagnostic"), dict) else {}
         logger.warning("plan_generation_failed endpoint=athlete_regenerate status=%s code=%s conflict_type=%s reason=%s activity_type=%s scheduling_status=%s requested_frequency=%s candidate_days=%s prohibited_days=%s fixed_days=%s week_start=%s validation_rule=%s", error.status_code, code, diagnostic.get("conflict_type","request_rejected"), diagnostic.get("reason","request_rejected"), diagnostic.get("activity_type"), diagnostic.get("scheduling_status"), diagnostic.get("requested_frequency"), diagnostic.get("candidate_days"), diagnostic.get("prohibited_days"), diagnostic.get("fixed_days"), diagnostic.get("week_start"), diagnostic.get("validation_rule"))
         raise
-    except Exception:
-        logger.exception("plan_generation_failed endpoint=athlete_regenerate code=plan_generation_failed")
-        raise HTTPException(500, detail={"error_code":"plan_generation_failed"})
-    return PlanResponse(plan_id=REPOSITORIES.save_plan(athlete_id,plan), plan=plan)
+    except Exception as error:
+        raise unexpected_generation_error(error, profile, athlete_id, stage, planversion_creation_started) from error
+    try:
+        stage="persistence"; planversion_creation_started=True
+        plan_id=REPOSITORIES.save_plan(athlete_id,plan)
+    except Exception as error:
+        raise unexpected_generation_error(error, profile, athlete_id, stage, planversion_creation_started) from error
+    return PlanResponse(plan_id=plan_id, plan=plan)
 
 @app.get("/api/v1/athletes/{athlete_id}/plans/latest")
 def latest_plan_for_athlete(athlete_id: str, user_id: str = Depends(current_user_id)) -> dict:

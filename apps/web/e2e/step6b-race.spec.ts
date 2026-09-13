@@ -61,10 +61,11 @@ test("Profile distinguishes a generation 422 from a profile-save validation fail
 
 test("Profile generation does not expose an unexpected server exception", async ({page}) => {
   await page.goto("/profile");
-  await page.route("**/api/v1/athletes/*/plans/generate",route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({detail:{error_code:"plan_generation_failed"}})}));
+  await page.route("**/api/v1/athletes/*/plans/generate",route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({detail:{error_code:"plan_generation_failed",error_id:"pg_test123"}})}));
   await page.getByRole("button",{name:"Update plan with these choices"}).click();
   const alert=page.getByRole("alert").filter({hasText:"Your profile was saved, but the plan couldn't be updated."});
   await expect(alert).toBeVisible();
+  await expect(alert).toContainText("Reference: pg_test123");
   await expect(alert).not.toContainText("not enough values to unpack");
 });
 

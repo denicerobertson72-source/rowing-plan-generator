@@ -95,23 +95,35 @@ def test_legacy_profile_without_recurring_activities_uses_three_part_schedule_co
     assert plan["sessions"] and plan["schedule_candidate_audits"] == []
 
 
-def test_unexpected_generation_failure_is_safe_and_creates_no_plan(monkeypatch):
+def test_unexpected_generation_failure_is_safe_and_creates_no_plan(monkeypatch, caplog):
     def raise_unexpected(*_args, **_kwargs):
         raise RuntimeError("not enough values to unpack (expected 3, got 2)")
 
-    monkeypatch.setattr("services.api.app.main.generate_plan", raise_unexpected)
     with TemporaryDirectory() as directory:
         client, previous=client_for_database(Path(directory)/"generation-failure.sqlite3")
         try:
             athlete_id=client.post("/api/v1/athletes",json={"athlete_profile":synthetic_profile()}).json()["athlete_id"]
+            initial=client.post(f"/api/v1/athletes/{athlete_id}/plans/generate",json={})
+            stored_before=copy.deepcopy(REPOSITORIES.get(athlete_id))
+            monkeypatch.setattr("services.api.app.main.generate_plan", raise_unexpected)
+            caplog.set_level(logging.ERROR, logger="services.api.app.main")
             response=client.post(f"/api/v1/athletes/{athlete_id}/plans/generate",json={})
             latest=REPOSITORIES.latest_plan_for_athlete(athlete_id)
+            stored_profile=REPOSITORIES.get(athlete_id)
         finally:
             REPOSITORIES._instance=previous
+    detail=response.json()["detail"]
+    assert initial.status_code == 200
     assert response.status_code == 500
-    assert response.json() == {"detail":{"error_code":"plan_generation_failed"}}
+    assert detail["error_code"] == "plan_generation_failed"
+    assert detail["error_id"].startswith("pg_")
     assert "not enough values to unpack" not in response.text
-    assert latest is None
+    assert latest["plan_id"] == initial.json()["plan_id"]
+    assert stored_profile == stored_before
+    assert f"error_id={detail['error_id']}" in caplog.text
+    assert "exception_class=RuntimeError" in caplog.text
+    assert "stage=plan_generation" in caplog.text
+    assert "source=" in caplog.text and "Traceback" in caplog.text
 
 
 def test_account_can_delete_only_an_owned_empty_unselected_test_profile():
