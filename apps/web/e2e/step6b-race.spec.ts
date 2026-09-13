@@ -11,7 +11,7 @@ test("Account login uses password-manager fields without app password storage", 
 });
 
 test("Profile accepts an empty preferred long-session day through save and generation", async ({page}) => {
-  await page.goto("/profile");
+  await page.goto("/profile"); await expect(page.getByText("Synthetic Step 6B Rower")).toBeVisible();
   const days=page.locator('input[name^="preferred-long-"]');
   for (let index=0;index<await days.count();index++) if (await days.nth(index).isChecked()) await days.nth(index).uncheck();
   let savedPreference:unknown;
@@ -44,6 +44,19 @@ test("Profile shows an unmapped server validation error without marking fields",
   await expect(page.getByText("Maximum heart rate must be greater than resting heart rate.")).toBeVisible();
   await expect(page.locator('[aria-invalid="true"]')).toHaveCount(0);
   await expect(page.getByText("highlighted",{exact:false})).toHaveCount(0);
+});
+
+test("Profile distinguishes a generation 422 from a profile-save validation failure", async ({page}) => {
+  await page.goto("/profile"); await expect(page.getByText("Synthetic Step 6B Rower")).toBeVisible();
+  const before=await page.evaluate(()=>JSON.parse(localStorage.getItem("rowing-plan-session-v1")||"{}")); let profileWrites=0;
+  page.on("request",request=>{if(request.method()==="PUT"&&request.url().includes("/athletes/"))profileWrites++;});
+  await page.route("**/api/v1/athletes/*/plans/generate",route=>route.fulfill({status:422,contentType:"application/json",body:JSON.stringify({detail:{error_code:"planning_conflict",planning_conflicts:["Your fixed training commitments leave no feasible day for strength."]}})}));
+  await page.getByRole("button",{name:"Update plan with these choices"}).click();
+  const alert=page.getByRole("alert").filter({hasText:"Your profile was saved, but"});
+  await expect(alert).toContainText("Your profile was saved, but we couldn't update your plan.");
+  await expect(alert).toContainText("leave no feasible day for strength");
+  expect(profileWrites).toBe(0);
+  expect(await page.evaluate(()=>JSON.parse(localStorage.getItem("rowing-plan-session-v1")||"{}"))).toEqual(before);
 });
 
 test("Step 6B race draft create, failure guard, duplicate guard, and plan invalidation", async ({page}) => {
