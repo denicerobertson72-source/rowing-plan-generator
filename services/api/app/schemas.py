@@ -92,3 +92,6 @@ class ApiHealth(BaseModel):
     status: Literal["ok"]
     api_version: str
     planner_version: str
+    health_schema: Literal["2"]
+    build_id: str
+    deployment_url: str

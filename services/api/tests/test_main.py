@@ -7,6 +7,9 @@ def test_health_exposes_versioned_api():
     response = client.get("/api/v1/health")
     assert response.status_code == 200
     assert response.json()["api_version"] == "v1"
+    assert response.json()["health_schema"] == "2"
+    assert "build_id" in response.json()
+    assert "deployment_url" in response.json()
 
 def test_openapi_is_available():
     response = client.get("/api/v1/openapi.json")
