@@ -59,6 +59,16 @@ test("Profile distinguishes a generation 422 from a profile-save validation fail
   expect(await page.evaluate(()=>JSON.parse(localStorage.getItem("rowing-plan-session-v1")||"{}"))).toEqual(before);
 });
 
+test("Profile displays the preserved hard-constraint reason from generation", async ({page}) => {
+  await page.goto("/profile");
+  const failure={detail:{error_code:"hard_constraint",constraint_errors:["Rowing is prohibited on 2026-09-07."]}};
+  await page.route("**/api/v1/athletes/*/plans/generate",route=>route.fulfill({status:422,contentType:"application/json",body:JSON.stringify(failure)}));
+  await page.getByRole("button",{name:"Update plan with these choices"}).click();
+  const alert=page.getByRole("alert").filter({hasText:"Your profile was saved, but"});
+  await expect(alert).toContainText("Rowing is prohibited on 2026-09-07.");
+  await expect(alert).not.toContainText("request_rejected");
+});
+
 test("Profile generation does not expose an unexpected server exception", async ({page}) => {
   await page.goto("/profile");
   await page.route("**/api/v1/athletes/*/plans/generate",route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({detail:{error_code:"plan_generation_failed",error_id:"pg_test123"}})}));
@@ -140,6 +150,7 @@ test("Week navigation advances within the saved PlanVersion and preserves its UR
 });
 
 test("Week defaults to the browser-local current week while explicit links stay authoritative", async ({page}) => {
+  await page.clock.install({time:new Date("2026-09-11T12:00:00")});
   await page.goto("/week?week=2026-08-31");
   await expect(page.locator(".week-nav b")).toContainText("Aug 31");
   await page.getByRole("link",{name:"Week",exact:true}).click();

@@ -318,6 +318,26 @@ def test_generation_conflict_preserves_safe_scheduler_diagnostic_and_creates_no_
     assert "fixed_days=[]" in caplog.text
 
 
+def test_hard_constraint_reason_is_preserved_in_response_log_and_plan_ui_contract(monkeypatch, caplog):
+    profile=synthetic_profile()
+    profile["weekly_availability"][0].update({"heavy_lifting":True,"row_on_lifting_day":False})
+    monkeypatch.setattr("services.api.app.main.generate_plan", lambda *_args, **_kwargs: {"sessions":[{"date":"2026-09-07","day":"Monday","mode":"erg"}]})
+    with TemporaryDirectory() as directory:
+        client, previous=client_for_database(Path(directory)/"hard-constraint.sqlite3")
+        try:
+            athlete_id=client.post("/api/v1/athletes",json={"athlete_profile":profile}).json()["athlete_id"]
+            caplog.set_level(logging.WARNING, logger="services.api.app.main")
+            response=client.post(f"/api/v1/athletes/{athlete_id}/plans/generate",json={})
+        finally:
+            REPOSITORIES._instance=previous
+    detail=response.json()["detail"]
+    reason="Rowing is prohibited on 2026-09-07."
+    assert response.status_code == 422 and detail["error_code"] == "hard_constraint"
+    assert detail["constraint_errors"] == detail["planning_conflicts"] == [reason]
+    assert detail["diagnostic"] == {"conflict_type":"hard_constraint","reason":reason,"validation_rule":"hard_constraint_errors"}
+    assert f"code=hard_constraint conflict_type=hard_constraint reason={reason}" in caplog.text
+
+
 def test_ambiguous_fixed_private_coaching_day_remains_a_planning_conflict():
     profile=synthetic_profile()
     profile["recurring_activities"] = [

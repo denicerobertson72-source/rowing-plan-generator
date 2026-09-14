@@ -44,13 +44,15 @@ async def prevent_dynamic_api_caching(request, call_next):
 def build_plan(request: PlanGenerationRequest) -> dict:
     profile = normalize_recurring_schedule_for_planning(request.athlete_profile)
     errors = validate_profile(profile)
-    if errors: raise HTTPException(status_code=422, detail={"error_code":"profile_validation","validation_errors": errors})
+    if errors:
+        raise HTTPException(status_code=422, detail={"error_code":"profile_validation","validation_errors": errors,"diagnostic":{"conflict_type":"profile_validation","reason":errors[0],"validation_rule":"profile_validation"}})
     bands = build_intensity_profile(profile, CONFIG)
     power = build_power_profile(profile, CONFIG)
     try: plan = generate_plan(profile, CONFIG, bands, power, request.locked_sessions)
     except PlanningConflict as error: raise HTTPException(status_code=422, detail={"error_code":"planning_conflict","planning_conflicts":[str(error)],"diagnostic":error.details}) from error
     hard_errors = hard_constraint_errors(plan, profile)
-    if hard_errors: raise HTTPException(status_code=422, detail={"error_code":"hard_constraint","constraint_errors": hard_errors})
+    if hard_errors:
+        raise HTTPException(status_code=422, detail={"error_code":"hard_constraint","constraint_errors":hard_errors,"planning_conflicts":hard_errors,"diagnostic":{"conflict_type":"hard_constraint","reason":hard_errors[0],"validation_rule":"hard_constraint_errors"}})
     return plan
 
 def owned_athlete(athlete_id: str, user_id: str) -> dict:
@@ -82,6 +84,27 @@ def unexpected_generation_error(error: Exception, profile: dict, athlete_id: str
         metadata["recurring_activities_present"], metadata["recurring_activity_count"], metadata["race_count"], metadata["performance_test_count"], metadata["season_dates_present"],
     )
     return HTTPException(500, detail={"error_code":"plan_generation_failed","error_id":error_id})
+
+def generation_rejection_diagnostic(detail: object, error_code: str) -> dict:
+    """Keep known 422 reasons visible even when older paths return plain lists or strings."""
+    source=detail if isinstance(detail,dict) else {}
+    diagnostic=source.get("diagnostic") if isinstance(source.get("diagnostic"),dict) else {}
+    result=dict(diagnostic)
+    for key in ("planning_conflicts","constraint_errors","validation_errors"):
+        values=source.get(key)
+        if not isinstance(values,list) or not values:
+            continue
+        first=values[0]
+        if isinstance(first,dict):
+            result={**first,**result}
+        elif isinstance(first,str) and first:
+            result.setdefault("reason",first)
+        break
+    if isinstance(detail,str) and detail:
+        result.setdefault("reason",detail)
+    result.setdefault("conflict_type",error_code)
+    result.setdefault("reason","request_rejected")
+    return result
 def athlete_response(athlete_id: str, profile: dict) -> AthleteResponse:
     return AthleteResponse(athlete_id=athlete_id, athlete_profile=public_profile(profile), profile_revision=profile_revision(profile))
 def athlete_summary(record: dict) -> dict:
@@ -289,7 +312,7 @@ def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: s
     except HTTPException as error:
         detail=error.detail if isinstance(error.detail, dict) else {}
         code=detail.get("error_code", "planning_rejected" if error.status_code == 422 else "request_rejected")
-        diagnostic=detail.get("diagnostic") if isinstance(detail.get("diagnostic"), dict) else {}
+        diagnostic=generation_rejection_diagnostic(error.detail, code)
         logger.warning("plan_generation_failed endpoint=athlete_regenerate status=%s code=%s conflict_type=%s reason=%s activity_type=%s scheduling_status=%s requested_frequency=%s candidate_days=%s prohibited_days=%s fixed_days=%s week_start=%s validation_rule=%s", error.status_code, code, diagnostic.get("conflict_type","request_rejected"), diagnostic.get("reason","request_rejected"), diagnostic.get("activity_type"), diagnostic.get("scheduling_status"), diagnostic.get("requested_frequency"), diagnostic.get("candidate_days"), diagnostic.get("prohibited_days"), diagnostic.get("fixed_days"), diagnostic.get("week_start"), diagnostic.get("validation_rule"))
         raise
     except Exception as error:
