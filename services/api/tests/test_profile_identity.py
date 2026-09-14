@@ -95,6 +95,51 @@ def test_legacy_profile_without_recurring_activities_uses_three_part_schedule_co
     assert plan["sessions"] and plan["schedule_candidate_audits"] == []
 
 
+def test_modern_profile_clears_stale_friday_rest_but_preserves_an_explicit_zero_capacity_day():
+    def tester_profile(start_date="2026-09-14", friday_minutes=90, stale_rest=False):
+        profile=synthetic_profile()
+        profile["season"].update({"start_date":start_date,"end_date":"2026-11-30"})
+        profile["races"]=[]
+        profile["athlete"].update({"current_rowing_sessions_per_week":5,"current_approx_weekly_rowing_minutes":400})
+        profile["preferences"]={"preferred_long_session_days":["sunday"],"workout_structure_preference":"varied"}
+        profile["recurring_activities"]=[
+            {"activity_id":"strength","activity_type":"strength","sessions_per_week":2,"scheduling_status":"preferred","fixed_days":[],"preferred_days":["monday","thursday"],"allowed_days":["monday","thursday"],"prohibited_days":[],"same_day_rules":{"rowing_allowed":False}},
+            {"activity_id":"rest","activity_type":"rest","sessions_per_week":1,"scheduling_status":"fixed","fixed_days":["saturday"],"preferred_days":[],"allowed_days":[],"prohibited_days":[]},
+        ]
+        profile["weekly_availability"]=[{"weekday":day,"available":not (day=="friday" and friday_minutes==0),"max_training_minutes":friday_minutes if day=="friday" else 90,"rowing_modes":["erg"],"fixed_rest":day=="friday" and stale_rest} for day in ("monday","tuesday","wednesday","thursday","friday","saturday","sunday")]
+        return profile
+
+    with TemporaryDirectory() as directory:
+        client, previous=client_for_database(Path(directory)/"friday-compatibility.sqlite3")
+        try:
+            athlete_id=client.post("/api/v1/athletes",json={"athlete_profile":tester_profile(stale_rest=True)}).json()["athlete_id"]
+            read_only_generation=client.post(f"/api/v1/athletes/{athlete_id}/plans/generate",json={})
+            stored_before_save=REPOSITORIES.get(athlete_id)
+            current=client.get(f"/api/v1/athletes/{athlete_id}").json()
+            saved=client.put(f"/api/v1/athletes/{athlete_id}",json={"athlete_profile":current["athlete_profile"],"expected_revision":current["profile_revision"]})
+            stored_after_save=REPOSITORIES.get(athlete_id)
+            generated=client.post(f"/api/v1/athletes/{athlete_id}/plans/generate",json={})
+            earlier=client.post("/api/v1/athletes",json={"athlete_profile":tester_profile("2026-09-07", stale_rest=True)}).json()["athlete_id"]
+            earlier_current=client.get(f"/api/v1/athletes/{earlier}").json()
+            earlier_saved=client.put(f"/api/v1/athletes/{earlier}",json={"athlete_profile":earlier_current["athlete_profile"],"expected_revision":earlier_current["profile_revision"]})
+            earlier_generated=client.post(f"/api/v1/athletes/{earlier}/plans/generate",json={})
+            blocked=client.post("/api/v1/athletes",json={"athlete_profile":tester_profile(friday_minutes=0)}).json()["athlete_id"]
+            blocked_current=client.get(f"/api/v1/athletes/{blocked}").json()
+            blocked_saved=client.put(f"/api/v1/athletes/{blocked}",json={"athlete_profile":blocked_current["athlete_profile"],"expected_revision":blocked_current["profile_revision"]})
+            blocked_generated=client.post(f"/api/v1/athletes/{blocked}/plans/generate",json={})
+        finally:
+            REPOSITORIES._instance=previous
+    friday_before=next(item for item in stored_before_save["weekly_availability"] if item["weekday"]=="friday")
+    friday_after=next(item for item in stored_after_save["weekly_availability"] if item["weekday"]=="friday")
+    assert read_only_generation.status_code == saved.status_code == generated.status_code == earlier_saved.status_code == earlier_generated.status_code == blocked_saved.status_code == blocked_generated.status_code == 200
+    assert friday_before["fixed_rest"] is True  # Generation normalizes a copy only.
+    assert friday_after["available"] is True and friday_after["max_training_minutes"] == 90 and friday_after["fixed_rest"] is False
+    september_18=next(session for session in generated.json()["plan"]["sessions"] if session["date"]=="2026-09-18")
+    september_11=next(session for session in earlier_generated.json()["plan"]["sessions"] if session["date"]=="2026-09-11")
+    assert (september_11["session_id"],september_11["session_role"]) == (september_18["session_id"],september_18["session_role"]) == ("ut1_05","AEROBIC_STRENGTH")
+    assert not any(session["date"]=="2026-09-18" for session in blocked_generated.json()["plan"]["sessions"])
+
+
 def test_unexpected_generation_failure_is_safe_and_creates_no_plan(monkeypatch, caplog):
     def raise_unexpected(*_args, **_kwargs):
         raise RuntimeError("not enough values to unpack (expected 3, got 2)")

@@ -19,8 +19,18 @@ def normalize_recurring_schedule_for_planning(profile: dict) -> dict:
         return profile
     normalized = deepcopy(profile)
     availability = normalized.get("weekly_availability", [])
+    # Modern Profile scheduling uses the positive minute value as the explicit
+    # availability signal.  Legacy fixed-rest markers are no longer an
+    # independent constraint once recurring activity cards exist; keeping one
+    # could let the modern scheduler place Friday work and then reject it in
+    # the final legacy hard-constraint check.
+    for item in availability:
+        minutes=item.get("max_training_minutes")
+        if isinstance(minutes,(int,float)) and minutes > 0:
+            item["available"] = True
+        item["fixed_rest"] = False
+    normalized.setdefault("preferences", {})["fixed_rest_weekdays"] = []
     available_days = [item.get("weekday") for item in availability if item.get("available", True) and item.get("weekday")]
-    flexible_rest = False
     for activity in normalized["recurring_activities"]:
         if activity.get("scheduling_status") == "fixed":
             requested = activity.get("sessions_per_week", 1)
@@ -46,13 +56,9 @@ def normalize_recurring_schedule_for_planning(profile: dict) -> dict:
                 activity["alternate_cardio"] = {"mode": "optional", "compatibility_source": "legacy_alternate_ut2_allowed"}
         if activity.get("activity_type") != "rest":
             continue
-        flexible_rest = True
-        activity["fixed_days"] = []
-        activity["planner_may_choose_day"] = activity.get("scheduling_status") == "flexible"
-    if flexible_rest:
-        normalized.setdefault("preferences", {})["fixed_rest_weekdays"] = []
-        for item in availability:
-            item["fixed_rest"] = False
+        if activity.get("scheduling_status") != "fixed":
+            activity["fixed_days"] = []
+            activity["planner_may_choose_day"] = activity.get("scheduling_status") == "flexible"
     return normalized
 
 def schedule_signature(profile: dict) -> str:
