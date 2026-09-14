@@ -134,6 +134,29 @@ test("Week presents semantic cards without internal role labels or narrow-screen
   }
 });
 
+test("independent rowing sessions expose the shared detailed actual log without coach-only labels", async ({page}) => {
+  await page.setViewportSize({width:390,height:844});
+  await page.goto("/week?week=2026-09-14");
+  const independent=page.locator(".week-card:not(.coaching):not(.strength):not(.race)").first();
+  await expect(independent).toBeVisible();
+  await independent.getByRole("button",{name:"Log session"}).click();
+  await expect(page.getByRole("heading",{name:"Log session"})).toBeVisible();
+  await page.getByRole("button",{name:"Add session details"}).click();
+  await expect(page.getByLabel("Session notes")).toBeVisible();
+  await expect(page.getByText("Coach cues",{exact:true})).toHaveCount(0);
+  await page.getByLabel("Actual duration").fill("60");
+  await page.getByLabel("Repetitions").fill("2");
+  await page.getByLabel("Work duration").fill("8");
+  await page.getByLabel("Intensity").nth(1).selectOption("AT");
+  const request=page.waitForRequest(value=>value.method()==="POST"&&value.url().includes("/sessions/")&&value.url().endsWith("/log"));
+  await page.getByRole("button",{name:"Save session"}).click();
+  const payload=JSON.parse((await request).postData()||"{}");
+  expect(payload.actual_segments[0].duration_seconds).toBe(480);
+  expect(payload.actual_segments[0].repetitions).toBe(2);
+  await expect(page.getByText("16 min quality")).toBeVisible();
+  expect(await page.locator("body").evaluate(element=>element.scrollWidth<=window.innerWidth)).toBeTruthy();
+});
+
 test("Week navigation advances within the saved PlanVersion and preserves its URL week", async ({page}) => {
   await page.goto("/week");
   await expect(page.locator(".week-nav b")).not.toHaveText("Plan week");

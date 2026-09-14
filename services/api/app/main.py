@@ -125,6 +125,9 @@ def stable_session_key(session: dict) -> str:
     return f'{session["date"]}:{session.get("session_id")}:{session.get("mode")}'
 def coached_session(session: dict) -> bool:
     return session.get("session_id")=="COACHED" or session.get("coached") is True
+def rowing_session(session: dict) -> bool:
+    """Rows, coached or independent, share one actual-load model."""
+    return session.get("mode") in {"erg","on_water"} and session.get("session_id") != "RACE"
 def actual_by_key(plan_id: str) -> dict[str, dict]:
     actuals={entry["session_key"]:entry["payload"] for entry in REPOSITORIES.logs_for_plan(plan_id)}
     # An accepted adjustment is a new immutable PlanVersion.  Its source log
@@ -190,14 +193,15 @@ def weekly_quality_context(record: dict, source: dict, source_payload: dict) -> 
     return {"completed_exposures":len(labels),"quality_minutes":minutes,"labels":labels}
 def bounded_coached_proposal(record: dict, session_key: str, payload: dict) -> dict:
     source=next((s for s in record["plan"].get("sessions",[]) if stable_session_key(s)==session_key),None)
-    if not source or not coached_session(source): raise HTTPException(422,"Only coached rows and private coaching sessions can use this log.")
+    if not source or not rowing_session(source): raise HTTPException(422,"Only rowing sessions can use segmented actual logging.")
     classification=session_load_classification(payload)
     if classification not in {"quality_hard","unusually_hard_or_long"}: return {"recommendation":"none","classification":classification,"changes":[],"composition":actual_composition(payload),"explanation":impact_explanation(record,source,classification,[],payload)}
     source_date=date.fromisoformat(source["date"]); monday=source_date-timedelta(days=source_date.weekday())
     candidates=[s for s in record["plan"].get("sessions",[]) if monday < date.fromisoformat(s["date"]) < monday+timedelta(days=7) and date.fromisoformat(s["date"])>source_date and any(b in str(s.get("band","")) for b in ("AT","TR","AN","PP"))]
     if not candidates: return {"recommendation":"none","classification":classification,"changes":[],"composition":actual_composition(payload),"explanation":impact_explanation(record,source,classification,[],payload)}
-    current=candidates[0]; suggested={**current,"band":"UT2","title":"Long aerobic","structure":"60 min UT2","description":"Adjusted after an unexpectedly hard coached session.","adjustment_reason":"coached_session_actual"}
-    changes=[{"session_key":stable_session_key(current),"date":current["date"],"current":current,"suggested":suggested,"why":"Coaching added an unexpected hard rowing exposure; this preserves recovery spacing."}]
+    current=candidates[0]; source_label="coached" if coached_session(source) else "logged"
+    suggested={**current,"band":"UT2","title":"Long aerobic","structure":"60 min UT2","description":f"Adjusted after an unexpectedly hard {source_label} rowing session.","adjustment_reason":"rowing_session_actual"}
+    changes=[{"session_key":stable_session_key(current),"date":current["date"],"current":current,"suggested":suggested,"why":"The logged rowing load added an unexpected hard exposure; this preserves recovery spacing."}]
     return {"recommendation":"review","classification":classification,"source_session_id":session_key,"changes":changes,"composition":actual_composition(payload),"explanation":impact_explanation(record,source,classification,changes,payload)}
 def enrich_sessions(plan_id: str, sessions: list[dict]) -> list[dict]:
     actuals=actual_by_key(plan_id); enriched=[]; cues=[]
@@ -400,7 +404,10 @@ def log_workout(plan_id: str, session_key: str, log: WorkoutLogRequest, user_id:
     payload=log.model_dump()
     source=next((s for s in record["plan"].get("sessions",[]) if stable_session_key(s)==session_key),None)
     if not source: raise HTTPException(404,"Session not found")
-    proposal=bounded_coached_proposal(record,session_key,payload) if coached_session(source) else {"recommendation":"none","classification":"logged","changes":[]}
+    if not coached_session(source):
+        payload["coach_cues"]=""
+        payload["carry_cue_forward"]=False
+    proposal=bounded_coached_proposal(record,session_key,payload) if rowing_session(source) else {"recommendation":"none","classification":"logged","changes":[]}
     return {"status": "accepted", "log_id": REPOSITORIES.save_log(plan_id, session_key, payload), "session_load_au":session_load_au(payload), "adjustment":proposal}
 
 @app.post("/api/v1/plans/{plan_id}/coached-session-adjustment/apply")
@@ -412,7 +419,7 @@ def apply_coached_session_adjustment(plan_id: str, session_key: str, user_id: st
     if proposal["recommendation"]!="review": return {"status":"no_change","plan_id":plan_id,"proposal":proposal}
     plan=deepcopy(record["plan"]); changes={item["session_key"]:item["suggested"] for item in proposal["changes"]}
     plan["sessions"]=[changes.get(stable_session_key(session),session) for session in plan.get("sessions",[])]
-    plan.setdefault("adjustment_provenance",[]).append({"reason":"coached_session_actual","source_session_id":session_key,"source_plan_id":plan_id,"changes":[item["session_key"] for item in proposal["changes"]]})
+    plan.setdefault("adjustment_provenance",[]).append({"reason":"rowing_session_actual","source_session_id":session_key,"source_plan_id":plan_id,"changes":[item["session_key"] for item in proposal["changes"]]})
     new_plan_id=REPOSITORIES.save_plan(record["athlete_id"],plan)
     return {"status":"applied","plan_id":new_plan_id,"proposal":proposal}
 

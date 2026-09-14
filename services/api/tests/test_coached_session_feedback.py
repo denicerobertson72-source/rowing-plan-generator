@@ -58,3 +58,33 @@ def test_easy_and_mixed_actuals_are_conservative_without_automatic_change():
             REPOSITORIES._instance=previous
     assert easy.json()["adjustment"]["recommendation"] == "none"
     assert mixed.json()["adjustment"]["recommendation"] == "review"
+
+
+def test_independent_rows_use_the_same_segmented_actual_and_weekly_quality_accounting():
+    with TemporaryDirectory() as directory:
+        previous=REPOSITORIES._instance; REPOSITORIES._instance=SQLiteRepositories(Path(directory)/"independent.sqlite3")
+        try:
+            athlete=REPOSITORIES.create({"athlete":{"display_name":"Rower"}},"development-user")
+            sessions=[
+                {"date":"2026-06-02","session_id":"AT","mode":"erg","band":"AT","title":"Threshold","total_cardio_minutes":50},
+                {"date":"2026-06-04","session_id":"UT2","mode":"on_water","band":"UT2","title":"Long aerobic","total_cardio_minutes":60},
+                {"date":"2026-06-07","session_id":"AT","mode":"erg","band":"AT","title":"Threshold","total_cardio_minutes":50},
+                {"date":"2026-06-05","session_id":"LIFT","mode":"strength","band":"STRENGTH","title":"Strength","total_cardio_minutes":0},
+            ]
+            plan_id=REPOSITORIES.save_plan(athlete,{"sessions":sessions,"calendar_days":[]})
+            client=TestClient(app)
+            first=client.post(f"/api/v1/plans/{plan_id}/sessions/2026-06-02:AT:erg/log",json={"status":"completed","completion":"yes","actual_duration_min":50,"actual_intensity":"AT","rpe":7,"actual_segments":[{"segment_type":"work_piece","repetitions":2,"duration_seconds":480,"intensity_band":"AT"}]})
+            payload={"status":"completed","completion":"yes","actual_duration_min":60,"actual_intensity":"mixed_unsure","rpe":7,"technical_note":"Relaxed hands.","notes":"Windy but controlled.","coach_cues":"must not persist","carry_cue_forward":True,"actual_segments":[{"segment_type":"warm_up","duration_seconds":1200,"intensity_band":"UT3"},{"segment_type":"work_piece","repetitions":2,"duration_seconds":480,"intensity_band":"AT","rate_min":26,"rate_max":28,"effort_label":"Firm"},{"segment_type":"cooldown_return","duration_seconds":720,"intensity_band":"UT3"}]}
+            logged=client.post(f"/api/v1/plans/{plan_id}/sessions/2026-06-04:UT2:on_water/log",json=payload)
+            edited=client.post(f"/api/v1/plans/{plan_id}/sessions/2026-06-04:UT2:on_water/log",json={**payload,"rpe":8})
+            week=client.get(f"/api/v1/plans/{plan_id}/week?week_start=2026-06-01")
+        finally:
+            REPOSITORIES._instance=previous
+    assert first.status_code == logged.status_code == edited.status_code == week.status_code == 200
+    assert logged.json()["adjustment"]["recommendation"] == "review"
+    assert logged.json()["adjustment"]["composition"]["quality_seconds"] == 960
+    assert "already completed 2 quality" in logged.json()["adjustment"]["explanation"]
+    actual=week.json()["days"][3]["sessions"][0]["actual"]
+    assert actual["actual_segments"][1]["repetitions"] == 2
+    assert actual["technical_note"] == "Relaxed hands." and actual["notes"] == "Windy but controlled."
+    assert actual["coach_cues"] == "" and actual["carry_cue_forward"] is False and actual["rpe"] == 8
