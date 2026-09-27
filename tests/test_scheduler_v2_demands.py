@@ -83,3 +83,14 @@ def test_weekly_demand_provenance_is_canonical_and_updates_from_placements():
     placed=assign_window_placement(state,WindowPlacement("coach",date(2026,9,8),"coached_training",coached.demand_id,30))
     assert reconcile_demand_satisfaction(placed,demands).demand_satisfaction[coached.demand_id].status=="provisional_satisfied"
     assert reconcile_demand_satisfaction(release_window_placement(placed,"coach"),demands,date(2026,9,7)).demand_satisfaction[coached.demand_id].status=="open"
+
+def test_window_reconstruction_imports_overlap_once_and_keeps_frozen_history():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-27"}; calendar=build_v2_season_calendar(profile); demands=tuple(generate_training_demands(profile)); coached=next(item for item in demands if item.type=="coached_training" and item.canonical_week_start==date(2026,9,14))
+    frozen=WindowPlacement("sun-strength",date(2026,9,13),"strength","strength",60,True)
+    overlap=WindowPlacement("coach",date(2026,9,17),"coached_training",coached.demand_id,30)
+    state=initialize_active_window_state(calendar,date(2026,9,14),date(2026,9,27),frozen_history=(frozen,),provisional_overlap=(overlap,),canonical_demands=demands)
+    assert state.remaining_minutes_by_date[date(2026,9,17)]==60 and state.demand_satisfaction[coached.demand_id].status=="provisional_satisfied"
+    try: assign_window_placement(state,WindowPlacement("mon-strength",date(2026,9,14),"strength","strength",30))
+    except ValueError as error: assert str(error)=="strength_spacing"
+    else: assert False
+    assert release_window_placement(state,"coach").remaining_minutes_by_date[date(2026,9,17)]==90

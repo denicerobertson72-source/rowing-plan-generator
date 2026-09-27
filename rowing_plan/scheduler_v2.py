@@ -115,9 +115,15 @@ def candidate_dates_for_dose(target: TrainingDoseTarget, calendar: tuple[DateCon
     window.desired_dates=() if target.category!="coached_training" else ()
     return candidate_dates_for_demand(window,calendar,target.target_minutes)
 
-def initialize_active_window_state(calendar: tuple[DateContext,...], window_start: date, window_end: date) -> ActiveWindowState:
+def initialize_active_window_state(calendar: tuple[DateContext,...], window_start: date, window_end: date, *, frozen_history: tuple[WindowPlacement,...]=(), provisional_overlap: tuple[WindowPlacement,...]=(), canonical_demands: tuple[TrainingDemand,...]=()) -> ActiveWindowState:
+    """Reconstruct a window solely from immutable calendar facts and placements."""
     contexts={item.date:item for item in calendar if window_start<=item.date<=window_end}
-    return ActiveWindowState(window_start,window_end,(),(),{day:item.remaining_minutes for day,item in contexts.items()},contexts,{}, {}, {})
+    frozen=tuple(sorted((WindowPlacement(item.placement_id,item.date,item.role,item.source_id,item.minutes,True,item.credits) for item in frozen_history),key=lambda item:(item.date,item.placement_id)))
+    state=ActiveWindowState(window_start,window_end,frozen,(),{day:item.remaining_minutes for day,item in contexts.items()},contexts,{}, {}, {})
+    for placement in sorted(provisional_overlap,key=lambda item:(item.date,item.placement_id)):
+        if not window_start<=placement.date<=window_end: raise ValueError("provisional_outside_active_window")
+        state=assign_window_placement(state,WindowPlacement(placement.placement_id,placement.date,placement.role,placement.source_id,placement.minutes,False,placement.credits))
+    return reconcile_demand_satisfaction(state,canonical_demands,window_start) if canonical_demands else state
 
 def _is_quality(role): return role in {"quality","threshold","race_pace","sprint_power"}
 def _is_strength(role): return role=="strength"
