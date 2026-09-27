@@ -14,6 +14,8 @@ from .session_selection import VERSION as SELECTION_VERSION, assign_week_roles, 
 from .load_transformations import VERSION as TRANSFORMATION_VERSION, transform, ensure_concrete_prescription
 
 WEEKDAY=["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
+QUALITY_ROLES={"THRESHOLD","RACE_PACE","SPRINT_POWER"}
+QUALITY_BANDS={"AT","TR","AN","PP","RACE"}
 class PlanningConflict(ValueError):
     """A safe, scheduler-originated constraint diagnostic for API consumers."""
     def __init__(self, reason: str, details: dict):
@@ -214,6 +216,72 @@ def _hard_session_spacing(sessions):
             findings.append({"dates":[left["date"],right["date"]],"roles":[left["session_role"],right["session_role"]],"status":"unavoidable_constraints","reason":"No candidate schedule separated the independent hard sessions without violating a higher-priority commitment."})
     return findings
 
+def _is_quality_session(session):
+    """Classify the final, instantiated prescription rather than its weekday."""
+    return session.get("band") in QUALITY_BANDS or session.get("session_role") in QUALITY_ROLES or session.get("session_id")=="RACE"
+
+def _quality_spacing_findings(sessions):
+    """Scan one dated season timeline; display weeks are deliberately irrelevant.
+
+    Consecutive actual race days are an explicit competition structure, not an
+    ordinary training-spacing failure.  All other quality pairs use the same
+    one-day recovery rule, including Sunday followed by Monday.
+    """
+    quality=sorted((item for item in sessions if _is_quality_session(item)),key=lambda item:item["date"])
+    findings=[]
+    for left,right in zip(quality,quality[1:]):
+        gap=(date.fromisoformat(right["date"])-date.fromisoformat(left["date"])).days
+        race_exception=left.get("session_id")==right.get("session_id")=="RACE"
+        if gap==1 and not race_exception:
+            findings.append({"dates":[left["date"],right["date"]],"left":{"band":left.get("band"),"role":left.get("session_role"),"fingerprint":left.get("session_fingerprint")},"right":{"band":right.get("band"),"role":right.get("session_role"),"fingerprint":right.get("session_fingerprint")},"recovery_gap_days":gap,"status":"violates_recovery_spacing"})
+    return findings
+
+def _space_quality_roles(day_roles, races):
+    """Relocate an ordinary quality role when its dated recovery gap is unsafe.
+
+    This is a role-placement pass: it preserves every week's role count and
+    uses only an already selected ordinary-row date.  Instantiation still runs
+    afterward, so the selection history receives the final prescriptions.
+    """
+    roles=dict(day_roles); race_days={day.isoformat() for race in races for day in race_dates(race)}; moves=[]
+
+    def quality_dates(candidate):
+        return sorted([*race_days,*[key for key,value in candidate.items() if value in QUALITY_ROLES]])
+
+    def safe(candidate):
+        dates=quality_dates(candidate)
+        for left,right in zip(dates,dates[1:]):
+            if (date.fromisoformat(right)-date.fromisoformat(left)).days != 1:
+                continue
+            if left in race_days and right in race_days:
+                continue
+            return False
+        return True
+
+    # Re-evaluate after each relocation.  This is continuous-date ordering,
+    # not a Monday--Sunday loop, so the first pair can straddle a week edge.
+    while not safe(roles):
+        dates=quality_dates(roles); conflict=next((pair for pair in zip(dates,dates[1:]) if (date.fromisoformat(pair[1])-date.fromisoformat(pair[0])).days==1 and not (pair[0] in race_days and pair[1] in race_days)),None)
+        if not conflict: break
+        movable=[key for key in conflict if key in roles and roles[key] in QUALITY_ROLES]
+        moved=False
+        # Prefer moving the later candidate; that retains prior locked/race
+        # context and mirrors the normal candidate-selection priority.
+        for source in reversed(movable):
+            week=date.fromisoformat(source)-timedelta(days=date.fromisoformat(source).weekday())
+            alternatives=sorted((key for key,value in roles.items() if week<=date.fromisoformat(key)<=week+timedelta(days=6) and value not in QUALITY_ROLES),key=lambda key:(key < source,key))
+            for target in alternatives:
+                proposal=dict(roles); proposal[source],proposal[target]=proposal[target],proposal[source]
+                if safe(proposal):
+                    moves.append({"quality_role":roles[source],"from_date":source,"to_date":target,"reason":"continuous_quality_recovery_spacing"})
+                    roles=proposal; moved=True; break
+            if moved: break
+        if not moved:
+            # Constraints can make a pair unavoidable; retain it transparently
+            # for the final continuous validator rather than deleting work.
+            break
+    return roles,moves
+
 def _ordinary_row_dates(profile, start, end, commitments, modern_schedule, intents):
     """Choose the ordinary rowing dates needed to meet the weekly prescription.
 
@@ -301,6 +369,10 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
         next_race_type=next((r.get("race_type","head_5k") for r in races if last_race_date(r)>=week_start),"head_5k")
         preferred_long_dates=[d for d in dates if WEEKDAY[date.fromisoformat(d).weekday()] in profile.get("preferences",{}).get("preferred_long_session_days",[])]
         day_roles.update(assign_week_roles(dates,intent,next_race_type,preferred_long_dates))
+    # Week intent establishes the required role mix, but recovery is a
+    # physiological constraint on adjacent dates.  Reconcile the resulting
+    # candidates over the full season before any session is instantiated.
+    day_roles,quality_role_moves=_space_quality_roles(day_roles,races)
     selection_history=[]; day=start
     while day<=end:
         phase,next_race=phase_for_day(day,races); a=avails.get(WEEKDAY[day.weekday()],{}); race=_race(day,races); practice=_practice(day,races); key_race_type=(next_race or races[0] if races else {}).get("race_type","head_5k")
@@ -395,4 +467,5 @@ def generate_plan(profile: dict, config: dict, bands: list[dict], power: dict, l
     if frequency_errors: raise ValueError(" ".join(frequency_errors))
     impacts=power.get("plan_impacts",[])
     volume_feasibility=_reconcile_low_intensity_volume(weekly_training_intents,sessions)
-    return {"plan_version":"0.7.0","profile_id":profile.get("athlete",{}).get("display_name","athlete"),"generated_at":datetime.now().isoformat(),"schedule_signature":schedule_signature(profile),"intensity_profile":bands,"power_profile":power,"phases":phases,"season_phases":season_phases,"weekly_training_intents":weekly_training_intents,"calendar_days":calendar_days,"frequency_exceptions":frequency_exceptions,"weekly_volume_feasibility":volume_feasibility,"hard_session_spacing":_hard_session_spacing(sessions),"sessions":sessions,"weekly_totals":totals,"warnings":warnings+[{"level":"info","message":w} for w in power.get("warnings",[])],"plan_impacts":impacts,"schedule_moves":schedule_moves,"schedule_candidate_audits":schedule_candidate_audits,"evidence_methodology":METHODOLOGY_STATEMENT,"evidence_rules":RULES,"algorithm_versions":{"planner":"0.7.0","phase_weekly_intent":PLANNING_MODEL_VERSION,"session_selection":SELECTION_VERSION,"archetype_catalog":"0.1.0","progression":"deterministic-piece-duration-0.1.0","load_transformation":TRANSFORMATION_VERSION,"taper_rule":"role-sensitive-taper-0.1.0","recovery_rule":"role-sensitive-recovery-0.1.0","power_profile":power.get("algorithm_version"),"config":config["config_version"]}}
+    quality_spacing=_quality_spacing_findings(sessions)
+    return {"plan_version":"0.7.0","profile_id":profile.get("athlete",{}).get("display_name","athlete"),"generated_at":datetime.now().isoformat(),"schedule_signature":schedule_signature(profile),"intensity_profile":bands,"power_profile":power,"phases":phases,"season_phases":season_phases,"weekly_training_intents":weekly_training_intents,"calendar_days":calendar_days,"frequency_exceptions":frequency_exceptions,"weekly_volume_feasibility":volume_feasibility,"hard_session_spacing":_hard_session_spacing(sessions),"quality_spacing":quality_spacing,"quality_role_moves":quality_role_moves,"sessions":sessions,"weekly_totals":totals,"warnings":warnings+[{"level":"info","message":w} for w in power.get("warnings",[])],"plan_impacts":impacts,"schedule_moves":schedule_moves,"schedule_candidate_audits":schedule_candidate_audits,"evidence_methodology":METHODOLOGY_STATEMENT,"evidence_rules":RULES,"algorithm_versions":{"planner":"0.7.0","phase_weekly_intent":PLANNING_MODEL_VERSION,"session_selection":SELECTION_VERSION,"archetype_catalog":"0.1.0","progression":"deterministic-piece-duration-0.1.0","load_transformation":TRANSFORMATION_VERSION,"taper_rule":"role-sensitive-taper-0.1.0","recovery_rule":"continuous-date-quality-spacing-0.2.0","power_profile":power.get("algorithm_version"),"config":config["config_version"]}}

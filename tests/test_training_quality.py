@@ -2,7 +2,7 @@ import json
 from datetime import date
 
 from rowing_plan.session_selection import select_and_instantiate
-from rowing_plan.scheduler import _hard_session_spacing, _reconcile_low_intensity_volume
+from rowing_plan.scheduler import _hard_session_spacing, _quality_spacing_findings, _reconcile_low_intensity_volume, _space_quality_roles
 
 
 def _select(role, history=None):
@@ -56,4 +56,27 @@ def test_adjacent_independent_hard_rows_are_recorded_but_race_days_are_not():
     assert not _hard_session_spacing([
         {"date":"2026-09-26", "session_id":"RACE", "band":"RACE"},
         {"date":"2026-09-27", "session_role":"THRESHOLD", "band":"AT"},
+    ])
+
+
+def test_cross_week_quality_role_is_relocated_using_continuous_dates():
+    roles={"2026-09-13":"RACE_PACE", "2026-09-14":"THRESHOLD", "2026-09-15":"AEROBIC_BASE"}
+    spaced,moves=_space_quality_roles(roles,[])
+    assert spaced["2026-09-14"] == "AEROBIC_BASE"
+    assert spaced["2026-09-15"] == "THRESHOLD"
+    assert moves == [{"quality_role":"THRESHOLD","from_date":"2026-09-14","to_date":"2026-09-15","reason":"continuous_quality_recovery_spacing"}]
+
+
+def test_same_week_and_cross_week_quality_pairs_share_one_validator_with_race_exception():
+    assert _quality_spacing_findings([
+        {"date":"2026-09-09", "session_role":"THRESHOLD", "band":"AT"},
+        {"date":"2026-09-10", "session_role":"RACE_PACE", "band":"TR"},
+    ])
+    assert _quality_spacing_findings([
+        {"date":"2026-09-13", "session_role":"RACE_PACE", "band":"TR", "session_fingerprint":{"primary_band":"TR"}},
+        {"date":"2026-09-14", "session_role":"THRESHOLD", "band":"AT", "session_fingerprint":{"primary_band":"AT"}},
+    ])[0]["recovery_gap_days"] == 1
+    assert not _quality_spacing_findings([
+        {"date":"2026-09-13", "session_id":"RACE", "band":"RACE"},
+        {"date":"2026-09-14", "session_id":"RACE", "band":"RACE"},
     ])

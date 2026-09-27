@@ -170,18 +170,18 @@ def impact_explanation(record: dict, source: dict, classification: str, changes:
     recovery=[s.get("title","session").lower() for s in after if next_row and s["date"]<next_row["date"]]
     detail=f"This session included about {quality} minutes of high-intensity rowing." if quality else "The logged load fits the planned coaching session."
     weekly=weekly_quality_context(record,source,payload)
-    if changes and weekly["completed_exposures"]>=2: return f"Review recommended. You have already completed {weekly['completed_exposures']} quality rowing exposures this week: {', '.join(weekly['labels'])}. Sunday quality work would create a third exposure, so a lower-intensity stimulus is suggested instead."
+    if changes and weekly["completed_exposures"]>=2: return f"Review recommended. You have already completed {weekly['completed_exposures']} quality rowing exposures in the recent dated recovery context: {', '.join(weekly['labels'])}. A lower-intensity stimulus is suggested instead."
     if changes: return f"{detail} Your next rowing session is quality work, so its spacing should be reviewed."
     if next_row: return f"{detail} The next rowing session is {next_row.get('band','planned work')}; {' and '.join(recovery) or 'the available spacing'} supports keeping the current plan."
     return f"{detail} No later rowing session this week needs changing."
 def weekly_quality_context(record: dict, source: dict, source_payload: dict) -> dict:
-    """Count completed quality exposures, including partial coached quality work."""
-    source_date=date.fromisoformat(source["date"]); monday=source_date-timedelta(days=source_date.weekday())
+    """Count completed quality exposures in the recovery lookback, not a display week."""
+    source_date=date.fromisoformat(source["date"]); lookback=source_date-timedelta(days=7)
     actuals=actual_by_key(record["plan_id"]); actuals[stable_session_key(source)]=source_payload
     labels=[]; minutes=0
     for session in record["plan"].get("sessions",[]):
         session_date=date.fromisoformat(session["date"])
-        if not monday<=session_date<=source_date: continue
+        if not lookback<=session_date<=source_date: continue
         actual=actuals.get(stable_session_key(session))
         if not actual or actual.get("completion")=="no" or actual.get("status")=="skipped": continue
         composition=actual_composition(actual)
@@ -196,8 +196,10 @@ def bounded_coached_proposal(record: dict, session_key: str, payload: dict) -> d
     if not source or not rowing_session(source): raise HTTPException(422,"Only rowing sessions can use segmented actual logging.")
     classification=session_load_classification(payload)
     if classification not in {"quality_hard","unusually_hard_or_long"}: return {"recommendation":"none","classification":classification,"changes":[],"composition":actual_composition(payload),"explanation":impact_explanation(record,source,classification,[],payload)}
-    source_date=date.fromisoformat(source["date"]); monday=source_date-timedelta(days=source_date.weekday())
-    candidates=[s for s in record["plan"].get("sessions",[]) if monday < date.fromisoformat(s["date"]) < monday+timedelta(days=7) and date.fromisoformat(s["date"])>source_date and any(b in str(s.get("band","")) for b in ("AT","TR","AN","PP"))]
+    source_date=date.fromisoformat(source["date"])
+    # Recovery spacing is based on elapsed dates.  A hard Sunday must be
+    # visible to a planned hard Monday even though the UI groups them apart.
+    candidates=sorted((s for s in record["plan"].get("sessions",[]) if 0 < (date.fromisoformat(s["date"])-source_date).days <= 7 and any(b in str(s.get("band","")) for b in ("AT","TR","AN","PP"))),key=lambda s:s["date"])
     if not candidates: return {"recommendation":"none","classification":classification,"changes":[],"composition":actual_composition(payload),"explanation":impact_explanation(record,source,classification,[],payload)}
     current=candidates[0]; source_label="coached" if coached_session(source) else "logged"
     suggested={**current,"band":"UT2","title":"Long aerobic","structure":"60 min UT2","description":f"Adjusted after an unexpectedly hard {source_label} rowing session.","adjustment_reason":"rowing_session_actual"}

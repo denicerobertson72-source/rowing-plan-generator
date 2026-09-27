@@ -88,3 +88,22 @@ def test_independent_rows_use_the_same_segmented_actual_and_weekly_quality_accou
     assert actual["actual_segments"][1]["repetitions"] == 2
     assert actual["technical_note"] == "Relaxed hands." and actual["notes"] == "Windy but controlled."
     assert actual["coach_cues"] == "" and actual["carry_cue_forward"] is False and actual["rpe"] == 8
+
+
+def test_sunday_actual_quality_reviews_monday_quality_across_display_week_boundary():
+    with TemporaryDirectory() as directory:
+        previous=REPOSITORIES._instance; REPOSITORIES._instance=SQLiteRepositories(Path(directory)/"boundary.sqlite3")
+        try:
+            athlete=REPOSITORIES.create({"athlete":{"display_name":"Rower"}},"development-user")
+            sessions=[
+                {"date":"2026-06-07","session_id":"UT2","mode":"on_water","band":"UT2","title":"Sunday aerobic","total_cardio_minutes":60},
+                {"date":"2026-06-08","session_id":"TR","mode":"erg","band":"TR","title":"Monday race pace","total_cardio_minutes":50},
+            ]
+            plan_id=REPOSITORIES.save_plan(athlete,{"sessions":sessions,"calendar_days":[]})
+            response=TestClient(app).post(f"/api/v1/plans/{plan_id}/sessions/2026-06-07:UT2:on_water/log",json={"status":"completed","completion":"yes","actual_duration_min":60,"actual_intensity":"TR","rpe":8})
+        finally:
+            REPOSITORIES._instance=previous
+    adjustment=response.json()["adjustment"]
+    assert response.status_code == 200
+    assert adjustment["recommendation"] == "review"
+    assert adjustment["changes"][0]["date"] == "2026-06-08"
