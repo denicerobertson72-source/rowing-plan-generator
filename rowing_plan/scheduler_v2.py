@@ -2,7 +2,8 @@
 from __future__ import annotations
 from datetime import date, timedelta
 from itertools import combinations
-from .models import ActiveWindowState, CandidateDateResult, DateContext, FrequencyTarget, RollingPlacementResult, TargetCredit, TrainingDemand, TrainingDoseTarget, V2DemandPlan, WindowPlacement
+from dataclasses import replace
+from .models import ActiveWindowState, CandidateDateResult, DateContext, DemandSatisfaction, FrequencyTarget, RollingPlacementResult, TargetCredit, TrainingDemand, TrainingDoseTarget, V2DemandPlan, WindowPlacement
 from .periodization import build_season_phases, parse, race_dates
 
 _ROLE={"LONG_AEROBIC":("long_aerobic","aerobic",0),"AEROBIC_BASE":("aerobic_base","aerobic",0),"AEROBIC_STRENGTH":("aerobic_strength","aerobic",1),"THRESHOLD":("threshold","quality",1),"RACE_PACE":("race_pace","quality",1),"SPRINT_POWER":("sprint_power","quality",1),"RECOVERY":("recovery","none",0),"TECHNIQUE_EASY":("aerobic_base","aerobic",0)}
@@ -40,7 +41,13 @@ def generate_training_demands(profile: dict, season_phases: list[dict]|None=None
                 for occurrence in range(occurrences):
                     group="rest_weekly"
                     output.append(TrainingDemand(f"{kind}:{week}:{occurrence}",kind,phase["phase_id"],eligible_start,eligible_end,(),tuple(week+timedelta(days=("monday tuesday wednesday thursday friday saturday sunday".split().index(x))) for x in activity.get("preferred_days",[])),"strong",None,"none",0,group,"recurring_activity","One designated rest target; placement remains flexible."))
-    return sorted(output,key=lambda item:item.demand_id)
+    normalized=[]
+    for item in output:
+        week=item.earliest_date-timedelta(days=item.earliest_date.weekday()); week_end=week+timedelta(days=6); in_season=sum(start<=week+timedelta(days=offset)<=end for offset in range(7))
+        required=item.type=="private_coaching" or in_season>=4
+        if item.type=="coached_training": required=required and bool(set(item.desired_dates)&{week+timedelta(days=offset) for offset in range(7) if start<=week+timedelta(days=offset)<=end})
+        normalized.append(replace(item,canonical_week_start=week,canonical_week_end=week_end,eligibility="required" if required else "edge_exception"))
+    return sorted(normalized,key=lambda item:item.demand_id)
 
 def generate_frequency_targets(profile: dict, recurring_activities: list[dict]|None=None) -> list[FrequencyTarget]:
     """Return non-dated rolling targets.  Strength intentionally has no week key."""
@@ -132,6 +139,15 @@ def reconcile_active_window_state(state: ActiveWindowState) -> ActiveWindowState
             dest=frequency if credit.category=="strength" else rowing
             count,minutes=dest.get(credit.target_id,(0,0)); dest[credit.target_id]=(count+credit.exposures,minutes+credit.minutes)
     return ActiveWindowState(state.window_start,state.window_end,state.frozen_placements,state.provisional_placements,dict(state.remaining_minutes_by_date),state.fixed_context,weekly,frequency,rowing,state.last_frozen_quality_date,state.last_frozen_strength_date,state.score_vector,state.audits,state.exceptions)
+
+def reconcile_demand_satisfaction(state: ActiveWindowState, demands: tuple[TrainingDemand,...], as_of: date|None=None) -> ActiveWindowState:
+    current=as_of or state.window_end; records={}
+    for demand in demands:
+        if demand.eligibility=="edge_exception": records[demand.demand_id]=DemandSatisfaction(demand.demand_id,demand.canonical_week_start,demand.canonical_week_end,"edge_exception","edge_exception"); continue
+        frozen=next((item for item in state.frozen_placements if item.source_id==demand.demand_id),None); provisional=next((item for item in state.provisional_placements if item.source_id==demand.demand_id),None)
+        item,status=(frozen,"frozen_satisfied") if frozen else (provisional,"provisional_satisfied") if provisional else (None,"missed" if demand.canonical_week_end<current else "open")
+        records[demand.demand_id]=DemandSatisfaction(demand.demand_id,demand.canonical_week_start,demand.canonical_week_end,"required",status,item.placement_id if item else None,item.date if item else None,"placement" if item else "derived")
+    return replace(state,demand_satisfaction=records)
 
 def assign_window_placement(state: ActiveWindowState, placement: WindowPlacement) -> ActiveWindowState:
     if not state.window_start<=placement.date<=state.window_end: raise ValueError("outside_active_window")

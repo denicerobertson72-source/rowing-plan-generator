@@ -1,7 +1,7 @@
 from datetime import date
 from services.api.tests.disposable_browser_fixture import synthetic_profile
 from rowing_plan.models import TargetCredit, WindowPlacement
-from rowing_plan.scheduler_v2 import assign_window_placement, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, placements_compatible, place_v2_non_rowing, place_v2_rowing, release_window_placement
+from rowing_plan.scheduler_v2 import assign_window_placement, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, release_window_placement
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -75,3 +75,11 @@ def test_rest_compatibility_is_symmetric_and_blocks_all_flexible_training():
         try: assign_window_placement(assign_window_placement(state,first),second)
         except ValueError as error: assert str(error)=="rest_day"
         else: assert False
+
+def test_weekly_demand_provenance_is_canonical_and_updates_from_placements():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; demands=tuple(generate_training_demands(profile)); coached=next(item for item in demands if item.type=="coached_training")
+    state=initialize_active_window_state(build_v2_season_calendar(profile),date(2026,9,7),date(2026,9,20)); open_state=reconcile_demand_satisfaction(state,demands,date(2026,9,7))
+    assert coached.canonical_week_start==date(2026,9,7) and open_state.demand_satisfaction[coached.demand_id].status=="open"
+    placed=assign_window_placement(state,WindowPlacement("coach",date(2026,9,8),"coached_training",coached.demand_id,30))
+    assert reconcile_demand_satisfaction(placed,demands).demand_satisfaction[coached.demand_id].status=="provisional_satisfied"
+    assert reconcile_demand_satisfaction(release_window_placement(placed,"coach"),demands,date(2026,9,7)).demand_satisfaction[coached.demand_id].status=="open"

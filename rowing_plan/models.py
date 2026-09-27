@@ -82,6 +82,7 @@ class TrainingDemand:
     priority: Literal["hard","strong","soft"]="soft"; target_minutes: int|None=None
     quality_class: Literal["none","aerobic","quality","race"]="none"
     minimum_recovery_days: int=0; frequency_group: str|None=None; source: str=""; rationale: str=""
+    canonical_week_start: date|None=None; canonical_week_end: date|None=None; eligibility: Literal["required","edge_exception"]="required"
     def to_dict(self) -> dict[str,Any]:
         result=asdict(self)
         for key in ("earliest_date","latest_date"): result[key]=result[key].isoformat()
@@ -154,3 +155,10 @@ class ActiveWindowState:
     weekly_commitment_status: Mapping[str,Any]; frequency_credits: Mapping[str,tuple[int,int]]; rowing_dose_credits: Mapping[str,tuple[int,int]]
     last_frozen_quality_date: date|None=None; last_frozen_strength_date: date|None=None
     score_vector: tuple[int,...]=(); audits: tuple[dict[str,Any],...]=(); exceptions: tuple[dict[str,Any],...]=()
+    demand_satisfaction: Mapping[str,Any]=None
+
+@dataclass(frozen=True)
+class DemandSatisfaction:
+    demand_id: str; canonical_week_start: date; canonical_week_end: date
+    eligibility: Literal["required","edge_exception"]; status: Literal["open","provisional_satisfied","frozen_satisfied","missed","edge_exception"]
+    placement_id: str|None=None; placement_date: date|None=None; provenance: str="derived"
