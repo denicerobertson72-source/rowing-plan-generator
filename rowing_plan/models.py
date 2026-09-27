@@ -1,7 +1,8 @@
 """Small typed model helpers; public plans deliberately remain JSON dictionaries."""
 from __future__ import annotations
 from dataclasses import dataclass, asdict
-from typing import Any
+from typing import Any, Literal
+from datetime import date
 
 @dataclass(frozen=True)
 class Band:
@@ -72,3 +73,35 @@ class WeeklyTrainingIntent:
     notes: str
     algorithm_version: str
     def to_dict(self) -> dict[str, Any]: return asdict(self)
+
+@dataclass(frozen=True)
+class TrainingDemand:
+    """Undated V2 training need; internal only, never an API schema."""
+    demand_id: str; type: str; phase_id: str; earliest_date: date; latest_date: date
+    desired_dates: tuple[date,...]=(); preferred_dates: tuple[date,...]=()
+    priority: Literal["hard","strong","soft"]="soft"; target_minutes: int|None=None
+    quality_class: Literal["none","aerobic","quality","race"]="none"
+    minimum_recovery_days: int=0; frequency_group: str|None=None; source: str=""; rationale: str=""
+    def to_dict(self) -> dict[str,Any]:
+        result=asdict(self)
+        for key in ("earliest_date","latest_date"): result[key]=result[key].isoformat()
+        for key in ("desired_dates","preferred_dates"): result[key]=[value.isoformat() for value in result[key]]
+        return result
+
+@dataclass(frozen=True)
+class RollingState:
+    last_quality_date: date|None=None; last_strength_date: date|None=None
+    quality_minutes_14d: int=0; strength_count_14d: int=0; dedicated_ut2_minutes_14d: int=0; ut1_minutes_14d: int=0; mixed_coached_minutes_14d: int=0
+    long_row_dates: tuple[date,...]=(); race_load_dates: tuple[date,...]=(); completed_actuals: tuple[dict[str,Any],...]=()
+
+@dataclass(frozen=True)
+class PlacementCandidate:
+    demand_id: str; date: date; score_components: tuple[tuple[str,int],...]=(); hard_failures: tuple[str,...]=(); reason_codes: tuple[str,...]=()
+
+@dataclass(frozen=True)
+class FrequencyTarget:
+    """A V2 rolling-group target, deliberately separate from dated demands."""
+    group_id: str; window_days: int; target_count: int; minimum_count: int
+    maximum_count: int|None=None; priority: Literal["hard","strong","soft"]="strong"
+    minimum_spacing_days: int=0; source: str=""; rationale: str=""
+    def to_dict(self) -> dict[str,Any]: return asdict(self)
