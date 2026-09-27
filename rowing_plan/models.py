@@ -120,3 +120,14 @@ class V2DemandPlan:
     weekly_commitment_demands: tuple[TrainingDemand,...]
     frequency_targets: tuple[FrequencyTarget,...]
     rowing_dose_targets: tuple[TrainingDoseTarget,...]
+
+@dataclass(frozen=True)
+class DateContext:
+    date: date; weekday: str; phase_id: str; available: bool; max_training_minutes: int
+    hard_committed_minutes: int; remaining_minutes: int; unavailable: bool=False; race: bool=False; race_practice: bool=False
+    taper_or_recovery: bool=False; fixed_commitments: tuple[dict[str,Any],...]=(); completed_sessions: tuple[dict[str,Any],...]=()
+    permitted_activity_categories: tuple[str,...]=(); diagnostic_reason_codes: tuple[str,...]=()
+
+@dataclass(frozen=True)
+class CandidateDateResult:
+    candidates: tuple[date,...]; rejections: tuple[tuple[str,tuple[str,...]],...]=()
