@@ -93,6 +93,7 @@ def candidate_dates_for_demand(demand, calendar: tuple[DateContext,...], require
         if context.unavailable: reasons.append("unavailable")
         if context.race: reasons.append("race_day")
         if context.race_practice: reasons.append("fixed_commitment_conflict")
+        if demand.type=="rest" and context.hard_committed_minutes: reasons.append("fixed_commitment_conflict")
         if context.remaining_minutes<needed: reasons.append("insufficient_minutes")
         if demand.type=="coached_training" and context.date not in demand.desired_dates: reasons.append("outside_allowed_dates")
         if demand.type=="private_coaching" and context.date!=demand.earliest_date: reasons.append("outside_allowed_dates")
@@ -114,6 +115,14 @@ def initialize_active_window_state(calendar: tuple[DateContext,...], window_star
 def _is_quality(role): return role in {"quality","threshold","race_pace","sprint_power"}
 def _is_strength(role): return role=="strength"
 def _all_placements(state): return (*state.frozen_placements,*state.provisional_placements)
+def _role_category(role): return "rest" if role=="rest" else "strength" if role=="strength" else "coached" if role=="coached_training" else "rowing"
+def placements_compatible(existing: WindowPlacement, incoming: WindowPlacement) -> tuple[bool,str|None]:
+    """Order-independent flexible same-day compatibility source of truth."""
+    if existing.date != incoming.date: return True,None
+    if "rest" in {_role_category(existing.role),_role_category(incoming.role)}: return False,"rest_day"
+    # V2 has not yet introduced profile-authorized stacking; capacity and a
+    # future explicit matrix may widen this conservatively safe default.
+    return False,"same_day_conflict"
 
 def reconcile_active_window_state(state: ActiveWindowState) -> ActiveWindowState:
     frequency={}; rowing={}; weekly={}
@@ -131,8 +140,10 @@ def assign_window_placement(state: ActiveWindowState, placement: WindowPlacement
     if state.remaining_minutes_by_date.get(placement.date,0)<placement.minutes: raise ValueError("insufficient_minutes")
     existing=_all_placements(state)
     if any(item.placement_id==placement.placement_id for item in existing): raise ValueError("duplicate_placement_id")
-    same=[item for item in existing if item.date==placement.date]
-    if same and placement.role not in {"rest"}: raise ValueError("same_day_conflict")
+    if placement.role=="rest" and context.hard_committed_minutes: raise ValueError("fixed_commitment_conflict")
+    for item in existing:
+        compatible,reason=placements_compatible(item,placement)
+        if not compatible: raise ValueError(reason or "same_day_conflict")
     history=[item for item in existing if _is_quality(item.role)]
     if _is_quality(placement.role) and any(abs((placement.date-item.date).days)<=1 for item in history): raise ValueError("quality_spacing")
     strengths=[item for item in existing if _is_strength(item.role)]

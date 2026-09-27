@@ -1,7 +1,7 @@
 from datetime import date
 from services.api.tests.disposable_browser_fixture import synthetic_profile
 from rowing_plan.models import TargetCredit, WindowPlacement
-from rowing_plan.scheduler_v2 import assign_window_placement, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, place_v2_non_rowing, place_v2_rowing, release_window_placement
+from rowing_plan.scheduler_v2 import assign_window_placement, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, placements_compatible, place_v2_non_rowing, place_v2_rowing, release_window_placement
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -63,3 +63,15 @@ def test_active_window_assign_release_freeze_and_multi_credit_are_immutable():
     try: release_window_placement(frozen,"long")
     except ValueError as error: assert str(error)=="frozen_placement"
     else: assert False
+
+def test_rest_compatibility_is_symmetric_and_blocks_all_flexible_training():
+    day=date(2026,9,8); rest=WindowPlacement("rest",day,"rest","rest",0); roles=("strength","coached_training","dedicated_ut2","long_aerobic","quality")
+    for role in roles:
+        training=WindowPlacement(role,day,role,"test",30)
+        assert placements_compatible(rest,training)==placements_compatible(training,rest)==(False,"rest_day")
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-13"}
+    state=initialize_active_window_state(build_v2_season_calendar(profile),date(2026,9,7),date(2026,9,13))
+    for first,second in ((WindowPlacement("s",day,"strength","s",30),rest),(rest,WindowPlacement("s",day,"strength","s",30))):
+        try: assign_window_placement(assign_window_placement(state,first),second)
+        except ValueError as error: assert str(error)=="rest_day"
+        else: assert False
