@@ -1,6 +1,6 @@
 from datetime import date
 from services.api.tests.disposable_browser_fixture import synthetic_profile
-from rowing_plan.scheduler_v2 import generate_frequency_targets, generate_training_demands
+from rowing_plan.scheduler_v2 import generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -16,4 +16,9 @@ def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     assert not any(item.type=="strength" for item in first)
     assert strength.group_id=="strength" and strength.window_days==14 and strength.target_count==4 and strength.minimum_count==3 and strength.minimum_spacing_days==1
     assert all(not item.desired_dates for item in first if item.type=="rest")
-    assert any(item.type in {"aerobic_base","long_aerobic"} and item.quality_class=="aerobic" for item in first)
+    doses=generate_rowing_dose_targets(profile)
+    assert any(item.category=="dedicated_ut2" and item.minimum_minutes>0 for item in doses)
+    assert any(item.category=="long_aerobic" for item in doses)
+    assert not any(item.source=="season_phase" for item in first)
+    plan=generate_v2_demand_plan(profile)
+    assert plan.weekly_commitment_demands==tuple(first) and plan.frequency_targets==tuple(targets) and plan.rowing_dose_targets==tuple(doses)

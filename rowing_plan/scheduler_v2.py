@@ -1,7 +1,7 @@
 """Scheduler V2.0 demand generation.  This module performs no placement."""
 from __future__ import annotations
 from datetime import date, timedelta
-from .models import FrequencyTarget, TrainingDemand
+from .models import FrequencyTarget, TrainingDemand, TrainingDoseTarget, V2DemandPlan
 from .periodization import build_season_phases, parse
 
 _ROLE={"LONG_AEROBIC":("long_aerobic","aerobic",0),"AEROBIC_BASE":("aerobic_base","aerobic",0),"AEROBIC_STRENGTH":("aerobic_strength","aerobic",1),"THRESHOLD":("threshold","quality",1),"RACE_PACE":("race_pace","quality",1),"SPRINT_POWER":("sprint_power","quality",1),"RECOVERY":("recovery","none",0),"TECHNIQUE_EASY":("aerobic_base","aerobic",0)}
@@ -36,9 +36,6 @@ def generate_training_demands(profile: dict, season_phases: list[dict]|None=None
                 for occurrence in range(occurrences):
                     group="rest_weekly"
                     output.append(TrainingDemand(f"{kind}:{week}:{occurrence}",kind,phase["phase_id"],eligible_start,eligible_end,(),tuple(week+timedelta(days=("monday tuesday wednesday thursday friday saturday sunday".split().index(x))) for x in activity.get("preferred_days",[])),"strong",None,"none",0,group,"recurring_activity","One designated rest target; placement remains flexible."))
-        roles={"race_specific_preparation":["RACE_PACE","THRESHOLD","LONG_AEROBIC"],"threshold_development":["THRESHOLD","LONG_AEROBIC"],"post_race_recovery":["RECOVERY"],"taper":["RACE_PACE","RECOVERY"]}.get(phase["phase_type"],["AEROBIC_BASE","LONG_AEROBIC"])
-        for index,role in enumerate(roles):
-            kind,quality,recovery=_ROLE[role]; output.append(TrainingDemand(f"row:{week}:{index}:{role}",kind,phase["phase_id"],eligible_start,eligible_end,priority="strong",target_minutes=60 if kind=="long_aerobic" else 50,quality_class=quality,minimum_recovery_days=recovery,frequency_group="phase_rowing",source="season_phase",rationale=f"{phase['phase_type']} demand: {role}."))
     return sorted(output,key=lambda item:item.demand_id)
 
 def generate_frequency_targets(profile: dict, recurring_activities: list[dict]|None=None) -> list[FrequencyTarget]:
@@ -50,3 +47,16 @@ def generate_frequency_targets(profile: dict, recurring_activities: list[dict]|N
             target=int(activity["sessions_per_week"])*2
             result.append(FrequencyTarget("strength",14,target,max(0,target-1),target,"strong",1,"recurring_activity","Approximately 4 strength exposures per rolling 14 days; recovery may reduce this to 3."))
     return result
+
+def generate_rowing_dose_targets(profile: dict, season_phases: list[dict]|None=None) -> list[TrainingDoseTarget]:
+    """Phase-clipped rolling doses; no target has a display-week identity."""
+    start,end=parse(profile["season"]["start_date"]),parse(profile["season"]["end_date"]); phases=season_phases or build_season_phases(profile); result=[]
+    patterns={"race_specific_preparation":[("dedicated_ut2",2,90,"aerobic",0),("long_aerobic",1,60,"aerobic",0),("ut1_aerobic_strength",1,45,"aerobic",1),("quality",3,75,"quality",1)],"threshold_development":[("dedicated_ut2",3,120,"aerobic",0),("long_aerobic",1,60,"aerobic",0),("quality",2,60,"quality",1)],"taper":[("dedicated_ut2",1,45,"aerobic",0),("quality",1,30,"quality",1)],"post_race_recovery":[("dedicated_ut2",1,40,"aerobic",0)]}
+    for phase in phases:
+        left=max(start,date.fromisoformat(phase["start_date"])); right=min(end,date.fromisoformat(phase["end_date"])); days=(right-left).days+1
+        for category,count,minutes,quality,recovery in patterns.get(phase["phase_type"],[("dedicated_ut2",3,120,"aerobic",0),("long_aerobic",1,60,"aerobic",0),("ut1_aerobic_strength",1,45,"aerobic",1)]):
+            scaled=max(0,round(count*min(days,14)/14)); result.append(TrainingDoseTarget(phase["phase_id"],category,left,right,min(14,days),scaled,max(0,scaled-1),round(minutes*min(days,14)/14),max(0,round(minutes*min(days,14)/14)-30),quality,"strong",recovery,"season_phase",f"{phase['phase_type']} rolling {category} dose."))
+    return result
+
+def generate_v2_demand_plan(profile: dict, season_phases: list[dict]|None=None, races: list[dict]|None=None, recurring_activities: list[dict]|None=None) -> V2DemandPlan:
+    return V2DemandPlan(tuple(generate_training_demands(profile,season_phases,races,recurring_activities)),tuple(generate_frequency_targets(profile,recurring_activities)),tuple(generate_rowing_dose_targets(profile,season_phases)))

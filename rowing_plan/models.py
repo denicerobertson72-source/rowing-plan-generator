@@ -105,3 +105,18 @@ class FrequencyTarget:
     maximum_count: int|None=None; priority: Literal["hard","strong","soft"]="strong"
     minimum_spacing_days: int=0; source: str=""; rationale: str=""
     def to_dict(self) -> dict[str,Any]: return asdict(self)
+
+@dataclass(frozen=True)
+class TrainingDoseTarget:
+    phase_id: str; category: str; window_start: date; window_end: date; window_days: int
+    target_exposures: int; minimum_exposures: int; target_minutes: int; minimum_minutes: int
+    quality_class: Literal["none","aerobic","quality","race"]="none"; priority: Literal["hard","strong","soft"]="strong"
+    minimum_recovery_days: int=0; source: str="season_phase"; rationale: str=""
+    def to_dict(self) -> dict[str,Any]:
+        result=asdict(self); result["window_start"]=self.window_start.isoformat(); result["window_end"]=self.window_end.isoformat(); return result
+
+@dataclass(frozen=True)
+class V2DemandPlan:
+    weekly_commitment_demands: tuple[TrainingDemand,...]
+    frequency_targets: tuple[FrequencyTarget,...]
+    rowing_dose_targets: tuple[TrainingDoseTarget,...]
