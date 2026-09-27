@@ -2,7 +2,7 @@
 from __future__ import annotations
 from datetime import date, timedelta
 from itertools import combinations
-from .models import CandidateDateResult, DateContext, FrequencyTarget, RollingPlacementResult, TrainingDemand, TrainingDoseTarget, V2DemandPlan
+from .models import ActiveWindowState, CandidateDateResult, DateContext, FrequencyTarget, RollingPlacementResult, TargetCredit, TrainingDemand, TrainingDoseTarget, V2DemandPlan, WindowPlacement
 from .periodization import build_season_phases, parse, race_dates
 
 _ROLE={"LONG_AEROBIC":("long_aerobic","aerobic",0),"AEROBIC_BASE":("aerobic_base","aerobic",0),"AEROBIC_STRENGTH":("aerobic_strength","aerobic",1),"THRESHOLD":("threshold","quality",1),"RACE_PACE":("race_pace","quality",1),"SPRINT_POWER":("sprint_power","quality",1),"RECOVERY":("recovery","none",0),"TECHNIQUE_EASY":("aerobic_base","aerobic",0)}
@@ -107,6 +107,57 @@ def candidate_dates_for_dose(target: TrainingDoseTarget, calendar: tuple[DateCon
     window.desired_dates=() if target.category!="coached_training" else ()
     return candidate_dates_for_demand(window,calendar,target.target_minutes)
 
+def initialize_active_window_state(calendar: tuple[DateContext,...], window_start: date, window_end: date) -> ActiveWindowState:
+    contexts={item.date:item for item in calendar if window_start<=item.date<=window_end}
+    return ActiveWindowState(window_start,window_end,(),(),{day:item.remaining_minutes for day,item in contexts.items()},contexts,{}, {}, {})
+
+def _is_quality(role): return role in {"quality","threshold","race_pace","sprint_power"}
+def _is_strength(role): return role=="strength"
+def _all_placements(state): return (*state.frozen_placements,*state.provisional_placements)
+
+def reconcile_active_window_state(state: ActiveWindowState) -> ActiveWindowState:
+    frequency={}; rowing={}; weekly={}
+    for placement in _all_placements(state):
+        weekly[placement.source_id]=weekly.get(placement.source_id,0)+1
+        for credit in placement.credits:
+            dest=frequency if credit.category=="strength" else rowing
+            count,minutes=dest.get(credit.target_id,(0,0)); dest[credit.target_id]=(count+credit.exposures,minutes+credit.minutes)
+    return ActiveWindowState(state.window_start,state.window_end,state.frozen_placements,state.provisional_placements,dict(state.remaining_minutes_by_date),state.fixed_context,weekly,frequency,rowing,state.last_frozen_quality_date,state.last_frozen_strength_date,state.score_vector,state.audits,state.exceptions)
+
+def assign_window_placement(state: ActiveWindowState, placement: WindowPlacement) -> ActiveWindowState:
+    if not state.window_start<=placement.date<=state.window_end: raise ValueError("outside_active_window")
+    context=state.fixed_context.get(placement.date)
+    if not context or context.unavailable or context.race or context.race_practice: raise ValueError("hard_calendar_conflict")
+    if state.remaining_minutes_by_date.get(placement.date,0)<placement.minutes: raise ValueError("insufficient_minutes")
+    existing=_all_placements(state)
+    if any(item.placement_id==placement.placement_id for item in existing): raise ValueError("duplicate_placement_id")
+    same=[item for item in existing if item.date==placement.date]
+    if same and placement.role not in {"rest"}: raise ValueError("same_day_conflict")
+    history=[item for item in existing if _is_quality(item.role)]
+    if _is_quality(placement.role) and any(abs((placement.date-item.date).days)<=1 for item in history): raise ValueError("quality_spacing")
+    strengths=[item for item in existing if _is_strength(item.role)]
+    if _is_strength(placement.role) and any(abs((placement.date-item.date).days)<=1 for item in strengths): raise ValueError("strength_spacing")
+    remaining=dict(state.remaining_minutes_by_date); remaining[placement.date]-=placement.minutes
+    result=ActiveWindowState(state.window_start,state.window_end,state.frozen_placements,state.provisional_placements+(placement,),remaining,state.fixed_context,state.weekly_commitment_status,state.frequency_credits,state.rowing_dose_credits,state.last_frozen_quality_date,state.last_frozen_strength_date,state.score_vector,state.audits+({"event":"assigned","placement_id":placement.placement_id},),state.exceptions)
+    return reconcile_active_window_state(result)
+
+def release_window_placement(state: ActiveWindowState, placement_id: str) -> ActiveWindowState:
+    if any(item.placement_id==placement_id for item in state.frozen_placements): raise ValueError("frozen_placement")
+    placement=next((item for item in state.provisional_placements if item.placement_id==placement_id),None)
+    if placement is None: raise ValueError("unknown_placement")
+    remaining=dict(state.remaining_minutes_by_date); remaining[placement.date]+=placement.minutes
+    result=ActiveWindowState(state.window_start,state.window_end,state.frozen_placements,tuple(item for item in state.provisional_placements if item.placement_id!=placement_id),remaining,state.fixed_context,state.weekly_commitment_status,state.frequency_credits,state.rowing_dose_credits,state.last_frozen_quality_date,state.last_frozen_strength_date,state.score_vector,state.audits+({"event":"released","placement_id":placement_id},),state.exceptions)
+    return reconcile_active_window_state(result)
+
+def replace_window_placement(state: ActiveWindowState, old_id: str, replacement: WindowPlacement) -> ActiveWindowState:
+    return assign_window_placement(release_window_placement(state,old_id),replacement)
+
+def freeze_leading_half(state: ActiveWindowState, freeze_before: date) -> ActiveWindowState:
+    frozen=state.frozen_placements+tuple(WindowPlacement(item.placement_id,item.date,item.role,item.source_id,item.minutes,True,item.credits) for item in state.provisional_placements if item.date<freeze_before)
+    provisional=tuple(item for item in state.provisional_placements if item.date>=freeze_before)
+    result=ActiveWindowState(state.window_start,state.window_end,frozen,provisional,dict(state.remaining_minutes_by_date),state.fixed_context,state.weekly_commitment_status,state.frequency_credits,state.rowing_dose_credits,state.last_frozen_quality_date,state.last_frozen_strength_date,state.score_vector,state.audits+({"event":"frozen","before":freeze_before.isoformat()},),state.exceptions)
+    return reconcile_active_window_state(result)
+
 def _strength_minutes(profile):
     activity=next((item for item in profile.get("recurring_activities",[]) if item.get("activity_type")=="strength"),{})
     legacy={item.get("weekday"):item for item in profile.get("weekly_availability",[])}
@@ -158,3 +209,31 @@ def place_v2_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=None, cale
     placements=states[0][1]+tuple((f"strength:{index}",day) for index,day in enumerate(strength_days))
     audits=states[0][2]+tuple({"activity":"strength","selected_date":day.isoformat(),"decisive_reason_codes":["rolling_target","no_consecutive_strength"]} for day in strength_days)+tuple(window_audits)
     return RollingPlacementResult(placements,audits,tuple(misses),BEAM_WIDTH,explored,len(states))
+
+def place_v2_rowing(profile: dict, demand_plan: V2DemandPlan|None=None, calendar: tuple[DateContext,...]|None=None, non_rowing: RollingPlacementResult|None=None) -> RollingPlacementResult:
+    """Place generic V2 rowing roles only; concrete workout selection remains later."""
+    plan=demand_plan or generate_v2_demand_plan(profile); cal=calendar or build_v2_season_calendar(profile)
+    base=non_rowing or place_v2_non_rowing(profile,plan,cal); blocked={day for _,day in base.placements}; placements=list(base.placements); audits=list(base.audits); misses=list(base.strong_target_misses); used={item.date:item.hard_committed_minutes for item in cal}; names=("monday","tuesday","wednesday","thursday","friday","saturday","sunday")
+    for key,day in placements:
+        if key.startswith("strength:"): used[day]=used.get(day,0)+_strength_minutes(profile)
+    quality_dates=[]
+    order={"dedicated_ut2":0,"long_aerobic":1,"ut1_aerobic_strength":2,"quality":3}
+    for target in sorted(plan.rowing_dose_targets,key=lambda item:(item.window_start,order.get(item.category,9),item.category)):
+        selected=[]; minutes=max(1,round(target.target_minutes/max(1,target.target_exposures)))
+        candidates=[]
+        for context in cal:
+            if not target.window_start<=context.date<=target.window_end or context.date in blocked or context.unavailable or context.race or context.race_practice: continue
+            if context.max_training_minutes-used.get(context.date,0)<minutes: continue
+            if target.quality_class=="quality" and any(abs((context.date-old).days)<=target.minimum_recovery_days for old in quality_dates): continue
+            candidates.append(context.date)
+        preferred_long=set(profile.get("preferences",{}).get("preferred_long_session_days",[]))
+        candidates=sorted(candidates,key=lambda day:(not(target.category=="long_aerobic" and names[day.weekday()] in preferred_long),day))
+        for day in candidates:
+            if len(selected)>=target.target_exposures: break
+            selected.append(day); blocked.add(day); used[day]=used.get(day,0)+minutes
+            if target.quality_class=="quality": quality_dates.append(day)
+            placements.append((f"rowing:{target.category}:{len(selected)-1}",day))
+            audits.append({"activity":"rowing","role":target.category,"selected_date":day.isoformat(),"candidate_dates":[x.isoformat() for x in candidates],"target_contribution":{"exposures":1,"minutes":minutes},"decisive_reason_codes":["dedicated_ut2_minimum" if target.category=="dedicated_ut2" else "phase_dose"]})
+        achieved_minutes=len(selected)*minutes; status="target_met" if len(selected)>=target.target_exposures and achieved_minutes>=target.target_minutes else "acceptable_miss" if len(selected)>=target.minimum_exposures and achieved_minutes>=target.minimum_minutes else "below_minimum"
+        if status!="target_met": misses.append({"group":target.category,"window_start":target.window_start.isoformat(),"window_end":target.window_end.isoformat(),"target_exposures":target.target_exposures,"achieved_exposures":len(selected),"minimum_exposures":target.minimum_exposures,"target_minutes":target.target_minutes,"achieved_minutes":achieved_minutes,"minimum_minutes":target.minimum_minutes,"status":status})
+    return RollingPlacementResult(tuple(placements),tuple(audits),tuple(misses),BEAM_WIDTH,base.states_explored,len(base.placements))

@@ -1,6 +1,7 @@
 from datetime import date
 from services.api.tests.disposable_browser_fixture import synthetic_profile
-from rowing_plan.scheduler_v2 import build_v2_season_calendar, candidate_dates_for_demand, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, place_v2_non_rowing
+from rowing_plan.models import TargetCredit, WindowPlacement
+from rowing_plan.scheduler_v2 import assign_window_placement, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, place_v2_non_rowing, place_v2_rowing, release_window_placement
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -42,3 +43,23 @@ def test_v22_strength_reconciles_every_overlapping_14_day_window_without_adjacen
     assert first==second and all((right-left).days>=2 for left,right in zip(strengths,strengths[1:]))
     assert all(audit["achieved"]>=audit["minimum"] for audit in windows)
     assert all(audit["target"]==4 for audit in windows[:-1])
+
+def test_v23_places_generic_rowing_roles_without_using_rest_or_adjacent_quality_days():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; profile["recurring_activities"][1]["preferred_days"]=["thursday"]
+    plan=generate_v2_demand_plan(profile); calendar=build_v2_season_calendar(profile); placed=place_v2_rowing(profile,plan,calendar)
+    rows=[(key,day) for key,day in placed.placements if key.startswith("rowing:")]; rest={day for key,day in placed.placements if key.startswith("rest:")}
+    quality=sorted(day for key,day in rows if ":quality:" in key)
+    assert rows and not {day for _,day in rows}&rest and all((right-left).days>=2 for left,right in zip(quality,quality[1:]))
+
+def test_active_window_assign_release_freeze_and_multi_credit_are_immutable():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
+    state=initialize_active_window_state(build_v2_season_calendar(profile),date(2026,9,7),date(2026,9,20)); day=date(2026,9,8)
+    placement=WindowPlacement("long",day,"long_aerobic","dose",75,False,(TargetCredit("long","long_aerobic",1,75),TargetCredit("ut2","dedicated_ut2",1,75)))
+    assigned=assign_window_placement(state,placement)
+    assert state.remaining_minutes_by_date[day]==90 and assigned.remaining_minutes_by_date[day]==15 and assigned.rowing_dose_credits["ut2"]==(1,75)
+    released=release_window_placement(assigned,"long")
+    assert released.remaining_minutes_by_date[day]==90 and "ut2" not in released.rowing_dose_credits
+    frozen=freeze_leading_half(assigned,date(2026,9,9))
+    try: release_window_placement(frozen,"long")
+    except ValueError as error: assert str(error)=="frozen_placement"
+    else: assert False

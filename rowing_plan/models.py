@@ -1,7 +1,7 @@
 """Small typed model helpers; public plans deliberately remain JSON dictionaries."""
 from __future__ import annotations
 from dataclasses import dataclass, asdict
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 from datetime import date
 
 @dataclass(frozen=True)
@@ -136,3 +136,21 @@ class CandidateDateResult:
 class RollingPlacementResult:
     placements: tuple[tuple[str,date],...]; audits: tuple[dict[str,Any],...]; strong_target_misses: tuple[dict[str,Any],...]
     beam_width: int; states_explored: int; states_retained: int
+
+@dataclass(frozen=True)
+class TargetCredit:
+    target_id: str; category: str; exposures: int; minutes: int
+
+@dataclass(frozen=True)
+class WindowPlacement:
+    placement_id: str; date: date; role: str; source_id: str; minutes: int; frozen: bool=False
+    credits: tuple[TargetCredit,...]=()
+
+@dataclass(frozen=True)
+class ActiveWindowState:
+    window_start: date; window_end: date
+    frozen_placements: tuple[WindowPlacement,...]; provisional_placements: tuple[WindowPlacement,...]
+    remaining_minutes_by_date: Mapping[date,int]; fixed_context: Mapping[date,DateContext]
+    weekly_commitment_status: Mapping[str,Any]; frequency_credits: Mapping[str,tuple[int,int]]; rowing_dose_credits: Mapping[str,tuple[int,int]]
+    last_frozen_quality_date: date|None=None; last_frozen_strength_date: date|None=None
+    score_vector: tuple[int,...]=(); audits: tuple[dict[str,Any],...]=(); exceptions: tuple[dict[str,Any],...]=()
