@@ -24,7 +24,9 @@ def running_disposable_api(port: int = 8011):
         env["PYTHONPATH"]=os.pathsep.join([str(TEMP_DEPS), str(Path.cwd()), env.get("PYTHONPATH","")])
         # Keep the same interpreter used by the caller, but make the bundled
         # API dependencies importable for the disposable subprocess.
-        process=subprocess.Popen([sys.executable,"-m","uvicorn","services.api.app.main:app","--host","127.0.0.1","--port",str(port)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cwd=Path.cwd()
+        command=[sys.executable,"-m","uvicorn","services.api.app.main:app","--host","127.0.0.1","--port",str(port)]
+        process=subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             deadline=time.monotonic()+15
             while time.monotonic()<deadline:
@@ -32,9 +34,15 @@ def running_disposable_api(port: int = 8011):
                     if httpx.get(f"http://127.0.0.1:{port}/api/v1/health",timeout=.5).is_success: break
                 except httpx.HTTPError: pass
                 time.sleep(.1)
-            else: raise RuntimeError("Disposable API did not become healthy")
+            else:
+                if process.poll() is None:
+                    process.terminate()
+                stdout,stderr=process.communicate(timeout=5)
+                details={"command":command,"cwd":str(cwd),"environment":{"ROWING_PLAN_DB_PATH":env["ROWING_PLAN_DB_PATH"],"PYTHONPATH":env["PYTHONPATH"]},"port":port,"health_url":f"http://127.0.0.1:{port}/api/v1/health","timeout_seconds":15,"exit_code":process.returncode,"stdout":stdout,"stderr":stderr}
+                raise RuntimeError(f"Disposable API did not become healthy: {details}")
             yield {**fixture,"api_base":f"http://127.0.0.1:{port}/api/v1","pid":process.pid}
         finally:
-            process.terminate()
-            try: process.wait(timeout=5)
-            except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=5)
+            if process.poll() is None:
+                process.terminate()
+                try: process.wait(timeout=5)
+                except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=5)
