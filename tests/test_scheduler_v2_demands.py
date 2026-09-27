@@ -1,6 +1,6 @@
 from datetime import date
 from services.api.tests.disposable_browser_fixture import synthetic_profile
-from rowing_plan.scheduler_v2 import build_v2_season_calendar, candidate_dates_for_demand, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan
+from rowing_plan.scheduler_v2 import build_v2_season_calendar, candidate_dates_for_demand, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, place_v2_non_rowing
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -33,3 +33,12 @@ def test_v21_calendar_reserves_private_and_candidates_are_hard_eligible_only():
     profile["weekly_availability"][3]["available"]=False
     result=candidate_dates_for_demand(coached,build_v2_season_calendar(profile))
     assert result.candidates==(date(2026,9,8),) and any(day=="2026-09-10" and "unavailable" in reasons for day,reasons in result.rejections)
+
+def test_v22_strength_reconciles_every_overlapping_14_day_window_without_adjacency():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-10-04"}; profile["recurring_activities"][1]["preferred_days"]=["thursday"]
+    first=place_v2_non_rowing(profile); second=place_v2_non_rowing(profile)
+    strengths=[day for key,day in first.placements if key.startswith("strength:")]
+    windows=[audit for audit in first.audits if "window_start" in audit and audit["window_end"]>="2026-09-20"]
+    assert first==second and all((right-left).days>=2 for left,right in zip(strengths,strengths[1:]))
+    assert all(audit["achieved"]>=audit["minimum"] for audit in windows)
+    assert all(audit["target"]==4 for audit in windows[:-1])

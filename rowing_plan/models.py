@@ -131,3 +131,8 @@ class DateContext:
 @dataclass(frozen=True)
 class CandidateDateResult:
     candidates: tuple[date,...]; rejections: tuple[tuple[str,tuple[str,...]],...]=()
+
+@dataclass(frozen=True)
+class RollingPlacementResult:
+    placements: tuple[tuple[str,date],...]; audits: tuple[dict[str,Any],...]; strong_target_misses: tuple[dict[str,Any],...]
+    beam_width: int; states_explored: int; states_retained: int
