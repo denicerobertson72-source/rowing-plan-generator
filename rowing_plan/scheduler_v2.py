@@ -212,6 +212,24 @@ def move_user_placement(state: ActiveWindowState, placement_id: str, destination
     override=UserScheduleOverride(override_id,"move",(placement_id,),(placement.date,),(destination,),reason)
     return ScheduleChangeResult(True,state=result,overrides=(override,))
 
+def swap_user_placements(state: ActiveWindowState, first_id: str, second_id: str, override_id: str, reason: str|None=None) -> ScheduleChangeResult:
+    """Atomic explicit-athlete date exchange; never exposes a half-swap."""
+    if first_id==second_id: return ScheduleChangeResult(True,state=state)
+    items={item.placement_id:item for item in state.provisional_placements}; first=items.get(first_id); second=items.get(second_id)
+    if first is None or second is None: return ScheduleChangeResult(False,("unknown_placement",),state=state)
+    if first.date==second.date: return ScheduleChangeResult(True,state=state)
+    remaining=dict(state.remaining_minutes_by_date); remaining[first.date]+=first.minutes; remaining[second.date]+=second.minutes
+    trial=replace(state,provisional_placements=tuple(item for item in state.provisional_placements if item.placement_id not in {first_id,second_id}),remaining_minutes_by_date=remaining)
+    moved=lambda item,day: WindowPlacement(item.placement_id,day,item.role,item.source_id,item.minutes,False,item.credits,True,item.original_date or item.date,override_id)
+    try:
+        result=assign_window_placement(trial,moved(first,second.date)); result=assign_window_placement(result,moved(second,first.date))
+    except ValueError as error: return ScheduleChangeResult(False,(str(error),),state=state)
+    result=replace(result,provisional_placements=tuple(sorted(result.provisional_placements,key=lambda item:(item.date,item.placement_id,item.role))))
+    links=sorted(((first.placement_id,first.date,second.date),(second.placement_id,second.date,first.date)),key=lambda item:item[0])
+    override=UserScheduleOverride(override_id,"swap",tuple(item[0] for item in links),tuple(item[1] for item in links),tuple(item[2] for item in links),reason)
+    result=replace(result,audits=tuple(item for item in result.audits if item.get("event") not in {"assigned","released"})+({"event":"swap","override_id":override_id},))
+    return ScheduleChangeResult(True,state=result,overrides=(override,))
+
 def freeze_leading_half(state: ActiveWindowState, freeze_before: date) -> ActiveWindowState:
     frozen=state.frozen_placements+tuple(WindowPlacement(item.placement_id,item.date,item.role,item.source_id,item.minutes,True,item.credits,item.user_fixed,item.original_date,item.override_id) for item in state.provisional_placements if item.date<freeze_before)
     provisional=tuple(item for item in state.provisional_placements if item.date>=freeze_before)

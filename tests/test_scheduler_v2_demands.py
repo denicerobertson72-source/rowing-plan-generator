@@ -2,7 +2,7 @@ from datetime import date
 from dataclasses import replace
 from services.api.tests.disposable_browser_fixture import synthetic_profile
 from rowing_plan.models import FrequencyTarget, TargetCredit, TrainingDoseTarget, V2DemandPlan, WindowPlacement
-from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, release_window_placement, replace_window_placement, role_family, solve_v2_rolling_non_rowing
+from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, release_window_placement, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -313,13 +313,52 @@ def test_user_move_race_and_spacing_follow_current_not_original_date():
     try: assign_window_placement(strength,WindowPlacement("b",date(2026,9,10),"strength","strength",30))
     except ValueError as error: assert str(error)=="strength_spacing"
     else: assert False
-    quality=move_user_placement(assign_window_placement(clean,WindowPlacement("q",date(2026,9,7),"quality","quality",20)),"q",date(2026,9,9),"qmove").state
-    try: assign_window_placement(quality,WindowPlacement("q2",date(2026,9,10),"quality","quality",20))
-    except ValueError as error: assert str(error)=="quality_spacing"
-    else: assert False
-    historical=WindowPlacement("sun",date(2026,9,13),"strength","strength",30,True,(),True,date(2026,9,8),"override-test-2")
-    later=initialize_active_window_state(calendar,date(2026,9,14),date(2026,9,27),frozen_history=(historical,))
-    assert later.frozen_placements[0].user_fixed and later.remaining_minutes_by_date[date(2026,9,14)]==90
-    try: assign_window_placement(later,WindowPlacement("mon",date(2026,9,14),"strength","strength",30))
-    except ValueError as error: assert str(error)=="strength_spacing"
-    else: assert False
+
+def test_atomic_user_swap_exchanges_capacity_identity_and_rolls_back_restriction_failure():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    state=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20)); state=assign_window_placement(state,WindowPlacement("ut2",date(2026,9,7),"dedicated_ut2","ut2",60)); state=assign_window_placement(state,WindowPlacement("lift",date(2026,9,8),"strength","strength",30))
+    swapped=swap_user_placements(state,"ut2","lift","swap")
+    assert swapped.success and {(item.placement_id,item.date,item.user_fixed) for item in swapped.state.provisional_placements}=={("ut2",date(2026,9,8),True),("lift",date(2026,9,7),True)}
+    assert swapped.state.remaining_minutes_by_date[date(2026,9,7)]==60 and swapped.state.remaining_minutes_by_date[date(2026,9,8)]==30
+
+def test_atomic_swap_preserves_origins_audit_order_and_multi_credit_identity():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    credits=(TargetCredit("long","long_aerobic",1,75),TargetCredit("ut2","dedicated_ut2",1,75))
+    state=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20)); state=assign_window_placement(state,WindowPlacement("a",date(2026,9,7),"long_aerobic","long",75,False,credits)); state=assign_window_placement(state,WindowPlacement("b",date(2026,9,8),"strength","strength",30)); state=assign_window_placement(state,WindowPlacement("c",date(2026,9,10),"quality","quality",20))
+    first=swap_user_placements(state,"a","b","swap-1","weather"); reverse=swap_user_placements(state,"b","a","swap-1","weather")
+    a=next(item for item in first.state.provisional_placements if item.placement_id=="a"); b=next(item for item in first.state.provisional_placements if item.placement_id=="b")
+    assert first.success and a.date==date(2026,9,8) and a.original_date==date(2026,9,7) and a.credits==credits and b.original_date==date(2026,9,8)
+    assert len(first.overrides)==1 and first.overrides[0].action_type=="swap" and first.overrides[0].reason=="weather"
+    assert first.state==reverse.state and next(item for item in first.state.provisional_placements if item.placement_id=="c")==next(item for item in state.provisional_placements if item.placement_id=="c")
+    assert [(item.placement_id,item.date) for item in build_dated_training_roles(first.state)]==[("b",date(2026,9,7)),("a",date(2026,9,8)),("c",date(2026,9,10))]
+
+def test_swap_weather_reswap_audit_and_atomic_failure_contract():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    state=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20)); state=assign_window_placement(state,WindowPlacement("u",date(2026,9,7),"dedicated_ut2","ut2",45)); state=assign_window_placement(state,WindowPlacement("s",date(2026,9,8),"strength","strength",30)); state=assign_window_placement(state,WindowPlacement("c",date(2026,9,10),"quality","quality",20))
+    weather=replace(state,fixed_context={**state.fixed_context,date(2026,9,7):replace(state.fixed_context[date(2026,9,7)],prohibited_role_families=("rowing",))})
+    swapped=swap_user_placements(weather,"u","s","weather","rain")
+    assert swapped.success and {(x.placement_id,x.date) for x in swapped.state.provisional_placements if x.placement_id in {"u","s"}}=={("u",date(2026,9,8)),("s",date(2026,9,7))}
+    assert len(swapped.overrides)==1 and swapped.overrides[0].placement_ids==("s","u") and swapped.overrides[0].reason=="rain"
+    clear=replace(swapped.state,fixed_context=state.fixed_context); reswap=swap_user_placements(clear,"u","s","again"); u=next(x for x in reswap.state.provisional_placements if x.placement_id=="u")
+    assert reswap.success and u.original_date==date(2026,9,7) and u.override_id=="again"
+    blocked=replace(state,fixed_context={**state.fixed_context,date(2026,9,8):replace(state.fixed_context[date(2026,9,8)],prohibited_role_families=("rowing",))})
+    failed=swap_user_placements(blocked,"u","s","bad")
+    assert not failed.success and failed.state==blocked and not failed.overrides
+
+def test_swap_failure_matrix_capacity_race_frozen_and_missing_are_atomic():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    cap=tuple(replace(item,max_training_minutes=60,remaining_minutes=60) if item.date==date(2026,9,7) else item for item in calendar)
+    state=initialize_active_window_state(cap,date(2026,9,7),date(2026,9,20)); state=assign_window_placement(state,WindowPlacement("a",date(2026,9,7),"strength","strength",30)); state=assign_window_placement(state,WindowPlacement("b",date(2026,9,8),"long_aerobic","long",75))
+    for left,right,reason in (("a","b","insufficient_minutes"),("a","missing","unknown_placement")):
+        result=swap_user_placements(state,left,right,"x"); assert not result.success and result.hard_failures==(reason,) and result.state==state and not result.overrides
+    race=replace(state,fixed_context={**state.fixed_context,date(2026,9,7):replace(state.fixed_context[date(2026,9,7)],race=True)})
+    result=swap_user_placements(race,"a","b","race"); assert not result.success and result.hard_failures==("hard_calendar_conflict",) and result.state==race
+    frozen=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20),frozen_history=(WindowPlacement("old",date(2026,9,7),"strength","strength",30,True),))
+    assert not swap_user_placements(frozen,"old","missing","f").success
+
+def test_swap_third_placement_strength_and_quality_spacing_fail_atomically():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    for role,reason in (("strength","strength_spacing"),("quality","quality_spacing")):
+        state=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20)); state=assign_window_placement(state,WindowPlacement("a",date(2026,9,7),role,role,20)); state=assign_window_placement(state,WindowPlacement("b",date(2026,9,11),"long_aerobic","long",20)); state=assign_window_placement(state,WindowPlacement("c",date(2026,9,10),role,role,20))
+        result=swap_user_placements(state,"a","b","spacing")
+        assert not result.success and result.hard_failures==(reason,) and result.state==state and not result.overrides
