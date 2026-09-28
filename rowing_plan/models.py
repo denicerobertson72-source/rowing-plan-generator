@@ -148,6 +148,12 @@ class WindowPlacement:
     credits: tuple[TargetCredit,...]=()
 
 @dataclass(frozen=True)
+class DatedTrainingRole:
+    """Generic downstream constraint, never a concrete workout prescription."""
+    date: date; role: str; duration_minutes: int; phase_id: str; source_id: str
+    provenance: Literal["fixed","frozen","provisional"]; target_credits: tuple[TargetCredit,...]; placement_id: str
+
+@dataclass(frozen=True)
 class ActiveWindowState:
     window_start: date; window_end: date
     frozen_placements: tuple[WindowPlacement,...]; provisional_placements: tuple[WindowPlacement,...]

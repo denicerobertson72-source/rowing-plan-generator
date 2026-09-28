@@ -2,7 +2,7 @@ from datetime import date
 from dataclasses import replace
 from services.api.tests.disposable_browser_fixture import synthetic_profile
 from rowing_plan.models import FrequencyTarget, TargetCredit, TrainingDoseTarget, V2DemandPlan, WindowPlacement
-from rowing_plan.scheduler_v2 import assign_window_placement, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, release_window_placement, replace_window_placement, solve_v2_rolling_non_rowing
+from rowing_plan.scheduler_v2 import assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, release_window_placement, replace_window_placement, solve_v2_rolling_non_rowing
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -191,3 +191,20 @@ def test_two_slot_shared_solver_protects_ut2_and_strength_minimum_before_quality
     assert any(role=="dedicated_ut2" for _,role in placed) and (date(2026,9,16),"strength") in placed
     assert summary["dedicated_ut2"]["status"]=="target_met" and diagnostics[0]["strength"]["achieved"]>=3
     assert summary["quality"]["status"]!="target_met"
+
+def test_dated_role_adapter_preserves_identity_credits_order_and_provenance():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    frozen=WindowPlacement("long",date(2026,9,8),"long_aerobic","dose",75,True,(TargetCredit("long","long_aerobic",1,75),TargetCredit("ut2","dedicated_ut2",1,75)))
+    provisional=WindowPlacement("quality",date(2026,9,10),"quality","quality",25)
+    state=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20),frozen_history=(frozen,))
+    state=assign_window_placement(state,provisional); roles=build_dated_training_roles(state)
+    assert [(item.placement_id,item.role,item.provenance) for item in roles]==[("long","long_aerobic","frozen"),("quality","quality","provisional")]
+    assert roles[0].duration_minutes==75 and roles[0].target_credits==frozen.credits and len(roles)==2
+
+def test_dated_role_adapter_rejects_duplicate_placement_identity():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    duplicate=WindowPlacement("same",date(2026,9,8),"strength","strength",30,True)
+    state=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20),frozen_history=(duplicate,duplicate))
+    try: build_dated_training_roles(state)
+    except ValueError as error: assert str(error)=="duplicate_placement_id"
+    else: assert False

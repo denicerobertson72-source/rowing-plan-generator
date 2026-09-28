@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from time import perf_counter
 from dataclasses import replace
-from .models import ActiveWindowState, CandidateDateResult, DateContext, DemandSatisfaction, FrequencyTarget, RollingPlacementResult, TargetCredit, TrainingDemand, TrainingDoseTarget, V2DemandPlan, WindowPlacement
+from .models import ActiveWindowState, CandidateDateResult, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, RollingPlacementResult, TargetCredit, TrainingDemand, TrainingDoseTarget, V2DemandPlan, WindowPlacement
 from .periodization import build_season_phases, parse, race_dates
 
 _ROLE={"LONG_AEROBIC":("long_aerobic","aerobic",0),"AEROBIC_BASE":("aerobic_base","aerobic",0),"AEROBIC_STRENGTH":("aerobic_strength","aerobic",1),"THRESHOLD":("threshold","quality",1),"RACE_PACE":("race_pace","quality",1),"SPRINT_POWER":("sprint_power","quality",1),"RECOVERY":("recovery","none",0),"TECHNIQUE_EASY":("aerobic_base","aerobic",0)}
@@ -128,6 +128,17 @@ def initialize_active_window_state(calendar: tuple[DateContext,...], window_star
 def _is_quality(role): return role in {"quality","threshold","race_pace","sprint_power"}
 def _is_strength(role): return role=="strength"
 def _all_placements(state): return (*state.frozen_placements,*state.provisional_placements)
+
+def build_dated_training_roles(state: ActiveWindowState) -> tuple[DatedTrainingRole,...]:
+    """Pure final-state adapter; deliberately does not select workouts."""
+    result=[]; seen=set()
+    for item in sorted(_all_placements(state),key=lambda item:(item.date,item.placement_id,item.role)):
+        if item.placement_id in seen: raise ValueError("duplicate_placement_id")
+        seen.add(item.placement_id)
+        context=state.fixed_context.get(item.date)
+        if context is None: continue
+        result.append(DatedTrainingRole(item.date,item.role,item.minutes,context.phase_id,item.source_id,"frozen" if item.frozen else "provisional",item.credits,item.placement_id))
+    return tuple(result)
 def _role_category(role): return "rest" if role=="rest" else "strength" if role=="strength" else "coached" if role=="coached_training" else "rowing"
 def placements_compatible(existing: WindowPlacement, incoming: WindowPlacement) -> tuple[bool,str|None]:
     """Order-independent flexible same-day compatibility source of truth."""
