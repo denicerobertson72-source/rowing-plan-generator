@@ -118,11 +118,11 @@ def candidate_dates_for_dose(target: TrainingDoseTarget, calendar: tuple[DateCon
 def initialize_active_window_state(calendar: tuple[DateContext,...], window_start: date, window_end: date, *, frozen_history: tuple[WindowPlacement,...]=(), provisional_overlap: tuple[WindowPlacement,...]=(), canonical_demands: tuple[TrainingDemand,...]=()) -> ActiveWindowState:
     """Reconstruct a window solely from immutable calendar facts and placements."""
     contexts={item.date:item for item in calendar if window_start<=item.date<=window_end}
-    frozen=tuple(sorted((WindowPlacement(item.placement_id,item.date,item.role,item.source_id,item.minutes,True,item.credits) for item in frozen_history),key=lambda item:(item.date,item.placement_id)))
+    frozen=tuple(sorted((WindowPlacement(item.placement_id,item.date,item.role,item.source_id,item.minutes,True,item.credits,item.user_fixed,item.original_date,item.override_id) for item in frozen_history),key=lambda item:(item.date,item.placement_id)))
     state=ActiveWindowState(window_start,window_end,frozen,(),{day:item.remaining_minutes for day,item in contexts.items()},contexts,{}, {}, {})
     for placement in sorted(provisional_overlap,key=lambda item:(item.date,item.placement_id)):
         if not window_start<=placement.date<=window_end: raise ValueError("provisional_outside_active_window")
-        state=assign_window_placement(state,WindowPlacement(placement.placement_id,placement.date,placement.role,placement.source_id,placement.minutes,False,placement.credits))
+        state=assign_window_placement(state,WindowPlacement(placement.placement_id,placement.date,placement.role,placement.source_id,placement.minutes,False,placement.credits,placement.user_fixed,placement.original_date,placement.override_id))
     return reconcile_demand_satisfaction(state,canonical_demands,window_start) if canonical_demands else state
 
 def _is_quality(role): return role in {"quality","threshold","race_pace","sprint_power"}
@@ -140,6 +140,7 @@ def build_dated_training_roles(state: ActiveWindowState) -> tuple[DatedTrainingR
         result.append(DatedTrainingRole(item.date,item.role,item.minutes,context.phase_id,item.source_id,"frozen" if item.frozen else "provisional",item.credits,item.placement_id))
     return tuple(result)
 def _role_category(role): return "rest" if role=="rest" else "strength" if role=="strength" else "coached" if role=="coached_training" else "rowing"
+def role_family(role): return "rowing" if role in {"dedicated_ut2","long_aerobic","ut1_aerobic_strength","quality"} else _role_category(role)
 def placements_compatible(existing: WindowPlacement, incoming: WindowPlacement) -> tuple[bool,str|None]:
     """Order-independent flexible same-day compatibility source of truth."""
     if existing.date != incoming.date: return True,None
@@ -170,6 +171,7 @@ def assign_window_placement(state: ActiveWindowState, placement: WindowPlacement
     if not state.window_start<=placement.date<=state.window_end: raise ValueError("outside_active_window")
     context=state.fixed_context.get(placement.date)
     if not context or context.unavailable or context.race or context.race_practice: raise ValueError("hard_calendar_conflict")
+    if role_family(placement.role) in context.prohibited_role_families: raise ValueError("activity_prohibited")
     if state.remaining_minutes_by_date.get(placement.date,0)<placement.minutes: raise ValueError("insufficient_minutes")
     existing=_all_placements(state)
     if any(item.placement_id==placement.placement_id for item in existing): raise ValueError("duplicate_placement_id")
@@ -189,6 +191,7 @@ def release_window_placement(state: ActiveWindowState, placement_id: str) -> Act
     if any(item.placement_id==placement_id for item in state.frozen_placements): raise ValueError("frozen_placement")
     placement=next((item for item in state.provisional_placements if item.placement_id==placement_id),None)
     if placement is None: raise ValueError("unknown_placement")
+    if placement.user_fixed: raise ValueError("user_fixed_placement")
     remaining=dict(state.remaining_minutes_by_date); remaining[placement.date]+=placement.minutes
     result=ActiveWindowState(state.window_start,state.window_end,state.frozen_placements,tuple(item for item in state.provisional_placements if item.placement_id!=placement_id),remaining,state.fixed_context,state.weekly_commitment_status,state.frequency_credits,state.rowing_dose_credits,state.last_frozen_quality_date,state.last_frozen_strength_date,state.score_vector,state.audits+({"event":"released","placement_id":placement_id},),state.exceptions)
     return reconcile_active_window_state(result)
@@ -197,7 +200,7 @@ def replace_window_placement(state: ActiveWindowState, old_id: str, replacement:
     return assign_window_placement(release_window_placement(state,old_id),replacement)
 
 def freeze_leading_half(state: ActiveWindowState, freeze_before: date) -> ActiveWindowState:
-    frozen=state.frozen_placements+tuple(WindowPlacement(item.placement_id,item.date,item.role,item.source_id,item.minutes,True,item.credits) for item in state.provisional_placements if item.date<freeze_before)
+    frozen=state.frozen_placements+tuple(WindowPlacement(item.placement_id,item.date,item.role,item.source_id,item.minutes,True,item.credits,item.user_fixed,item.original_date,item.override_id) for item in state.provisional_placements if item.date<freeze_before)
     provisional=tuple(item for item in state.provisional_placements if item.date>=freeze_before)
     result=ActiveWindowState(state.window_start,state.window_end,frozen,provisional,dict(state.remaining_minutes_by_date),state.fixed_context,state.weekly_commitment_status,state.frequency_credits,state.rowing_dose_credits,state.last_frozen_quality_date,state.last_frozen_strength_date,state.score_vector,state.audits+({"event":"frozen","before":freeze_before.isoformat()},),state.exceptions)
     return reconcile_active_window_state(result)

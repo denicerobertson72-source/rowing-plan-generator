@@ -128,6 +128,7 @@ class DateContext:
     hard_committed_minutes: int; remaining_minutes: int; unavailable: bool=False; race: bool=False; race_practice: bool=False
     taper_or_recovery: bool=False; fixed_commitments: tuple[dict[str,Any],...]=(); completed_sessions: tuple[dict[str,Any],...]=()
     permitted_activity_categories: tuple[str,...]=(); diagnostic_reason_codes: tuple[str,...]=()
+    prohibited_role_families: tuple[str,...]=()
 
 @dataclass(frozen=True)
 class CandidateDateResult:
@@ -146,6 +147,17 @@ class TargetCredit:
 class WindowPlacement:
     placement_id: str; date: date; role: str; source_id: str; minutes: int; frozen: bool=False
     credits: tuple[TargetCredit,...]=()
+    user_fixed: bool=False; original_date: date|None=None; override_id: str|None=None
+
+@dataclass(frozen=True)
+class UserScheduleOverride:
+    override_id: str; action_type: Literal["move","swap","day_restriction"]
+    placement_ids: tuple[str,...]=(); from_dates: tuple[date,...]=(); to_dates: tuple[date,...]=(); reason: str|None=None
+
+@dataclass(frozen=True)
+class ScheduleChangeResult:
+    success: bool; hard_failures: tuple[str,...]=(); target_consequences: tuple[dict[str,Any],...]=()
+    state: Any=None; overrides: tuple[UserScheduleOverride,...]=()
 
 @dataclass(frozen=True)
 class DatedTrainingRole:

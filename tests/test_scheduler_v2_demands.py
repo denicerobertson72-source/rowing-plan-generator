@@ -2,7 +2,7 @@ from datetime import date
 from dataclasses import replace
 from services.api.tests.disposable_browser_fixture import synthetic_profile
 from rowing_plan.models import FrequencyTarget, TargetCredit, TrainingDoseTarget, V2DemandPlan, WindowPlacement
-from rowing_plan.scheduler_v2 import assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, release_window_placement, replace_window_placement, solve_v2_rolling_non_rowing
+from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, release_window_placement, replace_window_placement, role_family, solve_v2_rolling_non_rowing
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -207,4 +207,60 @@ def test_dated_role_adapter_rejects_duplicate_placement_identity():
     state=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20),frozen_history=(duplicate,duplicate))
     try: build_dated_training_roles(state)
     except ValueError as error: assert str(error)=="duplicate_placement_id"
+    else: assert False
+
+def test_user_fixed_mutability_and_rowing_only_restriction():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    day=date(2026,9,8); calendar=tuple(replace(item,prohibited_role_families=("rowing",)) if item.date==day else item for item in calendar)
+    plain=WindowPlacement("plain",day,"strength","strength",30); fixed=WindowPlacement("fixed",day,"strength","strength",30,False,(),True,day,"override")
+    assert not plain.user_fixed and plain.original_date is None and plain.override_id is None
+    state=assign_window_placement(initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20)),fixed)
+    try: release_window_placement(state,"fixed")
+    except ValueError as error: assert str(error)=="user_fixed_placement"
+    else: assert False
+    for role in ("dedicated_ut2","long_aerobic","ut1_aerobic_strength","quality"):
+        try: assign_window_placement(initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20)),WindowPlacement(role,day,role,role,20))
+        except ValueError as error: assert str(error)=="activity_prohibited"
+        else: assert False
+    assert {role_family(role) for role in ("dedicated_ut2","long_aerobic","ut1_aerobic_strength","quality")}=={"rowing"}
+    assert role_family("strength")!="rowing" and build_dated_training_roles(state)[0].provenance=="provisional"
+
+def test_user_fixed_replace_rejects_while_ordinary_provisional_remains_mutable():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    base=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20)); fixed=assign_window_placement(base,WindowPlacement("fixed",date(2026,9,8),"strength","strength",30,False,(),True))
+    try: replace_window_placement(fixed,"fixed",WindowPlacement("new",date(2026,9,10),"strength","strength",30))
+    except ValueError as error: assert str(error)=="user_fixed_placement" and fixed.provisional_placements[0].placement_id=="fixed"
+    else: assert False
+    ordinary=assign_window_placement(base,WindowPlacement("old",date(2026,9,8),"strength","strength",30))
+    changed=replace_window_placement(ordinary,"old",WindowPlacement("new",date(2026,9,10),"strength","strength",30))
+    assert {item.placement_id for item in changed.provisional_placements}=={"new"}
+
+def test_user_fixed_reconstruction_preserves_metadata_and_historical_spacing():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-27"}; calendar=build_v2_season_calendar(profile)
+    active=WindowPlacement("active",date(2026,9,15),"strength","strength",30,False,(),True,date(2026,9,8),"override-test-1")
+    state=initialize_active_window_state(calendar,date(2026,9,14),date(2026,9,27),provisional_overlap=(active,))
+    item=state.provisional_placements[0]
+    assert (item.user_fixed,item.original_date,item.override_id,item.placement_id)==(True,date(2026,9,8),"override-test-1","active") and state.remaining_minutes_by_date[date(2026,9,15)]==60
+    try: release_window_placement(state,"active")
+    except ValueError as error: assert str(error)=="user_fixed_placement"
+    else: assert False
+
+def test_historical_user_fixed_ut2_respects_horizon_expiration_and_phase_clipping():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-27"}; calendar=build_v2_season_calendar(profile)
+    phase=calendar[0].phase_id; target=TrainingDoseTarget(phase,"dedicated_ut2",date(2026,9,7),date(2026,9,27),14,1,1,75,75,"aerobic","strong",0,"test","")
+    credit=(TargetCredit(f"{phase}:dedicated_ut2","dedicated_ut2",1,75),)
+    fixed=WindowPlacement("ut2",date(2026,9,13),"dedicated_ut2",f"{phase}:dedicated_ut2",75,True,credit,True,date(2026,9,8),"override")
+    ordinary=WindowPlacement("ut2o",date(2026,9,13),"dedicated_ut2",f"{phase}:dedicated_ut2",75,True,credit)
+    state=initialize_active_window_state(calendar,date(2026,9,14),date(2026,9,27),frozen_history=(fixed,))
+    summary=_dose_target_summary(state,target,date(2026,9,7),date(2026,9,20))
+    assert fixed.user_fixed and summary["achieved_exposures"]==1 and summary["achieved_minutes"]==75 and state.remaining_minutes_by_date[date(2026,9,14)]==90
+    ordinary_state=initialize_active_window_state(calendar,date(2026,9,14),date(2026,9,27),frozen_history=(ordinary,))
+    assert _dose_target_summary(ordinary_state,target,date(2026,9,7),date(2026,9,20))==summary
+    assert _dose_target_summary(state,target,date(2026,9,21),date(2026,9,27))["achieved_minutes"]==0
+    clipped=replace(target,window_start=date(2026,9,14)); assert _dose_target_summary(state,clipped,date(2026,9,14),date(2026,9,20))["achieved_minutes"]==0
+    historical=WindowPlacement("sun",date(2026,9,13),"strength","strength",30,True,(),True,date(2026,9,8),"override-test-2")
+    later=initialize_active_window_state(calendar,date(2026,9,14),date(2026,9,27),frozen_history=(historical,))
+    assert later.frozen_placements[0].user_fixed and later.remaining_minutes_by_date[date(2026,9,14)]==90
+    try: assign_window_placement(later,WindowPlacement("mon",date(2026,9,14),"strength","strength",30))
+    except ValueError as error: assert str(error)=="strength_spacing"
     else: assert False
