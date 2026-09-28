@@ -1,7 +1,8 @@
 from datetime import date
+from dataclasses import replace
 from services.api.tests.disposable_browser_fixture import synthetic_profile
 from rowing_plan.models import TargetCredit, WindowPlacement
-from rowing_plan.scheduler_v2 import assign_window_placement, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, release_window_placement
+from rowing_plan.scheduler_v2 import assign_window_placement, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, release_window_placement, solve_v2_rolling_non_rowing
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -94,3 +95,60 @@ def test_window_reconstruction_imports_overlap_once_and_keeps_frozen_history():
     except ValueError as error: assert str(error)=="strength_spacing"
     else: assert False
     assert release_window_placement(state,"coach").remaining_minutes_by_date[date(2026,9,17)]==90
+
+def test_shared_solver_overlap_reversal_preserves_canonical_provenance_and_capacity():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-27"}
+    calendar=build_v2_season_calendar(profile); demands=tuple(generate_training_demands(profile)); coached=next(item for item in demands if item.type=="coached_training" and item.canonical_week_start==date(2026,9,14))
+    first=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20),canonical_demands=demands)
+    thu=assign_window_placement(first,WindowPlacement("coach-thu",date(2026,9,17),"coached_training",coached.demand_id,0))
+    carried=freeze_leading_half(thu,date(2026,9,14))
+    second=initialize_active_window_state(calendar,date(2026,9,14),date(2026,9,27),frozen_history=carried.frozen_placements,provisional_overlap=carried.provisional_placements,canonical_demands=demands)
+    assert second.demand_satisfaction[coached.demand_id].status=="provisional_satisfied"
+    open_state=reconcile_demand_satisfaction(release_window_placement(second,"coach-thu"),demands,date(2026,9,14))
+    assert open_state.demand_satisfaction[coached.demand_id].status=="open" and open_state.remaining_minutes_by_date[date(2026,9,17)]==90
+    tue=reconcile_demand_satisfaction(assign_window_placement(open_state,WindowPlacement("coach-tue",date(2026,9,15),"coached_training",coached.demand_id,0)),demands,date(2026,9,14))
+    assert tue.demand_satisfaction[coached.demand_id].status=="provisional_satisfied" and len([p for p in tue.provisional_placements if p.source_id==coached.demand_id])==1
+
+def test_frozen_and_missed_canonical_demands_do_not_duplicate_in_later_windows():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-27"}; calendar=build_v2_season_calendar(profile); demands=tuple(generate_training_demands(profile))
+    coached=next(item for item in demands if item.type=="coached_training" and item.canonical_week_start==date(2026,9,7))
+    state=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20),canonical_demands=demands)
+    frozen=freeze_leading_half(assign_window_placement(state,WindowPlacement("coach",date(2026,9,8),"coached_training",coached.demand_id,0)),date(2026,9,14))
+    later=reconcile_demand_satisfaction(initialize_active_window_state(calendar,date(2026,9,14),date(2026,9,27),frozen_history=frozen.frozen_placements,canonical_demands=demands),demands,date(2026,9,14))
+    assert later.demand_satisfaction[coached.demand_id].status=="frozen_satisfied"
+    missed=reconcile_demand_satisfaction(initialize_active_window_state(calendar,date(2026,9,14),date(2026,9,27),canonical_demands=demands),demands,date(2026,9,21))
+    assert missed.demand_satisfaction[coached.demand_id].status=="missed"
+
+def test_shared_solver_four_week_diagnostics_are_deterministic_and_leave_row_capacity_open():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-10-04"}; profile["recurring_activities"][1]["preferred_days"]=["thursday"]
+    first,diagnostics=solve_v2_rolling_non_rowing(profile); second,repeat=solve_v2_rolling_non_rowing(profile)
+    stable=lambda records: tuple({**item,"search":{key:value for key,value in item["search"].items() if key!="runtime_ms"}} for item in records)
+    assert first==second and stable(diagnostics)==stable(repeat)
+    placements=(*first.frozen_placements,*first.provisional_placements)
+    source_ids=[item.source_id for item in placements if item.role in {"coached_training","rest"}]
+    assert len(source_ids)==len(set(source_ids))
+    strength=sorted(item.date for item in placements if item.role=="strength")
+    assert all((right-left).days>=2 for left,right in zip(strength,strength[1:]))
+    assert all({"coached_demands","rest_demands","strength","score_vector","search","frozen_placements","provisional_placements"}<=set(item) for item in diagnostics)
+    assert all(item["search"]["beam_width"]==16 for item in diagnostics)
+    assert any(value>0 for value in first.remaining_minutes_by_date.values())
+
+def test_shared_solver_strength_reports_target_acceptable_and_below_minimum_without_unsafe_spacing():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    _,full=solve_v2_rolling_non_rowing(profile,calendar=calendar)
+    assert full[0]["strength"]["status"]=="target_met" and full[0]["strength"]["achieved"]==4
+    constrained=tuple(replace(item,available=False,unavailable=True,remaining_minutes=0,permitted_activity_categories=()) if index in {0,1,4} else item for index,item in enumerate(calendar))
+    _,acceptable=solve_v2_rolling_non_rowing(profile,calendar=constrained)
+    assert acceptable[0]["strength"]["status"]=="acceptable_miss" and acceptable[0]["strength"]["achieved"]==3
+    too_small=tuple(replace(item,available=False,unavailable=True,remaining_minutes=0,permitted_activity_categories=()) if index in {0,4,7,11} else item for index,item in enumerate(calendar))
+    _,below=solve_v2_rolling_non_rowing(profile,calendar=too_small)
+    assert below[0]["strength"]["status"]=="below_minimum" and below[0]["strength"]["blockers"]
+
+def test_frozen_sunday_strength_blocks_monday_but_not_tuesday():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-27"}; calendar=build_v2_season_calendar(profile)
+    sunday=WindowPlacement("sun",date(2026,9,13),"strength","strength",60,True)
+    state=initialize_active_window_state(calendar,date(2026,9,14),date(2026,9,27),frozen_history=(sunday,))
+    try: assign_window_placement(state,WindowPlacement("mon",date(2026,9,14),"strength","strength",60))
+    except ValueError as error: assert str(error)=="strength_spacing"
+    else: assert False
+    assert assign_window_placement(state,WindowPlacement("tue",date(2026,9,15),"strength","strength",60)).provisional_placements

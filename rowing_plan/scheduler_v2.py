@@ -1,7 +1,7 @@
 """Scheduler V2.0 demand generation.  This module performs no placement."""
 from __future__ import annotations
 from datetime import date, timedelta
-from itertools import combinations
+from time import perf_counter
 from dataclasses import replace
 from .models import ActiveWindowState, CandidateDateResult, DateContext, DemandSatisfaction, FrequencyTarget, RollingPlacementResult, TargetCredit, TrainingDemand, TrainingDoseTarget, V2DemandPlan, WindowPlacement
 from .periodization import build_season_phases, parse, race_dates
@@ -191,57 +191,135 @@ def freeze_leading_half(state: ActiveWindowState, freeze_before: date) -> Active
     result=ActiveWindowState(state.window_start,state.window_end,frozen,provisional,dict(state.remaining_minutes_by_date),state.fixed_context,state.weekly_commitment_status,state.frequency_credits,state.rowing_dose_credits,state.last_frozen_quality_date,state.last_frozen_strength_date,state.score_vector,state.audits+({"event":"frozen","before":freeze_before.isoformat()},),state.exceptions)
     return reconcile_active_window_state(result)
 
+def _strength_target_summary(state, target, start, end):
+    """Reconcile a strength target for this exact window, never a display week."""
+    days=(end-start).days+1
+    wanted=round(target.target_count*days/target.window_days)
+    minimum=round(target.minimum_count*days/target.window_days)
+    dates=tuple(sorted(item.date for item in _all_placements(state) if item.role=="strength" and start<=item.date<=end))
+    achieved=len(dates)
+    status="target_met" if achieved>=wanted else "acceptable_miss" if achieved>=minimum else "below_minimum"
+    return {"target":wanted,"minimum":minimum,"maximum":target.maximum_count,"achieved":achieved,"status":status,"dates":dates}
+
+def _solver_score(state, demands, active, target, start, end, strength_preferences):
+    """The explicit lexicographic objective used for every retained beam node."""
+    reconciled=reconcile_demand_satisfaction(state,demands,end)
+    satisfaction=reconciled.demand_satisfaction
+    coached_misses=sum(satisfaction[item.demand_id].status not in {"frozen_satisfied","provisional_satisfied"} for item in active if item.type=="coached_training")
+    rest_misses=sum(satisfaction[item.demand_id].status not in {"frozen_satisfied","provisional_satisfied"} for item in active if item.type=="rest")
+    strength=_strength_target_summary(state,target,start,end) if target else {"target":0,"minimum":0,"achieved":0,"status":"target_met","dates":()}
+    strength_below=int(strength["achieved"]<strength["minimum"])
+    deficit=max(0,strength["target"]-strength["achieved"])
+    dates=strength["dates"]
+    clustering=sum(1 for left,right in zip(dates,dates[1:]) if (right-left).days==target.minimum_spacing_days+1) if target else 0
+    coached_preference=sum(item.placement_date not in demand.preferred_dates for demand_id,item in satisfaction.items() if item.placement_date for demand in active if demand.demand_id==demand_id and demand.type=="coached_training" and demand.preferred_dates)
+    strength_preference=sum(_weekday_name(day) not in strength_preferences for day in dates) if strength_preferences else 0
+    tie=tuple((item.date.isoformat(),item.role,item.source_id,item.placement_id) for item in sorted(_all_placements(reconciled),key=lambda item:(item.date,item.role,item.source_id,item.placement_id)))
+    vector=(0,coached_misses,rest_misses,strength_below,deficit,clustering,coached_preference,strength_preference,tie)
+    return vector,strength,reconciled
+
+def _weekday_name(day):
+    return ("monday","tuesday","wednesday","thursday","friday","saturday","sunday")[day.weekday()]
+
+def _retain_solver_states(states, demands, active, target, start, end, strength_preferences):
+    """Stable dominance pruning.  Equivalent placement sets retain one state."""
+    unique={}
+    for state in states:
+        signature=tuple((item.date,item.role,item.source_id,item.placement_id) for item in sorted(_all_placements(state),key=lambda item:(item.date,item.role,item.source_id,item.placement_id)))
+        score,_,_= _solver_score(state,demands,active,target,start,end,strength_preferences)
+        if signature not in unique or score<unique[signature][0]: unique[signature]=(score,state)
+    ordered=sorted(unique.values(),key=lambda item:item[0])
+    return [item[1] for item in ordered[:BEAM_WIDTH]],max(0,len(ordered)-BEAM_WIDTH)
+
+def _window_diagnostic(state, demands, active, target, start, end, strength_preferences, search):
+    score,strength,reconciled=_solver_score(state,demands,active,target,start,end,strength_preferences)
+    strength={**strength,"blockers":() if strength["status"]!="below_minimum" else ("hard_calendar_or_spacing",)}
+    def records(kind):
+        result=[]
+        for demand in active:
+            if demand.type!=kind: continue
+            item=reconciled.demand_satisfaction[demand.demand_id]
+            result.append({"demand_id":demand.demand_id,"canonical_week":demand.canonical_week_start.isoformat(),"eligibility":demand.eligibility,"final_satisfaction_status":item.status,"selected_placement":item.placement_date.isoformat() if item.placement_date else None})
+        return result
+    return {"window_start":start.isoformat(),"window_end":end.isoformat(),"coached_demands":records("coached_training"),"rest_demands":records("rest"),"strength":{**strength,"dates":[day.isoformat() for day in strength["dates"]]},"target":strength["target"],"minimum":strength["minimum"],"maximum":strength["maximum"],"achieved":strength["achieved"],"status":strength["status"],"frozen_placements":[{"placement_id":item.placement_id,"date":item.date.isoformat(),"role":item.role,"source_id":item.source_id} for item in reconciled.frozen_placements],"provisional_placements":[{"placement_id":item.placement_id,"date":item.date.isoformat(),"role":item.role,"source_id":item.source_id} for item in reconciled.provisional_placements],"score_vector":score,"search":search}
+
+def solve_v2_rolling_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=None, calendar: tuple[DateContext,...]|None=None) -> tuple[ActiveWindowState, tuple[dict,...]]:
+    """Bounded shared V2.2R-2 solver for coached/rest/strength; no rowing roles.
+
+    Each seven-day advance reconstructs immutable capacity, imports the trailing
+    provisional overlap through the normal primitive, then releases it so the
+    next window may improve it before the leading half is frozen.
+    """
+    plan=demand_plan or generate_v2_demand_plan(profile); cal=calendar or build_v2_season_calendar(profile)
+    demands=tuple(item for item in plan.weekly_commitment_demands if item.type in {"coached_training","rest"})
+    target=next((item for item in plan.frequency_targets if item.group_id=="strength"),None)
+    preferences=set(next((item for item in profile.get("recurring_activities",[]) if item.get("activity_type")=="strength"),{}).get("preferred_days",()))
+    first,last=cal[0].date,cal[-1].date; frozen=(); provisional=(); diagnostics=[]; final=None; start=first
+    while start<=last:
+        window_clock=perf_counter()
+        end=min(last,start+timedelta(days=ROLLING_WINDOW_DAYS-1))
+        state=initialize_active_window_state(cal,start,end,frozen_history=frozen,provisional_overlap=provisional,canonical_demands=demands)
+        # Imported overlap proves capacity/provenance are reconstructed exactly;
+        # it remains movable until it enters the frozen leading half.
+        for placement in tuple(state.provisional_placements): state=release_window_placement(state,placement.placement_id)
+        active=tuple(item for item in demands if item.eligibility=="required" and item.canonical_week_start<=end and item.canonical_week_end>=start)
+        states=[state]; explored=hard_rejected=pruned=0
+        for demand in sorted(active,key=lambda item:(item.type!="coached_training",item.demand_id)):
+            expanded=[]
+            for node in states:
+                current=reconcile_demand_satisfaction(node,demands,start).demand_satisfaction[demand.demand_id]
+                if current.status=="frozen_satisfied": expanded.append(node); continue
+                # Keep an unsatisfied branch: diagnostics must distinguish a
+                # required miss from an impossible edge exception.
+                expanded.append(node)
+                for day in candidate_dates_for_demand(demand,cal).candidates:
+                    if not start<=day<=end: continue
+                    try:
+                        expanded.append(assign_window_placement(node,WindowPlacement(f"{demand.demand_id}:{day.isoformat()}",day,demand.type,demand.demand_id,0))); explored+=1
+                    except ValueError: hard_rejected+=1
+            states,cut=_retain_solver_states(expanded,demands,active,target,start,end,preferences); pruned+=cut
+        duration=_strength_minutes(profile); candidates=[]
+        for node in states:
+            frontier=[node]; candidates.append(node)
+            for level in range(target.target_count if target else 0):
+                expanded=[]
+                for item in frontier:
+                    for context in cal:
+                        if not start<=context.date<=end: continue
+                        placement=WindowPlacement(f"strength:{start.isoformat()}:{context.date.isoformat()}",context.date,"strength","strength",duration,False,(TargetCredit("strength","strength",1,duration),))
+                        try: expanded.append(assign_window_placement(item,placement)); explored+=1
+                        except ValueError: hard_rejected+=1
+                frontier,cut=_retain_solver_states(expanded,demands,active,target,start,end,preferences) if expanded else ([],0); pruned+=cut
+                candidates.extend(frontier)
+                if not frontier: break
+        retained,cut=_retain_solver_states(candidates,demands,active,target,start,end,preferences); pruned+=cut
+        final=retained[0]
+        search={"beam_width":BEAM_WIDTH,"states_explored":explored,"states_retained":len(retained),"hard_rejected":hard_rejected,"dominance_pruned":pruned,"runtime_ms":round((perf_counter()-window_clock)*1000,3)}
+        diagnostics.append(_window_diagnostic(final,demands,active,target,start,end,preferences,search))
+        frozen_state=freeze_leading_half(final,start+timedelta(days=ROLLING_OVERLAP_DAYS))
+        frozen=frozen_state.frozen_placements; provisional=frozen_state.provisional_placements
+        start+=timedelta(days=ROLLING_OVERLAP_DAYS)
+    return reconcile_demand_satisfaction(final,demands,last),tuple(diagnostics)
+
 def _strength_minutes(profile):
     activity=next((item for item in profile.get("recurring_activities",[]) if item.get("activity_type")=="strength"),{})
     legacy={item.get("weekday"):item for item in profile.get("weekly_availability",[])}
     return int(activity.get("duration_minutes") or activity.get("typical_strength_minutes") or next((item.get("lifting_minutes",0) for item in legacy.values() if item.get("lifting_minutes")),0) or 60)
 
 def place_v2_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=None, calendar: tuple[DateContext,...]|None=None) -> RollingPlacementResult:
-    """V2.2 bounded placement of coached/rest/strength only; rowing stays open."""
-    plan=demand_plan or generate_v2_demand_plan(profile); cal=calendar or build_v2_season_calendar(profile); contexts={item.date:item for item in cal}; demands=[item for item in plan.weekly_commitment_demands if item.type in {"coached_training","rest"}]
-    states=[(0,(),())]; explored=0
-    for demand in sorted(demands,key=lambda item:(item.type!="coached_training",item.demand_id)):
-        next_states=[]
-        candidates=candidate_dates_for_demand(demand,cal).candidates
-        for score,placements,audits in states:
-            occupied={day for _,day in placements}
-            for day in candidates:
-                if day in occupied: continue
-                component=3 if day in demand.preferred_dates else 0
-                # Rest gains a small spacing benefit beside hard commitments,
-                # never a weekday preference.
-                if demand.type=="rest": component+=sum(1 for offset in (-1,1) if contexts.get(day+timedelta(days=offset),None) and contexts[day+timedelta(days=offset)].hard_committed_minutes)
-                next_states.append((score+component,placements+((demand.demand_id,day),),audits+({"activity":demand.type,"selected_date":day.isoformat(),"candidate_dates":[value.isoformat() for value in candidates],"score_components":{"preferred_day":component if demand.type=="coached_training" else 0},"decisive_reason_codes":["preferred_day"] if day in demand.preferred_dates else []},))) ; explored+=1
-        states=sorted(next_states,key=lambda row:(-row[0],tuple((key,value.isoformat()) for key,value in row[1])))[:BEAM_WIDTH]
-    strength_target=next((item for item in plan.frequency_targets if item.group_id=="strength"),None); strength_days=[]; misses=[]; duration=_strength_minutes(profile); window_audits=[]
-    if strength_target:
-        occupied={day for _,day in states[0][1]}
-        preferred=set(next((a for a in profile.get("recurring_activities",[]) if a.get("activity_type")=="strength"),{}).get("preferred_days",[]))
-        names=("monday","tuesday","wednesday","thursday","friday","saturday","sunday")
-        first,last=cal[0].date,cal[-1].date; window_start=first
-        while window_start<=last:
-            window_end=min(last,window_start+timedelta(days=ROLLING_WINDOW_DAYS-1)); days=(window_end-window_start).days+1
-            # A short season tail is diagnostic-only: do not invent a weekly fallback.
-            target=strength_target.target_count if days==ROLLING_WINDOW_DAYS else round(strength_target.target_count*days/ROLLING_WINDOW_DAYS)
-            minimum=strength_target.minimum_count if days==ROLLING_WINDOW_DAYS else max(0,round(strength_target.minimum_count*days/ROLLING_WINDOW_DAYS))
-            frozen=[day for day in strength_days if day<window_start]
-            # Days from this window forward are provisional and deliberately replaced.
-            strength_days=[day for day in strength_days if day<window_start]
-            feasible=[item.date for item in cal if window_start<=item.date<=window_end and item.date not in occupied and not item.unavailable and not item.race and not item.race_practice and item.remaining_minutes>=duration and all(abs((item.date-old).days)>strength_target.minimum_spacing_days for old in frozen)]
-            choices=[]
-            for count in range(min(target,len(feasible)),-1,-1):
-                for picked in combinations(feasible,count):
-                    if all((right-left).days>strength_target.minimum_spacing_days for left,right in zip(picked,picked[1:])): choices.append(picked)
-                if choices: break
-            best=max(choices,key=lambda picked:(sum(names[day.weekday()] in preferred for day in picked),tuple(-day.toordinal() for day in picked))) if choices else ()
-            strength_days.extend(best); achieved=len(best); status="target_met" if achieved==target else "acceptable_miss" if achieved>=minimum else "below_minimum"
-            audit={"window_start":window_start.isoformat(),"window_end":window_end.isoformat(),"target":target,"minimum":minimum,"achieved":achieved,"status":status,"frozen_strength_dates":[day.isoformat() for day in frozen],"provisional_strength_dates":[day.isoformat() for day in best],"states_explored":len(choices),"states_retained":1,"pruning_count":max(0,len(feasible)-len(choices))}
-            window_audits.append(audit)
-            if status!="target_met": misses.append({"group":"strength",**audit,"blockers":["hard_calendar_or_spacing"]})
-            window_start+=timedelta(days=ROLLING_WINDOW_DAYS-ROLLING_OVERLAP_DAYS)
-    placements=states[0][1]+tuple((f"strength:{index}",day) for index,day in enumerate(strength_days))
-    audits=states[0][2]+tuple({"activity":"strength","selected_date":day.isoformat(),"decisive_reason_codes":["rolling_target","no_consecutive_strength"]} for day in strength_days)+tuple(window_audits)
-    return RollingPlacementResult(placements,audits,tuple(misses),BEAM_WIDTH,explored,len(states))
+    """Compatibility view of the shared solver; it contains no second engine."""
+    final,diagnostics=solve_v2_rolling_non_rowing(profile,demand_plan,calendar)
+    placements=[]
+    for item in sorted(_all_placements(final),key=lambda item:(item.date,item.placement_id)):
+        placements.append((item.placement_id if item.role=="strength" else item.source_id,item.date))
+    misses=[]
+    for diagnostic in diagnostics:
+        strength=diagnostic["strength"]
+        if strength["status"]!="target_met": misses.append({"group":"strength","window_start":diagnostic["window_start"],"window_end":diagnostic["window_end"],**strength,"blockers":["hard_calendar_or_spacing"]})
+    explored=sum(item["search"]["states_explored"] for item in diagnostics)
+    retained=max((item["search"]["states_retained"] for item in diagnostics),default=0)
+    stable_audits=tuple({**item,"search":{key:value for key,value in item["search"].items() if key!="runtime_ms"}} for item in diagnostics)
+    return RollingPlacementResult(tuple(placements),stable_audits,tuple(misses),BEAM_WIDTH,explored,retained)
 
 def place_v2_rowing(profile: dict, demand_plan: V2DemandPlan|None=None, calendar: tuple[DateContext,...]|None=None, non_rowing: RollingPlacementResult|None=None) -> RollingPlacementResult:
     """Place generic V2 rowing roles only; concrete workout selection remains later."""
