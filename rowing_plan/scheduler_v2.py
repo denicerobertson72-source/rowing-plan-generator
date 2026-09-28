@@ -191,48 +191,81 @@ def freeze_leading_half(state: ActiveWindowState, freeze_before: date) -> Active
     result=ActiveWindowState(state.window_start,state.window_end,frozen,provisional,dict(state.remaining_minutes_by_date),state.fixed_context,state.weekly_commitment_status,state.frequency_credits,state.rowing_dose_credits,state.last_frozen_quality_date,state.last_frozen_strength_date,state.score_vector,state.audits+({"event":"frozen","before":freeze_before.isoformat()},),state.exceptions)
     return reconcile_active_window_state(result)
 
-def _strength_target_summary(state, target, start, end):
-    """Reconcile a strength target for this exact window, never a display week."""
-    days=(end-start).days+1
-    wanted=round(target.target_count*days/target.window_days)
-    minimum=round(target.minimum_count*days/target.window_days)
-    dates=tuple(sorted(item.date for item in _all_placements(state) if item.role=="strength" and start<=item.date<=end))
+def _strength_target_summary(state, target, horizon_start, horizon_end):
+    """Reconcile a rolling target independently of the mutable active window."""
+    days=(horizon_end-horizon_start).days+1
+    wanted=round(target.target_count*min(days,target.window_days)/target.window_days)
+    minimum=round(target.minimum_count*min(days,target.window_days)/target.window_days)
+    dates=tuple(sorted({item.date for item in _all_placements(state) if item.role=="strength" and horizon_start<=item.date<=horizon_end}))
     achieved=len(dates)
     status="target_met" if achieved>=wanted else "acceptable_miss" if achieved>=minimum else "below_minimum"
     return {"target":wanted,"minimum":minimum,"maximum":target.maximum_count,"achieved":achieved,"status":status,"dates":dates}
 
-def _solver_score(state, demands, active, target, start, end, strength_preferences):
+def _dose_target_id(target): return f"{target.phase_id}:{target.category}"
+
+def _dose_target_summary(state, target, horizon_start, horizon_end):
+    exposures=minutes=0
+    for placement in _all_placements(state):
+        if not horizon_start<=placement.date<=horizon_end: continue
+        for credit in placement.credits:
+            if credit.target_id==_dose_target_id(target): exposures+=credit.exposures; minutes+=credit.minutes
+    status="target_met" if exposures>=target.target_exposures and minutes>=target.target_minutes else "acceptable_miss" if exposures>=target.minimum_exposures and minutes>=target.minimum_minutes else "below_minimum"
+    return {"target_exposures":target.target_exposures,"achieved_exposures":exposures,"minimum_exposures":target.minimum_exposures,"target_minutes":target.target_minutes,"achieved_minutes":minutes,"minimum_minutes":target.minimum_minutes,"status":status}
+
+def _rowing_credits(target, targets, minutes):
+    credits=[TargetCredit(_dose_target_id(target),target.category,1,minutes)]
+    # A long aerobic session is dedicated UT2 only when it is explicitly
+    # credited to the matching phase target; coached/private activity never is.
+    if target.category=="long_aerobic":
+        ut2=next((item for item in targets if item.phase_id==target.phase_id and item.category=="dedicated_ut2"),None)
+        if ut2: credits.append(TargetCredit(_dose_target_id(ut2),"dedicated_ut2",1,minutes))
+    return tuple(credits)
+
+def _solver_score(state, demands, active, target, start, end, strength_preferences, rowing_targets=()):
     """The explicit lexicographic objective used for every retained beam node."""
     reconciled=reconcile_demand_satisfaction(state,demands,end)
     satisfaction=reconciled.demand_satisfaction
     coached_misses=sum(satisfaction[item.demand_id].status not in {"frozen_satisfied","provisional_satisfied"} for item in active if item.type=="coached_training")
     rest_misses=sum(satisfaction[item.demand_id].status not in {"frozen_satisfied","provisional_satisfied"} for item in active if item.type=="rest")
-    strength=_strength_target_summary(state,target,start,end) if target else {"target":0,"minimum":0,"achieved":0,"status":"target_met","dates":()}
+    strength_horizon_start=end-timedelta(days=(target.window_days-1)) if target else start
+    strength=_strength_target_summary(state,target,strength_horizon_start,end) if target else {"target":0,"minimum":0,"achieved":0,"status":"target_met","dates":()}
     strength_below=int(strength["achieved"]<strength["minimum"])
     deficit=max(0,strength["target"]-strength["achieved"])
     dates=strength["dates"]
     clustering=sum(1 for left,right in zip(dates,dates[1:]) if (right-left).days==target.minimum_spacing_days+1) if target else 0
     coached_preference=sum(item.placement_date not in demand.preferred_dates for demand_id,item in satisfaction.items() if item.placement_date for demand in active if demand.demand_id==demand_id and demand.type=="coached_training" and demand.preferred_dates)
     strength_preference=sum(_weekday_name(day) not in strength_preferences for day in dates) if strength_preferences else 0
+    doses=[(item,_dose_target_summary(reconciled,item,max(item.window_start,end-timedelta(days=item.window_days-1)),min(item.window_end,end))) for item in rowing_targets]
+    ut2_deficit=sum(max(0,item.minimum_minutes-summary["achieved_minutes"]) for item,summary in doses if item.category=="dedicated_ut2")
+    other_below=sum(summary["status"]=="below_minimum" for item,summary in doses if item.category!="dedicated_ut2")
+    rowing_deficit=sum(max(0,item.target_minutes-summary["achieved_minutes"]) for item,summary in doses)
+    long_deficit=sum(max(0,item.minimum_minutes-summary["achieved_minutes"]) for item,summary in doses if item.category=="long_aerobic")
+    ut1_deficit=sum(max(0,item.minimum_minutes-summary["achieved_minutes"]) for item,summary in doses if item.category=="ut1_aerobic_strength")
+    long_preferred=set()
     tie=tuple((item.date.isoformat(),item.role,item.source_id,item.placement_id) for item in sorted(_all_placements(reconciled),key=lambda item:(item.date,item.role,item.source_id,item.placement_id)))
-    vector=(0,coached_misses,rest_misses,strength_below,deficit,clustering,coached_preference,strength_preference,tie)
+    # Valid quality recovery is a hard primitive constraint, so it never needs
+    # a compensating soft score component.
+    # Long aerobic is part of the protected aerobic base: when otherwise tied
+    # at the required-dose level, retain its coverage before discretionary
+    # quality target excess.
+    vector=(0,coached_misses,rest_misses,ut2_deficit,strength_below,0,long_deficit,other_below,rowing_deficit,ut1_deficit,deficit,coached_preference,0,strength_preference,tie)
     return vector,strength,reconciled
 
 def _weekday_name(day):
     return ("monday","tuesday","wednesday","thursday","friday","saturday","sunday")[day.weekday()]
 
-def _retain_solver_states(states, demands, active, target, start, end, strength_preferences):
+def _retain_solver_states(states, demands, active, target, start, end, strength_preferences, rowing_targets=()):
     """Stable dominance pruning.  Equivalent placement sets retain one state."""
     unique={}
     for state in states:
         signature=tuple((item.date,item.role,item.source_id,item.placement_id) for item in sorted(_all_placements(state),key=lambda item:(item.date,item.role,item.source_id,item.placement_id)))
-        score,_,_= _solver_score(state,demands,active,target,start,end,strength_preferences)
+        score,_,_= _solver_score(state,demands,active,target,start,end,strength_preferences,rowing_targets)
         if signature not in unique or score<unique[signature][0]: unique[signature]=(score,state)
     ordered=sorted(unique.values(),key=lambda item:item[0])
     return [item[1] for item in ordered[:BEAM_WIDTH]],max(0,len(ordered)-BEAM_WIDTH)
 
-def _window_diagnostic(state, demands, active, target, start, end, strength_preferences, search):
-    score,strength,reconciled=_solver_score(state,demands,active,target,start,end,strength_preferences)
+def _window_diagnostic(state, demands, active, target, start, end, strength_preferences, search, rowing_targets=()):
+    score,strength,reconciled=_solver_score(state,demands,active,target,start,end,strength_preferences,rowing_targets)
     strength={**strength,"blockers":() if strength["status"]!="below_minimum" else ("hard_calendar_or_spacing",)}
     def records(kind):
         result=[]
@@ -241,7 +274,8 @@ def _window_diagnostic(state, demands, active, target, start, end, strength_pref
             item=reconciled.demand_satisfaction[demand.demand_id]
             result.append({"demand_id":demand.demand_id,"canonical_week":demand.canonical_week_start.isoformat(),"eligibility":demand.eligibility,"final_satisfaction_status":item.status,"selected_placement":item.placement_date.isoformat() if item.placement_date else None})
         return result
-    return {"window_start":start.isoformat(),"window_end":end.isoformat(),"coached_demands":records("coached_training"),"rest_demands":records("rest"),"strength":{**strength,"dates":[day.isoformat() for day in strength["dates"]]},"target":strength["target"],"minimum":strength["minimum"],"maximum":strength["maximum"],"achieved":strength["achieved"],"status":strength["status"],"frozen_placements":[{"placement_id":item.placement_id,"date":item.date.isoformat(),"role":item.role,"source_id":item.source_id} for item in reconciled.frozen_placements],"provisional_placements":[{"placement_id":item.placement_id,"date":item.date.isoformat(),"role":item.role,"source_id":item.source_id} for item in reconciled.provisional_placements],"score_vector":score,"search":search}
+    doses=[{"target_id":_dose_target_id(item),"category":item.category,"target_horizon_start":max(item.window_start,end-timedelta(days=item.window_days-1)).isoformat(),"target_horizon_end":min(item.window_end,end).isoformat(),**_dose_target_summary(reconciled,item,max(item.window_start,end-timedelta(days=item.window_days-1)),min(item.window_end,end))} for item in rowing_targets]
+    return {"window_start":start.isoformat(),"window_end":end.isoformat(),"coached_demands":records("coached_training"),"rest_demands":records("rest"),"strength":{**strength,"dates":[day.isoformat() for day in strength["dates"]]},"rowing_targets":doses,"target":strength["target"],"minimum":strength["minimum"],"maximum":strength["maximum"],"achieved":strength["achieved"],"status":strength["status"],"frozen_placements":[{"placement_id":item.placement_id,"date":item.date.isoformat(),"role":item.role,"source_id":item.source_id} for item in reconciled.frozen_placements],"provisional_placements":[{"placement_id":item.placement_id,"date":item.date.isoformat(),"role":item.role,"source_id":item.source_id} for item in reconciled.provisional_placements],"score_vector":score,"search":search}
 
 def solve_v2_rolling_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=None, calendar: tuple[DateContext,...]|None=None) -> tuple[ActiveWindowState, tuple[dict,...]]:
     """Bounded shared V2.2R-2 solver for coached/rest/strength; no rowing roles.
@@ -253,6 +287,7 @@ def solve_v2_rolling_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=No
     plan=demand_plan or generate_v2_demand_plan(profile); cal=calendar or build_v2_season_calendar(profile)
     demands=tuple(item for item in plan.weekly_commitment_demands if item.type in {"coached_training","rest"})
     target=next((item for item in plan.frequency_targets if item.group_id=="strength"),None)
+    dose_targets=tuple(plan.rowing_dose_targets)
     preferences=set(next((item for item in profile.get("recurring_activities",[]) if item.get("activity_type")=="strength"),{}).get("preferred_days",()))
     first,last=cal[0].date,cal[-1].date; frozen=(); provisional=(); diagnostics=[]; final=None; start=first
     while start<=last:
@@ -263,6 +298,7 @@ def solve_v2_rolling_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=No
         # it remains movable until it enters the frozen leading half.
         for placement in tuple(state.provisional_placements): state=release_window_placement(state,placement.placement_id)
         active=tuple(item for item in demands if item.eligibility=="required" and item.canonical_week_start<=end and item.canonical_week_end>=start)
+        active_doses=tuple(item for item in dose_targets if item.window_start<=end and item.window_end>=start)
         states=[state]; explored=hard_rejected=pruned=0
         for demand in sorted(active,key=lambda item:(item.type!="coached_training",item.demand_id)):
             expanded=[]
@@ -277,7 +313,7 @@ def solve_v2_rolling_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=No
                     try:
                         expanded.append(assign_window_placement(node,WindowPlacement(f"{demand.demand_id}:{day.isoformat()}",day,demand.type,demand.demand_id,0))); explored+=1
                     except ValueError: hard_rejected+=1
-            states,cut=_retain_solver_states(expanded,demands,active,target,start,end,preferences); pruned+=cut
+            states,cut=_retain_solver_states(expanded,demands,active,target,start,end,preferences,active_doses); pruned+=cut
         duration=_strength_minutes(profile); candidates=[]
         for node in states:
             frontier=[node]; candidates.append(node)
@@ -289,13 +325,33 @@ def solve_v2_rolling_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=No
                         placement=WindowPlacement(f"strength:{start.isoformat()}:{context.date.isoformat()}",context.date,"strength","strength",duration,False,(TargetCredit("strength","strength",1,duration),))
                         try: expanded.append(assign_window_placement(item,placement)); explored+=1
                         except ValueError: hard_rejected+=1
-                frontier,cut=_retain_solver_states(expanded,demands,active,target,start,end,preferences) if expanded else ([],0); pruned+=cut
+                frontier,cut=_retain_solver_states(expanded,demands,active,target,start,end,preferences,active_doses) if expanded else ([],0); pruned+=cut
                 candidates.extend(frontier)
                 if not frontier: break
-        retained,cut=_retain_solver_states(candidates,demands,active,target,start,end,preferences); pruned+=cut
+        # Generic rowing roles use the same immutable state, compatibility, and
+        # reversible placement primitives as every non-rowing role.
+        rowing_frontier=candidates
+        for dose in sorted(active_doses,key=lambda item:({"dedicated_ut2":0,"long_aerobic":1,"ut1_aerobic_strength":2,"quality":3}.get(item.category,9),item.phase_id,item.category)):
+            expanded=list(rowing_frontier)
+            minutes=max(1,round(dose.target_minutes/max(1,dose.target_exposures)))
+            for node in rowing_frontier:
+                frontier=[node]
+                for _ in range(dose.target_exposures):
+                    next_frontier=[]
+                    for item in frontier:
+                        for context in cal:
+                            if not start<=context.date<=end or not dose.window_start<=context.date<=dose.window_end: continue
+                            placement=WindowPlacement(f"rowing:{_dose_target_id(dose)}:{context.date.isoformat()}",context.date,dose.category,_dose_target_id(dose),minutes,False,_rowing_credits(dose,active_doses,minutes))
+                            try: next_frontier.append(assign_window_placement(item,placement)); explored+=1
+                            except ValueError: hard_rejected+=1
+                    frontier,cut=_retain_solver_states(next_frontier,demands,active,target,start,end,preferences,active_doses) if next_frontier else ([],0); pruned+=cut
+                    expanded.extend(frontier)
+                    if not frontier: break
+            rowing_frontier,cut=_retain_solver_states(expanded,demands,active,target,start,end,preferences,active_doses); pruned+=cut
+        retained,cut=_retain_solver_states(rowing_frontier,demands,active,target,start,end,preferences,active_doses); pruned+=cut
         final=retained[0]
         search={"beam_width":BEAM_WIDTH,"states_explored":explored,"states_retained":len(retained),"hard_rejected":hard_rejected,"dominance_pruned":pruned,"runtime_ms":round((perf_counter()-window_clock)*1000,3)}
-        diagnostics.append(_window_diagnostic(final,demands,active,target,start,end,preferences,search))
+        diagnostics.append(_window_diagnostic(final,demands,active,target,start,end,preferences,search,active_doses))
         frozen_state=freeze_leading_half(final,start+timedelta(days=ROLLING_OVERLAP_DAYS))
         frozen=frozen_state.frozen_placements; provisional=frozen_state.provisional_placements
         start+=timedelta(days=ROLLING_OVERLAP_DAYS)
@@ -311,7 +367,7 @@ def place_v2_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=None, cale
     final,diagnostics=solve_v2_rolling_non_rowing(profile,demand_plan,calendar)
     placements=[]
     for item in sorted(_all_placements(final),key=lambda item:(item.date,item.placement_id)):
-        placements.append((item.placement_id if item.role=="strength" else item.source_id,item.date))
+        placements.append((item.placement_id if item.role in {"strength","dedicated_ut2","long_aerobic","ut1_aerobic_strength","quality"} else item.source_id,item.date))
     misses=[]
     for diagnostic in diagnostics:
         strength=diagnostic["strength"]
@@ -322,29 +378,5 @@ def place_v2_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=None, cale
     return RollingPlacementResult(tuple(placements),stable_audits,tuple(misses),BEAM_WIDTH,explored,retained)
 
 def place_v2_rowing(profile: dict, demand_plan: V2DemandPlan|None=None, calendar: tuple[DateContext,...]|None=None, non_rowing: RollingPlacementResult|None=None) -> RollingPlacementResult:
-    """Place generic V2 rowing roles only; concrete workout selection remains later."""
-    plan=demand_plan or generate_v2_demand_plan(profile); cal=calendar or build_v2_season_calendar(profile)
-    base=non_rowing or place_v2_non_rowing(profile,plan,cal); blocked={day for _,day in base.placements}; placements=list(base.placements); audits=list(base.audits); misses=list(base.strong_target_misses); used={item.date:item.hard_committed_minutes for item in cal}; names=("monday","tuesday","wednesday","thursday","friday","saturday","sunday")
-    for key,day in placements:
-        if key.startswith("strength:"): used[day]=used.get(day,0)+_strength_minutes(profile)
-    quality_dates=[]
-    order={"dedicated_ut2":0,"long_aerobic":1,"ut1_aerobic_strength":2,"quality":3}
-    for target in sorted(plan.rowing_dose_targets,key=lambda item:(item.window_start,order.get(item.category,9),item.category)):
-        selected=[]; minutes=max(1,round(target.target_minutes/max(1,target.target_exposures)))
-        candidates=[]
-        for context in cal:
-            if not target.window_start<=context.date<=target.window_end or context.date in blocked or context.unavailable or context.race or context.race_practice: continue
-            if context.max_training_minutes-used.get(context.date,0)<minutes: continue
-            if target.quality_class=="quality" and any(abs((context.date-old).days)<=target.minimum_recovery_days for old in quality_dates): continue
-            candidates.append(context.date)
-        preferred_long=set(profile.get("preferences",{}).get("preferred_long_session_days",[]))
-        candidates=sorted(candidates,key=lambda day:(not(target.category=="long_aerobic" and names[day.weekday()] in preferred_long),day))
-        for day in candidates:
-            if len(selected)>=target.target_exposures: break
-            selected.append(day); blocked.add(day); used[day]=used.get(day,0)+minutes
-            if target.quality_class=="quality": quality_dates.append(day)
-            placements.append((f"rowing:{target.category}:{len(selected)-1}",day))
-            audits.append({"activity":"rowing","role":target.category,"selected_date":day.isoformat(),"candidate_dates":[x.isoformat() for x in candidates],"target_contribution":{"exposures":1,"minutes":minutes},"decisive_reason_codes":["dedicated_ut2_minimum" if target.category=="dedicated_ut2" else "phase_dose"]})
-        achieved_minutes=len(selected)*minutes; status="target_met" if len(selected)>=target.target_exposures and achieved_minutes>=target.target_minutes else "acceptable_miss" if len(selected)>=target.minimum_exposures and achieved_minutes>=target.minimum_minutes else "below_minimum"
-        if status!="target_met": misses.append({"group":target.category,"window_start":target.window_start.isoformat(),"window_end":target.window_end.isoformat(),"target_exposures":target.target_exposures,"achieved_exposures":len(selected),"minimum_exposures":target.minimum_exposures,"target_minutes":target.target_minutes,"achieved_minutes":achieved_minutes,"minimum_minutes":target.minimum_minutes,"status":status})
-    return RollingPlacementResult(tuple(placements),tuple(audits),tuple(misses),BEAM_WIDTH,base.states_explored,len(base.placements))
+    """Historical compatibility alias for the shared generic-role solver."""
+    return place_v2_non_rowing(profile,demand_plan,calendar)

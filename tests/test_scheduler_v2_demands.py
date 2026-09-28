@@ -1,8 +1,8 @@
 from datetime import date
 from dataclasses import replace
 from services.api.tests.disposable_browser_fixture import synthetic_profile
-from rowing_plan.models import TargetCredit, WindowPlacement
-from rowing_plan.scheduler_v2 import assign_window_placement, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, release_window_placement, solve_v2_rolling_non_rowing
+from rowing_plan.models import FrequencyTarget, TargetCredit, TrainingDoseTarget, V2DemandPlan, WindowPlacement
+from rowing_plan.scheduler_v2 import assign_window_placement, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, release_window_placement, replace_window_placement, solve_v2_rolling_non_rowing
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -135,13 +135,14 @@ def test_shared_solver_four_week_diagnostics_are_deterministic_and_leave_row_cap
 
 def test_shared_solver_strength_reports_target_acceptable_and_below_minimum_without_unsafe_spacing():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
-    _,full=solve_v2_rolling_non_rowing(profile,calendar=calendar)
+    no_rowing=replace(generate_v2_demand_plan(profile),rowing_dose_targets=())
+    _,full=solve_v2_rolling_non_rowing(profile,no_rowing,calendar)
     assert full[0]["strength"]["status"]=="target_met" and full[0]["strength"]["achieved"]==4
     constrained=tuple(replace(item,available=False,unavailable=True,remaining_minutes=0,permitted_activity_categories=()) if index in {0,1,4} else item for index,item in enumerate(calendar))
-    _,acceptable=solve_v2_rolling_non_rowing(profile,calendar=constrained)
+    _,acceptable=solve_v2_rolling_non_rowing(profile,no_rowing,constrained)
     assert acceptable[0]["strength"]["status"]=="acceptable_miss" and acceptable[0]["strength"]["achieved"]==3
     too_small=tuple(replace(item,available=False,unavailable=True,remaining_minutes=0,permitted_activity_categories=()) if index in {0,4,7,11} else item for index,item in enumerate(calendar))
-    _,below=solve_v2_rolling_non_rowing(profile,calendar=too_small)
+    _,below=solve_v2_rolling_non_rowing(profile,no_rowing,too_small)
     assert below[0]["strength"]["status"]=="below_minimum" and below[0]["strength"]["blockers"]
 
 def test_frozen_sunday_strength_blocks_monday_but_not_tuesday():
@@ -152,3 +153,41 @@ def test_frozen_sunday_strength_blocks_monday_but_not_tuesday():
     except ValueError as error: assert str(error)=="strength_spacing"
     else: assert False
     assert assign_window_placement(state,WindowPlacement("tue",date(2026,9,15),"strength","strength",60)).provisional_placements
+
+def test_rowing_overlap_role_change_replaces_sunday_quality_with_long_ut2_then_adds_tuesday_quality():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-27"}
+    profile["recurring_activities"]=[item for item in profile["recurring_activities"] if item["activity_type"]!="rest"]
+    calendar=build_v2_season_calendar(profile)
+    quality=WindowPlacement("sun-quality",date(2026,9,13),"quality","quality",25,False,(TargetCredit("quality","quality",1,25),))
+    # Reconstruct the overlap where Sunday remains movable, then replace the
+    # provisional quality role rather than duplicating its capacity or credits.
+    overlap=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20),provisional_overlap=(quality,))
+    long=WindowPlacement("sun-long",date(2026,9,13),"long_aerobic","long",75,False,(TargetCredit("long","long_aerobic",1,75),TargetCredit("ut2","dedicated_ut2",1,75)))
+    changed=replace_window_placement(overlap,"sun-quality",long)
+    changed=assign_window_placement(changed,WindowPlacement("tue-quality",date(2026,9,15),"quality","quality",25,False,(TargetCredit("quality","quality",1,25),)))
+    assert changed.remaining_minutes_by_date[date(2026,9,13)]==15
+    assert changed.rowing_dose_credits["long"]==(1,75) and changed.rowing_dose_credits["ut2"]==(1,75)
+    assert {item.placement_id for item in changed.provisional_placements}=={"sun-long","tue-quality"}
+
+def test_conservative_coached_and_private_rows_have_no_assumed_rowing_credit():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    state=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20))
+    coached=assign_window_placement(state,WindowPlacement("coach",date(2026,9,8),"coached_training","coach",0))
+    assert not coached.rowing_dose_credits and coached.provisional_placements[0].credits==()
+
+def test_two_slot_shared_solver_protects_ut2_and_strength_minimum_before_quality():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
+    profile["recurring_activities"]=[]
+    raw=build_v2_season_calendar(profile); available={date(2026,9,7),date(2026,9,9),date(2026,9,14),date(2026,9,16)}
+    calendar=tuple(replace(item,available=item.date in available,unavailable=item.date not in available,remaining_minutes=90 if item.date in available else 0,hard_committed_minutes=0,fixed_commitments=(),permitted_activity_categories=("strength","rowing") if item.date in available else ()) for item in raw)
+    phase=calendar[0].phase_id
+    strength=FrequencyTarget("strength",14,3,3,3,"strong",1,"test","three required strength exposures")
+    ut2=TrainingDoseTarget(phase,"dedicated_ut2",date(2026,9,7),date(2026,9,20),14,1,1,75,75,"aerobic","strong",0,"test","protected UT2")
+    quality=TrainingDoseTarget(phase,"quality",date(2026,9,7),date(2026,9,20),14,1,1,25,25,"quality","strong",1,"test","discretionary quality")
+    plan=V2DemandPlan((),(strength,),(ut2,quality))
+    state,diagnostics=solve_v2_rolling_non_rowing(profile,plan,calendar)
+    placed={(item.date,item.role) for item in (*state.frozen_placements,*state.provisional_placements)}
+    summary={item["category"]:item for item in diagnostics[0]["rowing_targets"]}
+    assert any(role=="dedicated_ut2" for _,role in placed) and (date(2026,9,16),"strength") in placed
+    assert summary["dedicated_ut2"]["status"]=="target_met" and diagnostics[0]["strength"]["achieved"]>=3
+    assert summary["quality"]["status"]!="target_met"
