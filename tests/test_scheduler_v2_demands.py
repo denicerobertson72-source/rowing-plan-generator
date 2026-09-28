@@ -478,3 +478,55 @@ def test_repair_classification_respects_calendar_authority_user_fixed_and_is_det
     first=reconstruct_repair_state(calendar,scope,placements)
     second=reconstruct_repair_state(calendar,scope,tuple(reversed(placements)))
     assert first==second and {item.placement_id for item in first.preserved_user_fixed}=={"user-rest","user-coach"}
+
+def test_shared_solver_preserves_user_fixed_overlap_and_releases_only_planner_owned_overlap():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-27"}; calendar=build_v2_season_calendar(profile)
+    strength=FrequencyTarget("strength",14,1,0,1,"strong",1,"test","")
+    ut2=TrainingDoseTarget("phase","dedicated_ut2",date(2026,9,7),date(2026,9,27),14,1,0,75,0,"aerobic","strong",0,"test","")
+    long=TrainingDoseTarget("phase","long_aerobic",date(2026,9,7),date(2026,9,27),14,1,0,75,0,"aerobic","strong",0,"test","")
+    quality=TrainingDoseTarget("phase","quality",date(2026,9,7),date(2026,9,27),14,1,0,20,0,"quality","strong",1,"test","")
+    plan=V2DemandPlan((),(strength,),(ut2,long,quality))
+    credits=(TargetCredit("phase:long_aerobic","long_aerobic",1,75),TargetCredit("phase:dedicated_ut2","dedicated_ut2",1,75))
+    fixed=WindowPlacement("fixed-long",date(2026,9,15),"long_aerobic","phase:long_aerobic",75,False,credits,True,date(2026,9,14),"athlete")
+    planner=WindowPlacement("planner-quality",date(2026,9,10),"quality","phase:quality",20)
+    initial=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20),provisional_overlap=(fixed,planner))
+    assert initial.remaining_minutes_by_date[date(2026,9,15)]==15
+    final,diagnostics=solve_v2_rolling_non_rowing(profile,plan,calendar,initial_state=initial)
+    retained=[item for item in (*final.frozen_placements,*final.provisional_placements) if item.placement_id=="fixed-long"]
+    assert len(retained)==1 and retained[0].date==date(2026,9,15) and retained[0].frozen and retained[0].user_fixed and retained[0].original_date==date(2026,9,14) and retained[0].override_id=="athlete" and retained[0].credits==credits
+    assert not any(item.placement_id=="planner-quality" for item in (*final.frozen_placements,*final.provisional_placements))
+    first=diagnostics[0]
+    assert any(item["placement_id"]=="fixed-long" for item in first["provisional_placements"])
+    assert any(item["placement_id"]=="fixed-long" for item in diagnostics[1]["provisional_placements"])
+    assert any(item["category"]=="long_aerobic" and item["achieved_minutes"]>=75 for item in first["rowing_targets"])
+
+def test_shared_solver_user_fixed_rest_and_coached_satisfy_demands_without_duplicate_and_no_user_parity():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile); demands=tuple(generate_training_demands(profile))
+    rest=next(item for item in demands if item.type=="rest"); coached=next(item for item in demands if item.type=="coached_training")
+    initial=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20),provisional_overlap=(WindowPlacement("rest",date(2026,9,8),"rest",rest.demand_id,0,False,(),True,date(2026,9,8),"r"),WindowPlacement("coach",date(2026,9,10),"coached_training",coached.demand_id,0,False,(),True,date(2026,9,10),"c")),canonical_demands=demands)
+    plan=V2DemandPlan(demands,(FrequencyTarget("strength",14,1,0,1,"strong",1,"test",""),),())
+    final,_=solve_v2_rolling_non_rowing(profile,plan,calendar,initial_state=initial)
+    retained={item.placement_id:item for item in (*final.frozen_placements,*final.provisional_placements)}
+    assert set(retained)>={"rest","coach"} and all(retained[key].user_fixed for key in ("rest","coach"))
+    assert len([item for item in retained.values() if item.source_id==coached.demand_id])==1
+    assert reconcile_demand_satisfaction(final,demands).demand_satisfaction[coached.demand_id].status in {"frozen_satisfied","provisional_satisfied"}
+    ordinary=solve_v2_rolling_non_rowing(profile,plan,calendar)
+    explicit_none=solve_v2_rolling_non_rowing(profile,plan,calendar,initial_state=None)
+    stable=lambda result:(result[0],tuple({**item,"search":{key:value for key,value in item["search"].items() if key!="runtime_ms"}} for item in result[1]))
+    assert stable(ordinary)==stable(explicit_none)
+
+def test_shared_solver_keeps_user_fixed_strength_and_generic_quality_while_reopening_conflicts():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    strength=FrequencyTarget("strength",14,1,0,1,"strong",1,"test","")
+    quality_target=TrainingDoseTarget("phase","quality",date(2026,9,7),date(2026,9,20),14,1,0,20,0,"quality","strong",1,"test","")
+    user_strength=WindowPlacement("user-strength",date(2026,9,8),"strength","strength",30,False,(),True,date(2026,9,7),"s")
+    user_quality=WindowPlacement("user-quality",date(2026,9,11),"quality","phase:quality",20,False,(TargetCredit("phase:quality","quality",1,20),),True,date(2026,9,10),"q")
+    planner_strength=WindowPlacement("planner-strength",date(2026,9,14),"strength","strength",30)
+    planner_quality=WindowPlacement("planner-quality",date(2026,9,15),"quality","phase:quality",20)
+    initial=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20),provisional_overlap=(user_strength,user_quality,planner_strength,planner_quality))
+    final,diagnostics=solve_v2_rolling_non_rowing(profile,V2DemandPlan((),(strength,),(quality_target,)),calendar,initial_state=initial)
+    retained={item.placement_id:item for item in (*final.frozen_placements,*final.provisional_placements)}
+    assert {"user-strength","user-quality"}<=set(retained) and all(retained[item].user_fixed for item in ("user-strength","user-quality"))
+    assert not {"planner-strength","planner-quality"}&set(retained)
+    assert diagnostics[0]["strength"]["achieved"]>=1
+    assert next(item for item in diagnostics[0]["rowing_targets"] if item["category"]=="quality")["achieved_minutes"]>=20

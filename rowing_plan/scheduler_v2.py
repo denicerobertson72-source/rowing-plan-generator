@@ -475,7 +475,7 @@ def _window_diagnostic(state, demands, active, target, start, end, strength_pref
     doses=[{"target_id":_dose_target_id(item),"category":item.category,"target_horizon_start":max(item.window_start,end-timedelta(days=item.window_days-1)).isoformat(),"target_horizon_end":min(item.window_end,end).isoformat(),**_dose_target_summary(reconciled,item,max(item.window_start,end-timedelta(days=item.window_days-1)),min(item.window_end,end))} for item in rowing_targets]
     return {"window_start":start.isoformat(),"window_end":end.isoformat(),"coached_demands":records("coached_training"),"rest_demands":records("rest"),"strength":{**strength,"dates":[day.isoformat() for day in strength["dates"]]},"rowing_targets":doses,"target":strength["target"],"minimum":strength["minimum"],"maximum":strength["maximum"],"achieved":strength["achieved"],"status":strength["status"],"frozen_placements":[{"placement_id":item.placement_id,"date":item.date.isoformat(),"role":item.role,"source_id":item.source_id} for item in reconciled.frozen_placements],"provisional_placements":[{"placement_id":item.placement_id,"date":item.date.isoformat(),"role":item.role,"source_id":item.source_id} for item in reconciled.provisional_placements],"score_vector":score,"search":search}
 
-def solve_v2_rolling_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=None, calendar: tuple[DateContext,...]|None=None) -> tuple[ActiveWindowState, tuple[dict,...]]:
+def solve_v2_rolling_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=None, calendar: tuple[DateContext,...]|None=None, *, initial_state: ActiveWindowState|None=None) -> tuple[ActiveWindowState, tuple[dict,...]]:
     """Bounded shared V2.2R-2 solver for coached/rest/strength; no rowing roles.
 
     Each seven-day advance reconstructs immutable capacity, imports the trailing
@@ -487,14 +487,19 @@ def solve_v2_rolling_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=No
     target=next((item for item in plan.frequency_targets if item.group_id=="strength"),None)
     dose_targets=tuple(plan.rowing_dose_targets)
     preferences=set(next((item for item in profile.get("recurring_activities",[]) if item.get("activity_type")=="strength"),{}).get("preferred_days",()))
-    first,last=cal[0].date,cal[-1].date; frozen=(); provisional=(); diagnostics=[]; final=None; start=first
+    first,last=cal[0].date,cal[-1].date
+    if initial_state and initial_state.window_start!=first:
+        raise ValueError("initial_state_window_start_mismatch")
+    frozen=initial_state.frozen_placements if initial_state else (); provisional=initial_state.provisional_placements if initial_state else (); diagnostics=[]; final=None; start=first
     while start<=last:
         window_clock=perf_counter()
         end=min(last,start+timedelta(days=ROLLING_WINDOW_DAYS-1))
-        state=initialize_active_window_state(cal,start,end,frozen_history=frozen,provisional_overlap=provisional,canonical_demands=demands)
+        state=initial_state if initial_state is not None and start==first else initialize_active_window_state(cal,start,end,frozen_history=frozen,provisional_overlap=provisional,canonical_demands=demands)
         # Imported overlap proves capacity/provenance are reconstructed exactly;
         # it remains movable until it enters the frozen leading half.
-        for placement in tuple(state.provisional_placements): state=release_window_placement(state,placement.placement_id)
+        for placement in tuple(state.provisional_placements):
+            if not placement.user_fixed:
+                state=release_window_placement(state,placement.placement_id)
         active=tuple(item for item in demands if item.eligibility=="required" and item.canonical_week_start<=end and item.canonical_week_end>=start)
         active_doses=tuple(item for item in dose_targets if item.window_start<=end and item.window_end>=start)
         states=[state]; explored=hard_rejected=pruned=0
@@ -502,7 +507,7 @@ def solve_v2_rolling_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=No
             expanded=[]
             for node in states:
                 current=reconcile_demand_satisfaction(node,demands,start).demand_satisfaction[demand.demand_id]
-                if current.status=="frozen_satisfied": expanded.append(node); continue
+                if current.status in {"frozen_satisfied","provisional_satisfied"}: expanded.append(node); continue
                 # Keep an unsatisfied branch: diagnostics must distinguish a
                 # required miss from an impossible edge exception.
                 expanded.append(node)
