@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from time import perf_counter
 from dataclasses import replace
-from .models import ActiveWindowState, CandidateDateResult, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, RepairScope, RollingPlacementResult, ScheduleChangeResult, TargetCredit, TrainingDemand, TrainingDoseTarget, UserScheduleOverride, V2DemandPlan, WindowPlacement
+from .models import ActiveWindowState, CandidateDateResult, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, RepairReconstructionResult, RepairScope, ReopenedPlacement, RollingPlacementResult, ScheduleChangeResult, TargetCredit, TrainingDemand, TrainingDoseTarget, UserScheduleOverride, V2DemandPlan, WindowPlacement
 from .periodization import build_season_phases, parse, race_dates
 
 _ROLE={"LONG_AEROBIC":("long_aerobic","aerobic",0),"AEROBIC_BASE":("aerobic_base","aerobic",0),"AEROBIC_STRENGTH":("aerobic_strength","aerobic",1),"THRESHOLD":("threshold","quality",1),"RACE_PACE":("race_pace","quality",1),"SPRINT_POWER":("sprint_power","quality",1),"RECOVERY":("recovery","none",0),"TECHNIQUE_EASY":("aerobic_base","aerobic",0)}
@@ -83,6 +83,86 @@ def derive_repair_scope(changed_dates, calendar: tuple[DateContext,...], demand_
             relevant_ends.append(window_end)
     reconciliation_end=min(season_end,max(relevant_ends,default=mutable_end))
     return RepairScope(changes,mutable_start,mutable_end,history_start,reconciliation_end)
+
+def _placement_matches_calendar_authority(placement: WindowPlacement, context: DateContext|None) -> bool:
+    """Whether a calendar fact, rather than the planner, owns this placement."""
+    if context is None:
+        return False
+    if context.race:
+        return True
+    records=(*context.fixed_commitments,*context.completed_sessions)
+    for record in records:
+        if record.get("placement_id")==placement.placement_id or record.get("source_id")==placement.source_id:
+            return True
+        kind=record.get("type")
+        if kind in {"locked","completed"} and (placement.role==kind or placement.source_id==kind):
+            return True
+        if record.get("fixed") and (placement.role==kind or placement.source_id==kind):
+            return True
+    # These activity types are only emitted as fixed calendar commitments by
+    # the current calendar builder, never as flexible generic roles.
+    fixed_kinds={record.get("type") for record in context.fixed_commitments if record.get("fixed")}
+    if placement.role=="private_coaching" and "private_coaching" in fixed_kinds:
+        return True
+    return placement.role in {"coached_training","coached_row"} and bool({"coached_training","coached_row"}&fixed_kinds)
+
+def classify_repair_placement(placement: WindowPlacement, scope: RepairScope, calendar: tuple[DateContext,...]) -> str:
+    """Classify final work by authority before considering planner ownership."""
+    contexts={item.date:item for item in calendar}
+    if _placement_matches_calendar_authority(placement,contexts.get(placement.date)):
+        return "immutable_context"
+    if placement.user_fixed:
+        return "preserved_user_fixed"
+    if not scope.mutable_start<=placement.date<=scope.mutable_end:
+        return "immutable_context"
+    return "reopened_planner_owned"
+
+def reconstruct_repair_state(calendar: tuple[DateContext,...], scope: RepairScope, placements, *, canonical_demands: tuple[TrainingDemand,...]=()) -> RepairReconstructionResult:
+    """Rebuild a local repair input from calendar facts without performing repair.
+
+    Planner-owned placements in the mutable range are deliberately omitted from
+    active capacity.  Their prior facts are returned separately so a later
+    repair transaction can explain moves/removals without losing identity.
+    """
+    supplied=(*placements.frozen_placements,*placements.provisional_placements) if isinstance(placements,ActiveWindowState) else tuple(placements)
+    contexts={item.date:item for item in calendar if scope.mutable_start<=item.date<=scope.mutable_end}
+    if len(contexts)!=(scope.mutable_end-scope.mutable_start).days+1:
+        raise ValueError("repair_scope_outside_calendar")
+    immutable_history=[]; preserved_user=[]; reopened=[]; untouched=[]; active_frozen=[]; active_user=[]
+    for placement in sorted(supplied,key=lambda item:(item.date,item.placement_id,item.role)):
+        classification=classify_repair_placement(placement,scope,calendar)
+        active=scope.mutable_start<=placement.date<=scope.mutable_end
+        if classification=="reopened_planner_owned":
+            reopened.append(ReopenedPlacement(placement.placement_id,placement.source_id,placement.date,placement.role,placement.minutes,placement.credits))
+            continue
+        if classification=="preserved_user_fixed":
+            preserved_user.append(placement)
+            if active: active_user.append(placement)
+            else: immutable_history.append(placement)
+            continue
+        if active:
+            # Context-owned work remains non-releasable in the repair input.
+            active_frozen.append(replace(placement,frozen=True))
+        elif placement.date<scope.mutable_start:
+            immutable_history.append(placement)
+        else:
+            untouched.append(placement)
+    frozen=tuple(sorted(tuple(replace(item,frozen=True) for item in immutable_history)+tuple(active_frozen),key=lambda item:(item.date,item.placement_id,item.role)))
+    provisional=tuple(sorted((replace(item,frozen=False) for item in active_user),key=lambda item:(item.date,item.placement_id,item.role)))
+    remaining={day:context.remaining_minutes for day,context in contexts.items()}
+    for placement in (*active_frozen,*active_user):
+        remaining[placement.date]-=placement.minutes
+        if remaining[placement.date]<0:
+            raise ValueError("repair_authoritative_capacity_exceeded")
+    state=ActiveWindowState(scope.mutable_start,scope.mutable_end,frozen,provisional,remaining,contexts,{}, {}, {})
+    state=reconcile_active_window_state(state)
+    if canonical_demands:
+        state=reconcile_demand_satisfaction(state,canonical_demands,scope.mutable_start)
+    reopened=tuple(sorted(reopened,key=lambda item:(item.prior_date,item.placement_id,item.prior_role)))
+    preserved_user=tuple(sorted(preserved_user,key=lambda item:(item.date,item.placement_id,item.role)))
+    immutable_history=tuple(sorted(immutable_history,key=lambda item:(item.date,item.placement_id,item.role)))
+    untouched=tuple(sorted(untouched,key=lambda item:(item.date,item.placement_id,item.role)))
+    return RepairReconstructionResult(scope,state,immutable_history,preserved_user,reopened,tuple(sorted({item.source_id for item in reopened})),untouched)
 
 def _weeks(start,end):
     monday=start-timedelta(days=start.weekday())

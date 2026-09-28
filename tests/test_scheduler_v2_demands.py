@@ -2,7 +2,7 @@ from datetime import date, timedelta
 from dataclasses import replace
 from services.api.tests.disposable_browser_fixture import synthetic_profile
 from rowing_plan.models import FrequencyTarget, RepairScope, TargetCredit, TrainingDoseTarget, V2DemandPlan, WindowPlacement
-from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, derive_repair_scope, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, release_window_placement, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements
+from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, classify_repair_placement, derive_repair_scope, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, reconstruct_repair_state, release_window_placement, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -414,3 +414,67 @@ def test_repair_scope_keeps_rowing_history_phase_clipped_and_includes_canonical_
     # rolling strength or rowing targets.
     affected=[item for item in plan.weekly_commitment_demands if item.type in {"coached_training","rest"} and item.canonical_week_start<=scope.mutable_end and item.canonical_week_end>=scope.mutable_start]
     assert affected and scope.reconciliation_end>=max(item.canonical_week_end for item in affected)
+
+def test_repair_reconstruction_reopens_planner_work_but_preserves_user_fixed_capacity_and_demands():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
+    calendar=build_v2_season_calendar(profile); demands=tuple(generate_training_demands(profile)); rest=next(item for item in demands if item.type=="rest"); coached=next(item for item in demands if item.type=="coached_training")
+    scope=RepairScope((date(2026,9,7),),date(2026,9,7),date(2026,9,20),date(2026,9,7),date(2026,9,20))
+    placements=(
+        WindowPlacement("ut2",date(2026,9,7),"dedicated_ut2","ut2",60,False,(TargetCredit("ut2","dedicated_ut2",1,60),)),
+        WindowPlacement("lift",date(2026,9,7),"strength","strength",30,False,(),True,date(2026,9,6),"athlete"),
+        WindowPlacement("rest",date(2026,9,8),"rest",rest.demand_id,0),
+        WindowPlacement("coach",date(2026,9,10),"coached_training",coached.demand_id,0),
+        WindowPlacement("long",date(2026,9,11),"long_aerobic","long",75,False,(TargetCredit("long","long_aerobic",1,75),TargetCredit("ut2","dedicated_ut2",1,75))),
+        WindowPlacement("quality",date(2026,9,13),"quality","quality",20),
+    )
+    rebuilt=reconstruct_repair_state(calendar,scope,placements,canonical_demands=demands)
+    assert rebuilt.state.remaining_minutes_by_date[date(2026,9,7)]==60
+    assert [(item.placement_id,item.date,item.user_fixed) for item in rebuilt.state.provisional_placements]==[("lift",date(2026,9,7),True)]
+    assert {item.placement_id for item in rebuilt.reopened_placements}=={"ut2","rest","coach","long","quality"}
+    assert set(rebuilt.reopened_source_ids)>={rest.demand_id,coached.demand_id}
+    assert rebuilt.state.demand_satisfaction[rest.demand_id].status=="open"
+    assert rebuilt.state.demand_satisfaction[coached.demand_id].status=="open"
+
+def test_repair_reconstruction_keeps_historical_frozen_context_and_reopens_future_frozen():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-27"}; calendar=build_v2_season_calendar(profile)
+    scope=RepairScope((date(2026,9,15),),date(2026,9,14),date(2026,9,27),date(2026,9,7),date(2026,9,27))
+    historical=WindowPlacement("history",date(2026,9,13),"strength","strength",30,True)
+    historical_ut2=WindowPlacement("history-ut2",date(2026,9,12),"dedicated_ut2","ut2",45,True,(TargetCredit("ut2","dedicated_ut2",1,45),))
+    future_frozen=WindowPlacement("future",date(2026,9,15),"dedicated_ut2","ut2",45,True,(TargetCredit("ut2","dedicated_ut2",1,45),))
+    rebuilt=reconstruct_repair_state(calendar,scope,(future_frozen,historical,historical_ut2))
+    assert classify_repair_placement(historical,scope,calendar)=="immutable_context"
+    assert classify_repair_placement(future_frozen,scope,calendar)=="reopened_planner_owned"
+    assert {item.placement_id for item in rebuilt.immutable_history}=={"history","history-ut2"} and [item.placement_id for item in rebuilt.reopened_placements]==["future"]
+    assert rebuilt.state.rowing_dose_credits["ut2"]==(1,45)
+    assert rebuilt.state.remaining_minutes_by_date[date(2026,9,14)]==90
+    try: release_window_placement(rebuilt.state,"history")
+    except ValueError as error: assert str(error)=="frozen_placement"
+    else: assert False
+    try: assign_window_placement(rebuilt.state,WindowPlacement("adjacent",date(2026,9,14),"strength","strength",30))
+    except ValueError as error: assert str(error)=="strength_spacing"
+    else: assert False
+
+def test_repair_classification_respects_calendar_authority_user_fixed_and_is_deterministic():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; base=build_v2_season_calendar(profile)
+    calendar=tuple(
+        replace(item,race=True) if item.date==date(2026,9,7) else
+        replace(item,fixed_commitments=({"type":"locked","source_id":"lock","fixed":True},)) if item.date==date(2026,9,8) else
+        replace(item,completed_sessions=({"source_id":"done"},)) if item.date==date(2026,9,9) else
+        replace(item,fixed_commitments=({"type":"coached_row","fixed":True},)) if item.date==date(2026,9,12) else item
+        for item in base
+    )
+    scope=RepairScope((date(2026,9,10),),date(2026,9,7),date(2026,9,20),date(2026,9,7),date(2026,9,20))
+    placements=(
+        WindowPlacement("race",date(2026,9,7),"strength","strength",30),
+        WindowPlacement("lock",date(2026,9,8),"strength","lock",30),
+        WindowPlacement("done",date(2026,9,9),"strength","done",30),
+        WindowPlacement("private",date(2026,9,9),"private_coaching","private",0),
+        WindowPlacement("fixed-coach",date(2026,9,12),"coached_training","coach",0),
+        WindowPlacement("user-rest",date(2026,9,10),"rest","rest",0,False,(),True),
+        WindowPlacement("user-coach",date(2026,9,11),"coached_training","coach",0,False,(),True),
+    )
+    assert [classify_repair_placement(item,scope,calendar) for item in placements[:5]]==["immutable_context"]*5
+    assert [classify_repair_placement(item,scope,calendar) for item in placements[5:]]==["preserved_user_fixed"]*2
+    first=reconstruct_repair_state(calendar,scope,placements)
+    second=reconstruct_repair_state(calendar,scope,tuple(reversed(placements)))
+    assert first==second and {item.placement_id for item in first.preserved_user_fixed}=={"user-rest","user-coach"}

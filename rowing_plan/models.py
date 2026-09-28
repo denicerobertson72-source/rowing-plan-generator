@@ -169,6 +169,27 @@ class RepairScope:
     reconciliation_end: date
 
 @dataclass(frozen=True)
+class ReopenedPlacement:
+    """Identity and prior facts retained while planner-owned work is reopened."""
+    placement_id: str
+    source_id: str
+    prior_date: date
+    prior_role: str
+    prior_minutes: int
+    prior_credits: tuple[TargetCredit,...]=()
+
+@dataclass(frozen=True)
+class RepairReconstructionResult:
+    """Repair-ready state only; it intentionally contains no repaired output."""
+    scope: RepairScope
+    state: Any
+    immutable_history: tuple[WindowPlacement,...]
+    preserved_user_fixed: tuple[WindowPlacement,...]
+    reopened_placements: tuple[ReopenedPlacement,...]
+    reopened_source_ids: tuple[str,...]
+    untouched_placements: tuple[WindowPlacement,...]=()
+
+@dataclass(frozen=True)
 class DatedTrainingRole:
     """Generic downstream constraint, never a concrete workout prescription."""
     date: date; role: str; duration_minutes: int; phase_id: str; source_id: str
