@@ -3,13 +3,86 @@ from __future__ import annotations
 from datetime import date, timedelta
 from time import perf_counter
 from dataclasses import replace
-from .models import ActiveWindowState, CandidateDateResult, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, RollingPlacementResult, ScheduleChangeResult, TargetCredit, TrainingDemand, TrainingDoseTarget, UserScheduleOverride, V2DemandPlan, WindowPlacement
+from .models import ActiveWindowState, CandidateDateResult, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, RepairScope, RollingPlacementResult, ScheduleChangeResult, TargetCredit, TrainingDemand, TrainingDoseTarget, UserScheduleOverride, V2DemandPlan, WindowPlacement
 from .periodization import build_season_phases, parse, race_dates
 
 _ROLE={"LONG_AEROBIC":("long_aerobic","aerobic",0),"AEROBIC_BASE":("aerobic_base","aerobic",0),"AEROBIC_STRENGTH":("aerobic_strength","aerobic",1),"THRESHOLD":("threshold","quality",1),"RACE_PACE":("race_pace","quality",1),"SPRINT_POWER":("sprint_power","quality",1),"RECOVERY":("recovery","none",0),"TECHNIQUE_EASY":("aerobic_base","aerobic",0)}
 ROLLING_WINDOW_DAYS=14
 ROLLING_OVERLAP_DAYS=7
 BEAM_WIDTH=16
+
+def _rolling_solver_windows(start: date, end: date) -> tuple[tuple[date,date],...]:
+    """The concrete windows used by ``solve_v2_rolling_non_rowing``."""
+    result=[]; current=start
+    while current<=end:
+        result.append((current,min(end,current+timedelta(days=ROLLING_WINDOW_DAYS-1))))
+        current+=timedelta(days=ROLLING_OVERLAP_DAYS)
+    return tuple(result)
+
+def derive_repair_scope(changed_dates, calendar: tuple[DateContext,...], demand_plan: V2DemandPlan) -> RepairScope:
+    """Derive bounded repair ranges without reconstructing or changing state.
+
+    Mutable dates are the union of the real fourteen-day solver windows that
+    contain a source or requested destination date.  History is read-only and
+    starts far enough back for rolling strength, phase-clipped dose, and
+    recovery checks.  Reconciliation extends through the last real solver
+    window whose strength/dose horizon, recovery interval, or affected
+    canonical coached/rest week can still include a changed date.
+    """
+    if not calendar:
+        raise ValueError("empty_calendar")
+    changes=tuple(sorted(set(changed_dates)))
+    if not changes:
+        raise ValueError("no_changed_dates")
+    season_start,season_end=calendar[0].date,calendar[-1].date
+    if any(day<season_start or day>season_end for day in changes):
+        raise ValueError("changed_date_outside_season")
+    windows=_rolling_solver_windows(season_start,season_end)
+    mutable_windows=tuple(window for window in windows if any(window[0]<=day<=window[1] for day in changes))
+    # Every in-season date belongs to at least its window beginning on or
+    # before it, but retain an explicit guard if the solver cadence changes.
+    if not mutable_windows:
+        raise ValueError("changed_date_outside_solver_windows")
+    mutable_start=min(window[0] for window in mutable_windows)
+    mutable_end=max(window[1] for window in mutable_windows)
+
+    strengths=tuple(item for item in demand_plan.frequency_targets if item.group_id=="strength")
+    strength_history=max((item.window_days-1 for item in strengths),default=0)
+    quality_recovery=max((item.minimum_recovery_days for item in demand_plan.rowing_dose_targets if item.category=="quality"),default=0)
+    strength_recovery=max((item.minimum_spacing_days for item in strengths),default=0)
+    recovery_history=max(quality_recovery,strength_recovery)
+    dose_history=[]
+    for target in demand_plan.rowing_dose_targets:
+        if target.window_end < mutable_start or target.window_start > mutable_end:
+            continue
+        # The target's phase boundary remains a hard lower bound: repair
+        # history never makes prior-phase dose eligible for this target.
+        dose_history.append(max(target.window_start,mutable_start-timedelta(days=target.window_days-1)))
+    history_start=min((mutable_start-timedelta(days=max(strength_history,recovery_history)),*dose_history),default=mutable_start)
+    history_start=max(season_start,history_start)
+
+    weekly=tuple(item for item in demand_plan.weekly_commitment_demands if item.type in {"coached_training","rest"} and item.canonical_week_start and item.canonical_week_end and item.canonical_week_start<=mutable_end and item.canonical_week_end>=mutable_start)
+    relevant_ends=[]
+    for window_start,window_end in windows:
+        relevant=False
+        for changed in changes:
+            if any(window_end-timedelta(days=item.window_days-1)<=changed<=window_end for item in strengths):
+                relevant=True
+            if window_start<=changed+timedelta(days=max(quality_recovery,strength_recovery)) and window_end>=changed:
+                relevant=True
+            for target in demand_plan.rowing_dose_targets:
+                if target.window_start>window_end or target.window_end<window_start:
+                    continue
+                horizon_start=max(target.window_start,window_end-timedelta(days=target.window_days-1))
+                horizon_end=min(target.window_end,window_end)
+                if horizon_start<=changed<=horizon_end:
+                    relevant=True
+        if any(window_start<=item.canonical_week_end and window_end>=item.canonical_week_start for item in weekly):
+            relevant=True
+        if relevant:
+            relevant_ends.append(window_end)
+    reconciliation_end=min(season_end,max(relevant_ends,default=mutable_end))
+    return RepairScope(changes,mutable_start,mutable_end,history_start,reconciliation_end)
 
 def _weeks(start,end):
     monday=start-timedelta(days=start.weekday())

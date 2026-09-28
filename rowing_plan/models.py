@@ -160,6 +160,15 @@ class ScheduleChangeResult:
     state: Any=None; overrides: tuple[UserScheduleOverride,...]=()
 
 @dataclass(frozen=True)
+class RepairScope:
+    """Pure description of the bounded calendar affected by a user change."""
+    changed_dates: tuple[date,...]
+    mutable_start: date
+    mutable_end: date
+    history_start: date
+    reconciliation_end: date
+
+@dataclass(frozen=True)
 class DatedTrainingRole:
     """Generic downstream constraint, never a concrete workout prescription."""
     date: date; role: str; duration_minutes: int; phase_id: str; source_id: str

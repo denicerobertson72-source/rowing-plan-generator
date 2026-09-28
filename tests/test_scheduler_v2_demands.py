@@ -1,8 +1,8 @@
-from datetime import date
+from datetime import date, timedelta
 from dataclasses import replace
 from services.api.tests.disposable_browser_fixture import synthetic_profile
-from rowing_plan.models import FrequencyTarget, TargetCredit, TrainingDoseTarget, V2DemandPlan, WindowPlacement
-from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, release_window_placement, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements
+from rowing_plan.models import FrequencyTarget, RepairScope, TargetCredit, TrainingDoseTarget, V2DemandPlan, WindowPlacement
+from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, derive_repair_scope, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, release_window_placement, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -362,3 +362,55 @@ def test_swap_third_placement_strength_and_quality_spacing_fail_atomically():
         state=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20)); state=assign_window_placement(state,WindowPlacement("a",date(2026,9,7),role,role,20)); state=assign_window_placement(state,WindowPlacement("b",date(2026,9,11),"long_aerobic","long",20)); state=assign_window_placement(state,WindowPlacement("c",date(2026,9,10),role,role,20))
         result=swap_user_placements(state,"a","b","spacing")
         assert not result.success and result.hard_failures==(reason,) and result.state==state and not result.overrides
+
+def _repair_scope_fixture(start=date(2026,9,7), end=date(2026,10,11)):
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":start.isoformat(),"end_date":end.isoformat()}
+    calendar=build_v2_season_calendar(profile)
+    strength=FrequencyTarget("strength",14,4,3,4,"strong",1,"test","")
+    early=TrainingDoseTarget("phase-a","dedicated_ut2",start,date(2026,9,20),14,2,1,120,90,"aerobic","strong",0,"test","")
+    late=TrainingDoseTarget("phase-b","dedicated_ut2",date(2026,9,21),end,14,2,1,120,90,"aerobic","strong",0,"test","")
+    quality=TrainingDoseTarget("phase-b","quality",date(2026,9,21),end,14,1,0,45,0,"quality","strong",1,"test","")
+    coached=generate_training_demands(profile)
+    return calendar,V2DemandPlan(tuple(coached),(strength,),(early,late,quality))
+
+def test_repair_scope_uses_actual_windows_and_is_order_invariant_for_nearby_move():
+    calendar,plan=_repair_scope_fixture()
+    monday,tuesday=date(2026,9,14),date(2026,9,15)
+    scope=derive_repair_scope((monday,tuesday),calendar,plan)
+    reverse=derive_repair_scope((tuesday,monday),calendar,plan)
+    # Sep 14/15 occur in the Sep 7--20 and Sep 14--27 solver windows.
+    assert isinstance(scope,RepairScope) and scope==reverse
+    assert scope.changed_dates==(monday,tuesday)
+    assert (scope.mutable_start,scope.mutable_end)==(date(2026,9,7),date(2026,9,27))
+    # Strength's real 14-day horizon supplies the prior thirteen days; season
+    # clipping prevents an invalid pre-season history range.
+    assert scope.history_start==date(2026,9,7)
+    # Strength influence ends Sep 27; the canonical Sep 21--27 coached/rest
+    # week is still reconciled by its overlapping Sep 21--Oct 4 solver window.
+    assert scope.reconciliation_end==date(2026,10,4)
+
+def test_repair_scope_unions_wider_swap_and_clips_season_edges():
+    calendar,plan=_repair_scope_fixture()
+    scope=derive_repair_scope((date(2026,9,8),date(2026,9,29)),calendar,plan)
+    assert (scope.mutable_start,scope.mutable_end)==(date(2026,9,7),date(2026,10,11))
+    assert scope.history_start==date(2026,9,7) and scope.reconciliation_end==date(2026,10,11)
+    start_calendar,start_plan=_repair_scope_fixture(date(2026,9,7),date(2026,9,20))
+    at_start=derive_repair_scope((date(2026,9,7),),start_calendar,start_plan)
+    assert at_start.history_start==date(2026,9,7)
+    end_calendar,end_plan=_repair_scope_fixture(date(2026,9,7),date(2026,9,20))
+    at_end=derive_repair_scope((date(2026,9,20),),end_calendar,end_plan)
+    assert at_end.mutable_end==date(2026,9,20) and at_end.reconciliation_end==date(2026,9,20)
+
+def test_repair_scope_keeps_rowing_history_phase_clipped_and_includes_canonical_week():
+    calendar,plan=_repair_scope_fixture()
+    # This change is on the first day of phase-b.  The mutable calendar range
+    # can cross the transition, while dose history for phase-b starts at Sep 21.
+    scope=derive_repair_scope((date(2026,9,21),),calendar,plan)
+    assert scope.mutable_start==date(2026,9,14) and scope.mutable_end==date(2026,10,4)
+    phase_b=next(item for item in plan.rowing_dose_targets if item.phase_id=="phase-b" and item.category=="dedicated_ut2")
+    assert max(phase_b.window_start,scope.mutable_start-timedelta(days=phase_b.window_days-1))==date(2026,9,21)
+    # Coached/rest demands retain Monday--Sunday canonical identity; the
+    # affected week is included by reconciliation rather than invented for
+    # rolling strength or rowing targets.
+    affected=[item for item in plan.weekly_commitment_demands if item.type in {"coached_training","rest"} and item.canonical_week_start<=scope.mutable_end and item.canonical_week_end>=scope.mutable_start]
+    assert affected and scope.reconciliation_end>=max(item.canonical_week_end for item in affected)
