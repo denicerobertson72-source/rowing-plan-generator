@@ -2,7 +2,7 @@ from datetime import date, timedelta
 from dataclasses import replace
 from services.api.tests.disposable_browser_fixture import synthetic_profile
 from rowing_plan.models import FrequencyTarget, RepairScope, TargetCredit, TrainingDoseTarget, V2DemandPlan, WindowPlacement
-from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, classify_repair_placement, derive_repair_scope, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, reconstruct_repair_state, release_window_placement, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements
+from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, classify_repair_placement, derive_repair_scope, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, reconstruct_repair_state, release_window_placement, repair_user_schedule_change, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -530,3 +530,50 @@ def test_shared_solver_keeps_user_fixed_strength_and_generic_quality_while_reope
     assert not {"planner-strength","planner-quality"}&set(retained)
     assert diagnostics[0]["strength"]["achieved"]>=1
     assert next(item for item in diagnostics[0]["rowing_targets"] if item["category"]=="quality")["achieved_minutes"]>=20
+
+def test_local_repair_weather_swap_reopens_third_strength_and_preserves_history_locally():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; ordinary_calendar=build_v2_season_calendar(profile)
+    state=initialize_active_window_state(ordinary_calendar,date(2026,9,7),date(2026,9,20),frozen_history=(WindowPlacement("history",date(2026,9,4),"strength","strength",30,True),))
+    state=assign_window_placement(state,WindowPlacement("ut2",date(2026,9,7),"dedicated_ut2","ut2",45))
+    state=assign_window_placement(state,WindowPlacement("c",date(2026,9,8),"strength","strength",30))
+    state=assign_window_placement(state,WindowPlacement("lift",date(2026,9,10),"strength","strength",30))
+    weather_calendar=tuple(replace(item,prohibited_role_families=("rowing",)) if item.date==date(2026,9,7) else item for item in ordinary_calendar)
+    weather_state=replace(state,fixed_context={item.date:item for item in weather_calendar})
+    direct=swap_user_placements(weather_state,"ut2","lift","weather")
+    assert not direct.success and direct.hard_failures==("strength_spacing",)
+    plan=V2DemandPlan((),(FrequencyTarget("strength",14,1,0,1,"strong",1,"test",""),),())
+    repaired=repair_user_schedule_change(profile,weather_state,action_type="swap",placement_ids=("ut2","lift"),override_id="weather",reason="rain",demand_plan=plan,calendar=weather_calendar)
+    assert repaired.success and repaired.overrides[0].action_type=="swap"
+    final={item.placement_id:item for item in repaired.merged_placements}
+    assert final["lift"].date==date(2026,9,7) and final["lift"].user_fixed
+    assert final["ut2"].date==date(2026,9,10) and final["ut2"].user_fixed
+    assert "c" not in final and final["history"].date==date(2026,9,4)
+    assert not any(item.role=="dedicated_ut2" and item.date==date(2026,9,7) for item in repaired.merged_placements)
+
+def test_local_repair_relocates_open_rest_and_returns_original_on_hard_invalid_move():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile); demands=tuple(generate_training_demands(profile)); rest=next(item for item in demands if item.type=="rest")
+    state=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20))
+    state=assign_window_placement(state,WindowPlacement("lift",date(2026,9,7),"strength","strength",30))
+    state=assign_window_placement(state,WindowPlacement("rest",date(2026,9,8),"rest",rest.demand_id,0))
+    plan=V2DemandPlan(demands,(FrequencyTarget("strength",14,1,0,1,"strong",1,"test",""),),())
+    repaired=repair_user_schedule_change(profile,state,action_type="move",placement_ids=("lift",),destination=date(2026,9,8),override_id="move",demand_plan=plan,calendar=calendar)
+    assert repaired.success
+    final={item.placement_id:item for item in repaired.merged_placements}
+    assert final["lift"].date==date(2026,9,8) and final["lift"].user_fixed
+    rests=[item for item in final.values() if item.source_id==rest.demand_id]
+    assert len(rests)==1 and rests[0].date!=date(2026,9,8)
+    raced=tuple(replace(item,race=True) if item.date==date(2026,9,10) else item for item in calendar)
+    invalid=repair_user_schedule_change(profile,state,action_type="move",placement_ids=("lift",),destination=date(2026,9,10),override_id="race",demand_plan=plan,calendar=raced)
+    assert not invalid.success and invalid.hard_failures==("hard_calendar_conflict",) and invalid.state==state and invalid.merged_placements==tuple(sorted((*state.frozen_placements,*state.provisional_placements),key=lambda item:(item.date,item.placement_id,item.role)))
+
+def test_local_repair_reopens_conflicting_generic_quality_without_undoing_user_move():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    state=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20))
+    state=assign_window_placement(state,WindowPlacement("user-q",date(2026,9,10),"quality","phase:quality",20))
+    state=assign_window_placement(state,WindowPlacement("planner-q",date(2026,9,8),"quality","phase:quality",20))
+    direct=move_user_placement(state,"user-q",date(2026,9,7),"q")
+    assert not direct.success and direct.hard_failures==("quality_spacing",)
+    target=TrainingDoseTarget("phase","quality",date(2026,9,7),date(2026,9,20),14,1,0,20,0,"quality","strong",1,"test","")
+    repaired=repair_user_schedule_change(profile,state,action_type="move",placement_ids=("user-q",),destination=date(2026,9,7),override_id="q",demand_plan=V2DemandPlan((),(FrequencyTarget("strength",14,0,0,0,"strong",1,"test",""),),(target,)),calendar=calendar)
+    final={item.placement_id:item for item in repaired.merged_placements}
+    assert repaired.success and final["user-q"].date==date(2026,9,7) and final["user-q"].user_fixed and "planner-q" not in final

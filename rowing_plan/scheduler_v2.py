@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from time import perf_counter
 from dataclasses import replace
-from .models import ActiveWindowState, CandidateDateResult, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, RepairReconstructionResult, RepairScope, ReopenedPlacement, RollingPlacementResult, ScheduleChangeResult, TargetCredit, TrainingDemand, TrainingDoseTarget, UserScheduleOverride, V2DemandPlan, WindowPlacement
+from .models import ActiveWindowState, CandidateDateResult, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, LocalRepairResult, RepairReconstructionResult, RepairScope, ReopenedPlacement, RollingPlacementResult, ScheduleChangeResult, TargetCredit, TrainingDemand, TrainingDoseTarget, UserScheduleOverride, V2DemandPlan, WindowPlacement
 from .periodization import build_season_phases, parse, race_dates
 
 _ROLE={"LONG_AEROBIC":("long_aerobic","aerobic",0),"AEROBIC_BASE":("aerobic_base","aerobic",0),"AEROBIC_STRENGTH":("aerobic_strength","aerobic",1),"THRESHOLD":("threshold","quality",1),"RACE_PACE":("race_pace","quality",1),"SPRINT_POWER":("sprint_power","quality",1),"RECOVERY":("recovery","none",0),"TECHNIQUE_EASY":("aerobic_base","aerobic",0)}
@@ -163,6 +163,76 @@ def reconstruct_repair_state(calendar: tuple[DateContext,...], scope: RepairScop
     immutable_history=tuple(sorted(immutable_history,key=lambda item:(item.date,item.placement_id,item.role)))
     untouched=tuple(sorted(untouched,key=lambda item:(item.date,item.placement_id,item.role)))
     return RepairReconstructionResult(scope,state,immutable_history,preserved_user,reopened,tuple(sorted({item.source_id for item in reopened})),untouched)
+
+def _stage_reopened_change_sources(state: ActiveWindowState, sources: tuple[WindowPlacement,...]) -> ActiveWindowState:
+    """Restore requested source identities only for the move/swap primitive.
+
+    This intentionally bypasses current-date feasibility: a weather restriction
+    may invalidate an old source date, while the final user swap is valid after
+    both sources are removed.  The move/swap primitive validates that final
+    state normally and remains atomic.
+    """
+    current={item.placement_id for item in (*state.frozen_placements,*state.provisional_placements)}
+    added=tuple(item for item in sources if item.placement_id not in current)
+    remaining=dict(state.remaining_minutes_by_date)
+    for item in added:
+        if not state.window_start<=item.date<=state.window_end:
+            raise ValueError("requested_placement_outside_repair_scope")
+        remaining[item.date]-=item.minutes
+    staged=replace(state,provisional_placements=tuple(sorted(state.provisional_placements+tuple(replace(item,frozen=False) for item in added),key=lambda item:(item.date,item.placement_id,item.role))),remaining_minutes_by_date=remaining)
+    return reconcile_active_window_state(staged)
+
+def _restore_stable_reopened_placements(state: ActiveWindowState, reopened: tuple[ReopenedPlacement,...]) -> ActiveWindowState:
+    """Late repair-only stability preference: retain feasible prior work."""
+    result=state
+    for prior in reopened:
+        if any(item.placement_id==prior.placement_id or (item.source_id==prior.source_id and item.role==prior.prior_role) for item in _all_placements(result)):
+            continue
+        candidate=WindowPlacement(prior.placement_id,prior.prior_date,prior.prior_role,prior.source_id,prior.prior_minutes,False,prior.prior_credits)
+        try:
+            result=assign_window_placement(result,candidate)
+        except ValueError:
+            pass
+    return result
+
+def repair_user_schedule_change(profile: dict, authoritative_state: ActiveWindowState, *, action_type: str, placement_ids: tuple[str,...], override_id: str, destination: date|None=None, reason: str|None=None, demand_plan: V2DemandPlan|None=None, calendar: tuple[DateContext,...]|None=None) -> LocalRepairResult:
+    """Execute the bounded V2 local-repair core around one athlete change."""
+    plan=demand_plan or generate_v2_demand_plan(profile)
+    cal=calendar or build_v2_season_calendar(profile)
+    authoritative=tuple(sorted((*authoritative_state.frozen_placements,*authoritative_state.provisional_placements),key=lambda item:(item.date,item.placement_id,item.role)))
+    by_id={item.placement_id:item for item in authoritative}
+    requested=tuple(by_id[item] for item in placement_ids if item in by_id)
+    if len(requested)!=len(placement_ids):
+        return LocalRepairResult(False,authoritative_state,authoritative,hard_failures=("unknown_placement",))
+    if action_type=="move":
+        if len(requested)!=1 or destination is None:
+            raise ValueError("invalid_move_request")
+        changed=(requested[0].date,destination)
+    elif action_type=="swap":
+        if len(requested)!=2:
+            raise ValueError("invalid_swap_request")
+        changed=tuple(item.date for item in requested)
+    else:
+        raise ValueError("unknown_repair_action")
+    scope=derive_repair_scope(changed,cal,plan)
+    demands=tuple(item for item in plan.weekly_commitment_demands if item.type in {"coached_training","rest"})
+    reconstruction=reconstruct_repair_state(cal,scope,authoritative,canonical_demands=demands)
+    try:
+        staged=_stage_reopened_change_sources(reconstruction.state,requested)
+    except ValueError as error:
+        return LocalRepairResult(False,authoritative_state,authoritative,scope,reconstruction,(str(error),))
+    change=move_user_placement(staged,requested[0].placement_id,destination,override_id,reason) if action_type=="move" else swap_user_placements(staged,requested[0].placement_id,requested[1].placement_id,override_id,reason)
+    if not change.success:
+        return LocalRepairResult(False,authoritative_state,authoritative,scope,reconstruction,change.hard_failures,change.overrides)
+    solve_calendar=tuple(item for item in cal if scope.mutable_start<=item.date<=scope.reconciliation_end)
+    # A scope begins on a real solver boundary; its first active window is the
+    # reconstructed mutable window for ordinary moves/swaps.
+    repaired,_=solve_v2_rolling_non_rowing(profile,plan,solve_calendar,initial_state=change.state)
+    repaired=_restore_stable_reopened_placements(repaired,reconstruction.reopened_placements)
+    inside=tuple(item for item in _all_placements(repaired) if scope.mutable_start<=item.date<=scope.mutable_end)
+    outside=tuple(item for item in authoritative if not scope.mutable_start<=item.date<=scope.mutable_end)
+    merged=tuple(sorted(inside+outside,key=lambda item:(item.date,item.placement_id,item.role)))
+    return LocalRepairResult(True,repaired,merged,scope,reconstruction,(),change.overrides)
 
 def _weeks(start,end):
     monday=start-timedelta(days=start.weekday())

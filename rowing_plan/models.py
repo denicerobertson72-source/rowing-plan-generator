@@ -190,6 +190,17 @@ class RepairReconstructionResult:
     untouched_placements: tuple[WindowPlacement,...]=()
 
 @dataclass(frozen=True)
+class LocalRepairResult:
+    """Pure local-repair transaction result; consequence reporting comes later."""
+    success: bool
+    state: Any
+    merged_placements: tuple[WindowPlacement,...]=()
+    scope: RepairScope|None=None
+    reconstruction: RepairReconstructionResult|None=None
+    hard_failures: tuple[str,...]=()
+    overrides: tuple[UserScheduleOverride,...]=()
+
+@dataclass(frozen=True)
 class DatedTrainingRole:
     """Generic downstream constraint, never a concrete workout prescription."""
     date: date; role: str; duration_minutes: int; phase_id: str; source_id: str
