@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from time import perf_counter
 from dataclasses import replace
-from .models import ActiveWindowState, CandidateDateResult, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, RollingPlacementResult, TargetCredit, TrainingDemand, TrainingDoseTarget, V2DemandPlan, WindowPlacement
+from .models import ActiveWindowState, CandidateDateResult, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, RollingPlacementResult, ScheduleChangeResult, TargetCredit, TrainingDemand, TrainingDoseTarget, UserScheduleOverride, V2DemandPlan, WindowPlacement
 from .periodization import build_season_phases, parse, race_dates
 
 _ROLE={"LONG_AEROBIC":("long_aerobic","aerobic",0),"AEROBIC_BASE":("aerobic_base","aerobic",0),"AEROBIC_STRENGTH":("aerobic_strength","aerobic",1),"THRESHOLD":("threshold","quality",1),"RACE_PACE":("race_pace","quality",1),"SPRINT_POWER":("sprint_power","quality",1),"RECOVERY":("recovery","none",0),"TECHNIQUE_EASY":("aerobic_base","aerobic",0)}
@@ -198,6 +198,19 @@ def release_window_placement(state: ActiveWindowState, placement_id: str) -> Act
 
 def replace_window_placement(state: ActiveWindowState, old_id: str, replacement: WindowPlacement) -> ActiveWindowState:
     return assign_window_placement(release_window_placement(state,old_id),replacement)
+
+def move_user_placement(state: ActiveWindowState, placement_id: str, destination: date, override_id: str, reason: str|None=None) -> ScheduleChangeResult:
+    """Atomic explicit-athlete move; ordinary automatic release remains guarded."""
+    placement=next((item for item in state.provisional_placements if item.placement_id==placement_id),None)
+    if placement is None: return ScheduleChangeResult(False,("unknown_placement",),state=state)
+    if destination==placement.date: return ScheduleChangeResult(True,state=state,overrides=())
+    remaining=dict(state.remaining_minutes_by_date); remaining[placement.date]+=placement.minutes
+    trial=replace(state,provisional_placements=tuple(item for item in state.provisional_placements if item.placement_id!=placement_id),remaining_minutes_by_date=remaining)
+    moved=WindowPlacement(placement.placement_id,destination,placement.role,placement.source_id,placement.minutes,False,placement.credits,True,placement.original_date or placement.date,override_id)
+    try: result=assign_window_placement(trial,moved)
+    except ValueError as error: return ScheduleChangeResult(False,(str(error),),state=state)
+    override=UserScheduleOverride(override_id,"move",(placement_id,),(placement.date,),(destination,),reason)
+    return ScheduleChangeResult(True,state=result,overrides=(override,))
 
 def freeze_leading_half(state: ActiveWindowState, freeze_before: date) -> ActiveWindowState:
     frozen=state.frozen_placements+tuple(WindowPlacement(item.placement_id,item.date,item.role,item.source_id,item.minutes,True,item.credits,item.user_fixed,item.original_date,item.override_id) for item in state.provisional_placements if item.date<freeze_before)

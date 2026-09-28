@@ -2,7 +2,7 @@ from datetime import date
 from dataclasses import replace
 from services.api.tests.disposable_browser_fixture import synthetic_profile
 from rowing_plan.models import FrequencyTarget, TargetCredit, TrainingDoseTarget, V2DemandPlan, WindowPlacement
-from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, release_window_placement, replace_window_placement, role_family, solve_v2_rolling_non_rowing
+from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, release_window_placement, replace_window_placement, role_family, solve_v2_rolling_non_rowing
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -258,6 +258,65 @@ def test_historical_user_fixed_ut2_respects_horizon_expiration_and_phase_clippin
     assert _dose_target_summary(ordinary_state,target,date(2026,9,7),date(2026,9,20))==summary
     assert _dose_target_summary(state,target,date(2026,9,21),date(2026,9,27))["achieved_minutes"]==0
     clipped=replace(target,window_start=date(2026,9,14)); assert _dose_target_summary(state,clipped,date(2026,9,14),date(2026,9,20))["achieved_minutes"]==0
+
+def test_explicit_user_move_is_atomic_preserves_identity_and_allows_second_move():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    base=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20)); state=assign_window_placement(base,WindowPlacement("lift",date(2026,9,8),"strength","strength",30))
+    moved=move_user_placement(state,"lift",date(2026,9,7),"one")
+    item=moved.state.provisional_placements[0]
+    assert moved.success and (item.placement_id,item.source_id,item.date,item.original_date,item.user_fixed,item.override_id)==("lift","strength",date(2026,9,7),date(2026,9,8),True,"one")
+    assert moved.state.remaining_minutes_by_date[date(2026,9,8)]==90 and moved.state.remaining_minutes_by_date[date(2026,9,7)]==60
+    second=move_user_placement(moved.state,"lift",date(2026,9,10),"two")
+    assert second.success and second.state.provisional_placements[0].original_date==date(2026,9,8) and second.state.provisional_placements[0].override_id=="two"
+    same=move_user_placement(second.state,"lift",date(2026,9,10),"same")
+    assert same.success and same.state==second.state and not same.overrides
+
+def test_user_move_rejects_rowing_restriction_atomically_and_adapter_has_no_stale_date():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    restricted=tuple(replace(item,prohibited_role_families=("rowing",)) if item.date==date(2026,9,8) else item for item in calendar)
+    credit=(TargetCredit("ut2","dedicated_ut2",1,45),); state=assign_window_placement(initialize_active_window_state(restricted,date(2026,9,7),date(2026,9,20)),WindowPlacement("ut2",date(2026,9,7),"dedicated_ut2","ut2",45,False,credit))
+    failed=move_user_placement(state,"ut2",date(2026,9,8),"blocked")
+    assert not failed.success and failed.hard_failures==("activity_prohibited",) and failed.state==state and not failed.overrides
+    moved=move_user_placement(state,"ut2",date(2026,9,10),"ok")
+    assert moved.success and [(item.placement_id,item.date) for item in build_dated_training_roles(moved.state)]==[("ut2",date(2026,9,10))]
+    try: release_window_placement(moved.state,"ut2")
+    except ValueError as error: assert str(error)=="user_fixed_placement"
+    else: assert False
+
+def test_user_move_capacity_race_and_frozen_failures_are_atomic():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    constrained=tuple(replace(item,remaining_minutes=45) if item.date==date(2026,9,8) else item for item in calendar)
+    state=assign_window_placement(initialize_active_window_state(constrained,date(2026,9,7),date(2026,9,20)),WindowPlacement("lift",date(2026,9,7),"strength","strength",60))
+    failed=move_user_placement(state,"lift",date(2026,9,8),"cap")
+    assert not failed.success and failed.hard_failures==("insufficient_minutes",) and failed.state==state and not failed.overrides
+    frozen=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20),frozen_history=(WindowPlacement("old",date(2026,9,7),"strength","strength",30,True),))
+    no_move=move_user_placement(frozen,"old",date(2026,9,8),"frozen")
+    assert not no_move.success and no_move.state==frozen and not no_move.overrides
+
+def test_user_move_long_multi_credit_preserves_single_session_and_capacity():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    credits=(TargetCredit("long","long_aerobic",1,75),TargetCredit("ut2","dedicated_ut2",1,75)); state=assign_window_placement(initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20)),WindowPlacement("long",date(2026,9,7),"long_aerobic","long",75,False,credits))
+    moved=move_user_placement(state,"long",date(2026,9,8),"long-move")
+    item=moved.state.provisional_placements[0]
+    assert moved.success and item.credits==credits and moved.state.remaining_minutes_by_date[date(2026,9,7)]==90 and moved.state.remaining_minutes_by_date[date(2026,9,8)]==15
+    assert [(role.placement_id,role.date) for role in build_dated_training_roles(moved.state)]==[("long",date(2026,9,8))]
+
+def test_user_move_race_and_spacing_follow_current_not_original_date():
+    profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)
+    raced=tuple(replace(item,race=True) if item.date==date(2026,9,8) else item for item in calendar)
+    state=assign_window_placement(initialize_active_window_state(raced,date(2026,9,7),date(2026,9,20)),WindowPlacement("s",date(2026,9,7),"strength","strength",30))
+    failed=move_user_placement(state,"s",date(2026,9,8),"race")
+    assert not failed.success and failed.hard_failures==("hard_calendar_conflict",) and failed.state==state
+    clean=initialize_active_window_state(calendar,date(2026,9,7),date(2026,9,20))
+    strength=move_user_placement(assign_window_placement(clean,WindowPlacement("a",date(2026,9,7),"strength","strength",30)),"a",date(2026,9,9),"move").state
+    assert strength.provisional_placements[0].original_date==date(2026,9,7)
+    try: assign_window_placement(strength,WindowPlacement("b",date(2026,9,10),"strength","strength",30))
+    except ValueError as error: assert str(error)=="strength_spacing"
+    else: assert False
+    quality=move_user_placement(assign_window_placement(clean,WindowPlacement("q",date(2026,9,7),"quality","quality",20)),"q",date(2026,9,9),"qmove").state
+    try: assign_window_placement(quality,WindowPlacement("q2",date(2026,9,10),"quality","quality",20))
+    except ValueError as error: assert str(error)=="quality_spacing"
+    else: assert False
     historical=WindowPlacement("sun",date(2026,9,13),"strength","strength",30,True,(),True,date(2026,9,8),"override-test-2")
     later=initialize_active_window_state(calendar,date(2026,9,14),date(2026,9,27),frozen_history=(historical,))
     assert later.frozen_placements[0].user_fixed and later.remaining_minutes_by_date[date(2026,9,14)]==90
