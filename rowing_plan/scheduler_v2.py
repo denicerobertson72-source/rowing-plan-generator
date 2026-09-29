@@ -31,8 +31,7 @@ def translate_quality_roles(roles: tuple[DatedTrainingRole,...], contexts: dict[
 
 def instantiate_translated_quality_role(translated: TranslatedTrainingRole, *, experience: str, race_type: str="general", mode: str="erg", preference: str="varied", history=()) -> ConcreteTrainingRole:
     """Reuse V1 concrete selection for one immutable translated quality role."""
-    adapters={"AT":"THRESHOLD","TR":"RACE_PACE","PP":"SPRINT_POWER"}
-    if translated.quality_type=="AN": raise ValueError("an_concrete_adapter_not_available")
+    adapters={"AT":"THRESHOLD","TR":"RACE_PACE","AN":"ANAEROBIC_CAPACITY","PP":"SPRINT_POWER"}
     selector_role=adapters[translated.quality_type]
     selected=select_and_instantiate(role=selector_role,experience=experience,phase=translated.phase_id,race_type=race_type,mode=mode,minutes=translated.planned_duration_minutes,preference=preference,history=list(history))
     if not selected: raise ValueError("no_eligible_quality_archetype")

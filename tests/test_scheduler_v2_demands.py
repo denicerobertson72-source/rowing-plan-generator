@@ -617,9 +617,7 @@ def test_single_translated_quality_instantiation_reuses_v1_adapters_without_sche
     pp=translate_quality_role(role,QualityTranslationContext("race_specific_preparation",explicit_intent="SPRINT_POWER"))
     assert instantiate_translated_quality_role(pp,experience="experienced").physiological_band=="PP"
     an=replace(pp,quality_type="AN")
-    try: instantiate_translated_quality_role(an,experience="experienced")
-    except ValueError as error: assert str(error)=="an_concrete_adapter_not_available"
-    else: assert False
+    assert instantiate_translated_quality_role(an,experience="experienced",race_type="sprint_1k").physiological_band=="AN"
     try: translate_quality_role(role,QualityTranslationContext("post_race_recovery"))
     except ValueError as error: assert str(error)=="quality_not_valid_for_phase"
     else: assert False

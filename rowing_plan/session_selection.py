@@ -4,8 +4,8 @@ from datetime import date
 from .session_archetypes import build_archetype_library
 
 VERSION="archetype-selection-0.3.0"
-ROLE_BAND={"TECHNIQUE_EASY":"UT3","RECOVERY":"UT3","AEROBIC_BASE":"UT2","LONG_AEROBIC":"UT2","AEROBIC_STRENGTH":"UT1","THRESHOLD":"AT","RACE_PACE":"TR","SPRINT_POWER":"PP"}
-ROLE_MATCH={"TECHNIQUE_EASY":{"technique"},"RECOVERY":{"recovery","technique"},"AEROBIC_BASE":{"aerobic_base"},"LONG_AEROBIC":{"aerobic_base"},"AEROBIC_STRENGTH":{"aerobic_endurance"},"THRESHOLD":{"threshold"},"RACE_PACE":{"race_development","head_race","two_k","one_k"},"SPRINT_POWER":{"sprint_power","one_k"}}
+ROLE_BAND={"TECHNIQUE_EASY":"UT3","RECOVERY":"UT3","AEROBIC_BASE":"UT2","LONG_AEROBIC":"UT2","AEROBIC_STRENGTH":"UT1","THRESHOLD":"AT","RACE_PACE":"TR","SPRINT_POWER":"PP","ANAEROBIC_CAPACITY":"AN"}
+ROLE_MATCH={"TECHNIQUE_EASY":{"technique"},"RECOVERY":{"recovery","technique"},"AEROBIC_BASE":{"aerobic_base"},"LONG_AEROBIC":{"aerobic_base"},"AEROBIC_STRENGTH":{"aerobic_endurance"},"THRESHOLD":{"threshold"},"RACE_PACE":{"race_development","head_race","two_k","one_k"},"SPRINT_POWER":{"sprint_power","one_k"},"ANAEROBIC_CAPACITY":{"anaerobic_capacity","one_k"}}
 FAMILY={
  "AEROBIC_BASE":{"medium_repeats":30,"progressive_duration":28,"rate_controlled":25,"technique_aerobic":22,"continuous":20,"long_repeats":18,"short_repeats":12},
  "LONG_AEROBIC":{"continuous":36,"long_repeats":33,"progressive_duration":30,"medium_repeats":14,"rate_controlled":12,"technique_aerobic":8,"short_repeats":-24},
