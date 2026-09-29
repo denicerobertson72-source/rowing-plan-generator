@@ -10,6 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from secrets import token_urlsafe
 from traceback import extract_tb
+from enum import Enum
 from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,20 +36,73 @@ app = FastAPI(title="Rowing Plan API", version="0.4.0", openapi_url="/api/v1/ope
 allowed_origins=[origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if origin.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
+
+class PlannerChoice(str, Enum):
+    """Internal planner identity; this is deliberately not an API schema field."""
+
+    V1 = "v1"
+    V2 = "v2"
+
+
+class PlannerRoutingError(RuntimeError):
+    """A deterministic internal routing failure before any persistence occurs."""
+
+    def __init__(self, reason_code: str):
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
+
+_TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def v2_planner_internal_enabled() -> bool:
+    """Permission for test/internal V2 routing; never a public traffic switch."""
+
+    return os.getenv("V2_PLANNER_INTERNAL_ENABLED", "").strip().lower() in _TRUE_ENV_VALUES
+
+
+def resolve_planner_choice(internal_planner_choice: PlannerChoice | None = None) -> PlannerChoice:
+    """Resolve the explicit internal choice without allowing the flag to change defaults."""
+
+    choice = internal_planner_choice or PlannerChoice.V1
+    if choice is PlannerChoice.V2 and not v2_planner_internal_enabled():
+        raise PlannerRoutingError("v2_planner_not_enabled")
+    return choice
+
+
+def execute_selected_planner(*, choice: PlannerChoice, profile: dict, bands: list[dict], power: dict, locked_sessions: list[dict]) -> dict:
+    """Return a complete in-memory plan. Persistence remains exclusively with callers.
+
+    V2.8B will connect the complete V2 in-memory PlanVersion builder here. Any
+    future fresh-plan fallback belongs outside this function and before save.
+    """
+
+    if choice is PlannerChoice.V1:
+        return generate_plan(profile, CONFIG, bands, power, locked_sessions)
+    if choice is PlannerChoice.V2:
+        raise PlannerRoutingError("v2_planner_route_not_wired")
+    raise PlannerRoutingError("unknown_planner_choice")
+
 @app.middleware("http")
 async def prevent_dynamic_api_caching(request, call_next):
     response=await call_next(request)
     if request.url.path.startswith("/api/v1/") and request.method=="GET": response.headers["Cache-Control"]="no-store"
     return response
 
-def build_plan(request: PlanGenerationRequest) -> dict:
+def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: PlannerChoice | None = None) -> dict:
+    """Run shared pre-planner work, then the selected in-memory planner.
+
+    ``internal_planner_choice`` is intentionally unavailable to public request
+    schemas and routes. Public callers therefore always resolve to V1.
+    """
     profile = normalize_recurring_schedule_for_planning(request.athlete_profile)
     errors = validate_profile(profile)
     if errors:
         raise HTTPException(status_code=422, detail={"error_code":"profile_validation","validation_errors": errors,"diagnostic":{"conflict_type":"profile_validation","reason":errors[0],"validation_rule":"profile_validation"}})
     bands = build_intensity_profile(profile, CONFIG)
     power = build_power_profile(profile, CONFIG)
-    try: plan = generate_plan(profile, CONFIG, bands, power, request.locked_sessions)
+    choice = resolve_planner_choice(internal_planner_choice)
+    try: plan = execute_selected_planner(choice=choice, profile=profile, bands=bands, power=power, locked_sessions=request.locked_sessions)
     except PlanningConflict as error: raise HTTPException(status_code=422, detail={"error_code":"planning_conflict","planning_conflicts":[str(error)],"diagnostic":error.details}) from error
     hard_errors = hard_constraint_errors(plan, profile)
     if hard_errors:
