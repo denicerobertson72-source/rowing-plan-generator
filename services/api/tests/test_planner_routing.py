@@ -20,6 +20,14 @@ def _client_for_database(path: Path):
     return TestClient(main.app), repository, previous
 
 
+def _v2_ready_profile():
+    """Real compact season with a finalized TR placement and all V2 role paths."""
+    profile = synthetic_profile()
+    profile["season"].update({"start_date": "2026-09-05", "end_date": "2026-09-18"})
+    profile["races"] = [{"event_name": "V2 target race", "start_date": "2026-09-26", "end_date": "2026-09-26", "priority": "A", "race_type": "head_5k"}]
+    return profile
+
+
 @pytest.mark.parametrize(("value", "expected"), [(None, False), ("", False), ("false", False), ("0", False), ("no", False), ("true", True), ("1", True), ("yes", True), ("on", True)])
 def test_v2_internal_flag_parsing_and_default_resolution(monkeypatch, value, expected):
     if value is None:
@@ -36,11 +44,10 @@ def test_internal_v2_choice_is_denied_while_flag_is_off(monkeypatch):
         main.resolve_planner_choice(main.PlannerChoice.V2)
 
 
-def test_internal_v2_choice_reaches_dormant_branch_when_enabled(monkeypatch):
+def test_internal_v2_choice_reaches_the_real_v2_branch_when_enabled(monkeypatch):
     monkeypatch.setenv("V2_PLANNER_INTERNAL_ENABLED", "true")
-    request = PlanGenerationRequest(athlete_profile=synthetic_profile())
-    with pytest.raises(main.PlannerRoutingError, match="v2_planner_route_not_wired"):
-        main.build_plan(request, internal_planner_choice=main.PlannerChoice.V2)
+    plan = main.build_plan(PlanGenerationRequest(athlete_profile=_v2_ready_profile()), internal_planner_choice=main.PlannerChoice.V2)
+    assert plan["v2_diagnostics"]["scheduler_version"] == "v2"
 
 
 def test_invalid_profile_fails_before_any_planner_is_selected(monkeypatch):
@@ -122,3 +129,77 @@ def test_planner_failure_happens_before_save(monkeypatch):
         finally:
             REPOSITORIES._instance = previous
     assert save_calls == []
+
+
+def test_internal_v2_executes_real_pipeline_validates_contract_and_saves_once(monkeypatch):
+    monkeypatch.setenv("V2_PLANNER_INTERNAL_ENABLED", "true")
+    request = PlanGenerationRequest(athlete_profile=_v2_ready_profile())
+    with TemporaryDirectory() as directory:
+        _, repository, previous = _client_for_database(Path(directory) / "v2-success.sqlite3")
+        try:
+            plan = main.build_plan(request, internal_planner_choice=main.PlannerChoice.V2)
+            athlete_id = repository.create(request.athlete_profile)
+            plan_id = repository.save_plan(athlete_id, plan)
+            saved = repository.get_plan(plan_id)
+        finally:
+            REPOSITORIES._instance = previous
+    assert plan["v2_diagnostics"]["scheduler_version"] == "v2"
+    assert plan["sessions"] and plan["calendar_days"] and plan["weekly_totals"]
+    assert any(item["band"] == "TR" and item.get("session_fingerprint") for item in plan["sessions"])
+    assert any(item["session_id"] == "LIFT" for item in plan["sessions"])
+    assert any(item["designated_rest"] for item in plan["calendar_days"])
+    assert saved and saved["plan"] == plan
+
+
+def test_v2_expected_failure_falls_back_once_for_a_fresh_plan(monkeypatch):
+    from rowing_plan import planner_v2
+
+    monkeypatch.setenv("V2_PLANNER_INTERNAL_ENABLED", "true")
+    v1_calls: list[str] = []
+    original_v1 = main.generate_plan
+    monkeypatch.setattr(planner_v2, "generate_plan_v2", lambda *args, **kwargs: (_ for _ in ()).throw(planner_v2.V2PlanningError("v2_materialization_failed", "fixture")))
+    monkeypatch.setattr(main, "generate_plan", lambda *args, **kwargs: (v1_calls.append("v1"), original_v1(*args, **kwargs))[1])
+    request = PlanGenerationRequest(athlete_profile=synthetic_profile())
+    with TemporaryDirectory() as directory:
+        _, repository, previous = _client_for_database(Path(directory) / "fallback.sqlite3")
+        try:
+            plan = main.build_plan(request, internal_planner_choice=main.PlannerChoice.V2)
+            plan_id = repository.save_plan(repository.create(request.athlete_profile), plan)
+            saved = repository.get_plan(plan_id)
+        finally:
+            REPOSITORIES._instance = previous
+    assert v1_calls == ["v1"]
+    assert plan["planner_routing"] == {"attempted_planner": "v2", "final_planner": "v1", "fallback_reason_code": "v2_materialization_failed"}
+    assert saved and saved["version_number"] == 1 and saved["plan"] == plan
+
+
+def test_future_v2_user_authority_blocks_an_otherwise_eligible_fallback(monkeypatch):
+    from rowing_plan import planner_v2
+
+    monkeypatch.setenv("V2_PLANNER_INTERNAL_ENABLED", "true")
+    monkeypatch.setattr(planner_v2, "generate_plan_v2", lambda *args, **kwargs: (_ for _ in ()).throw(planner_v2.V2PlanningError("v2_materialization_failed", "fixture")))
+    prior = {"v2_diagnostics": {"scheduler_version": "v2", "placement_authority": [{"date": "2099-01-01", "user_fixed": True, "override_id": "athlete-choice"}], "overrides": []}}
+    with pytest.raises(main.PlannerRoutingError, match="v2_materialization_failed"):
+        main.build_plan(PlanGenerationRequest(athlete_profile=synthetic_profile()), internal_planner_choice=main.PlannerChoice.V2, prior_plan=prior)
+
+
+def test_v2_contract_and_unexpected_errors_do_not_fallback(monkeypatch):
+    from rowing_plan import planner_v2
+
+    monkeypatch.setenv("V2_PLANNER_INTERNAL_ENABLED", "true")
+    bad = {"plan_version": "0.7.0", "sessions": []}
+    monkeypatch.setattr(planner_v2, "generate_plan_v2", lambda *args, **kwargs: bad)
+    with pytest.raises(main.PlannerRoutingError, match="v2_plan_contract_failed"):
+        main.build_plan(PlanGenerationRequest(athlete_profile=synthetic_profile()), internal_planner_choice=main.PlannerChoice.V2)
+    monkeypatch.setattr(planner_v2, "generate_plan_v2", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("invariant")))
+    with pytest.raises(RuntimeError, match="invariant"):
+        main.build_plan(PlanGenerationRequest(athlete_profile=synthetic_profile()), internal_planner_choice=main.PlannerChoice.V2)
+
+
+def test_completed_locked_history_is_carried_by_v2_and_does_not_block_fallback(monkeypatch):
+    monkeypatch.setenv("V2_PLANNER_INTERNAL_ENABLED", "true")
+    profile = _v2_ready_profile()
+    locked = {"date": "2026-09-08", "day": "Tuesday", "phase": "locked", "fixed": True, "mode": "erg", "session_id": "completed-row", "title": "Completed original", "band": "UT2", "total_cardio_minutes": 44, "rowing_minutes": 44, "quality_minutes": 0, "structure": "Original prescription."}
+    plan = main.build_plan(PlanGenerationRequest(athlete_profile=profile, locked_sessions=[locked]), internal_planner_choice=main.PlannerChoice.V2)
+    assert next(item for item in plan["sessions"] if item["session_id"] == "completed-row") == locked
+    assert main.v1_fallback_allowed({"v2_diagnostics": {"scheduler_version": "v2", "placement_authority": [], "overrides": []}})

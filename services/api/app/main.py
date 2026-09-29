@@ -80,8 +80,49 @@ def execute_selected_planner(*, choice: PlannerChoice, profile: dict, bands: lis
     if choice is PlannerChoice.V1:
         return generate_plan(profile, CONFIG, bands, power, locked_sessions)
     if choice is PlannerChoice.V2:
-        raise PlannerRoutingError("v2_planner_route_not_wired")
+        # Kept here rather than in the API route so V2.8B has the same shared
+        # normalized input contract as V1 and still performs no persistence.
+        from rowing_plan.planner_v2 import V2PlanningError, generate_plan_v2, validate_v2_plan_contract
+        try:
+            plan = generate_plan_v2(profile, CONFIG, bands, power, locked_sessions)
+        except V2PlanningError as error:
+            raise PlannerRoutingError(error.reason_code) from error
+        contract_error = validate_v2_plan_contract(plan, authoritative_sessions=locked_sessions)
+        if contract_error:
+            raise PlannerRoutingError("v2_plan_contract_failed") from ValueError(contract_error)
+        return plan
     raise PlannerRoutingError("unknown_planner_choice")
+
+
+_V2_FALLBACK_ELIGIBLE = frozenset({"v2_schedule_infeasible", "v2_materialization_failed", "v2_concrete_workout_failed"})
+
+
+def _future_authority_dates(value) -> tuple[date, ...]:
+    result = []
+    for item in value or ():
+        if not isinstance(item, dict):
+            continue
+        for raw in item.get("to_dates", ()) if isinstance(item.get("to_dates", ()), (list, tuple)) else ():
+            try: result.append(date.fromisoformat(raw))
+            except (TypeError, ValueError): pass
+        raw = item.get("date")
+        try: result.append(date.fromisoformat(raw))
+        except (TypeError, ValueError): pass
+    return tuple(result)
+
+
+def v1_fallback_allowed(prior_plan: dict | None, *, as_of: date | None = None) -> bool:
+    """Allow fallback only when no future persisted V2 authority would be lost."""
+
+    if not prior_plan:
+        return True
+    diagnostics = prior_plan.get("v2_diagnostics") if isinstance(prior_plan, dict) else None
+    if not isinstance(diagnostics, dict) or diagnostics.get("scheduler_version") != "v2":
+        return True
+    today = as_of or date.today()
+    authority = tuple(item for item in diagnostics.get("placement_authority", ()) if isinstance(item, dict) and (item.get("user_fixed") or item.get("override_id")))
+    overrides = tuple(item for item in diagnostics.get("overrides", ()) if isinstance(item, dict))
+    return not any(day >= today for day in _future_authority_dates(authority + overrides))
 
 @app.middleware("http")
 async def prevent_dynamic_api_caching(request, call_next):
@@ -89,7 +130,7 @@ async def prevent_dynamic_api_caching(request, call_next):
     if request.url.path.startswith("/api/v1/") and request.method=="GET": response.headers["Cache-Control"]="no-store"
     return response
 
-def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: PlannerChoice | None = None) -> dict:
+def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: PlannerChoice | None = None, prior_plan: dict | None = None) -> dict:
     """Run shared pre-planner work, then the selected in-memory planner.
 
     ``internal_planner_choice`` is intentionally unavailable to public request
@@ -102,7 +143,15 @@ def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: Plann
     bands = build_intensity_profile(profile, CONFIG)
     power = build_power_profile(profile, CONFIG)
     choice = resolve_planner_choice(internal_planner_choice)
-    try: plan = execute_selected_planner(choice=choice, profile=profile, bands=bands, power=power, locked_sessions=request.locked_sessions)
+    try:
+        plan = execute_selected_planner(choice=choice, profile=profile, bands=bands, power=power, locked_sessions=request.locked_sessions)
+    except PlannerRoutingError as error:
+        if choice is not PlannerChoice.V2 or error.reason_code not in _V2_FALLBACK_ELIGIBLE or not v1_fallback_allowed(prior_plan):
+            raise
+        plan = execute_selected_planner(choice=PlannerChoice.V1, profile=profile, bands=bands, power=power, locked_sessions=request.locked_sessions)
+        # Add routing provenance only for an actual V2-to-V1 recovery; pure
+        # public V1 output stays byte/behavior compatible.
+        plan = {**plan, "planner_routing": {"attempted_planner": "v2", "final_planner": "v1", "fallback_reason_code": error.reason_code}}
     except PlanningConflict as error: raise HTTPException(status_code=422, detail={"error_code":"planning_conflict","planning_conflicts":[str(error)],"diagnostic":error.details}) from error
     hard_errors = hard_constraint_errors(plan, profile)
     if hard_errors:
@@ -368,7 +417,7 @@ def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: s
             completed={entry["session_key"] for entry in REPOSITORIES.logs_for_plan(previous["plan_id"]) if entry["payload"].get("status")=="completed"}
             locked.extend(session for session in previous["plan"].get("sessions",[]) if f'{session["date"]}:{session.get("session_id")}:{session.get("mode")}' in completed)
         stage="plan_generation"
-        plan=build_plan(PlanGenerationRequest(athlete_profile=profile, locked_sessions=locked))
+        plan=build_plan(PlanGenerationRequest(athlete_profile=profile, locked_sessions=locked), prior_plan=previous["plan"] if previous else None)
     except HTTPException as error:
         detail=error.detail if isinstance(error.detail, dict) else {}
         code=detail.get("error_code", "planning_rejected" if error.status_code == 422 else "request_rejected")
