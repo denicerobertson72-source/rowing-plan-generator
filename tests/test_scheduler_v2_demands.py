@@ -2,7 +2,7 @@ from datetime import date, timedelta
 from dataclasses import replace
 from services.api.tests.disposable_browser_fixture import synthetic_profile
 from rowing_plan.models import CompletedQualityExposure, DatedTrainingRole, FrequencyTarget, QualityTranslationContext, RepairScope, TargetCredit, TrainingDoseTarget, V2DemandPlan, WindowPlacement
-from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, classify_repair_placement, derive_repair_scope, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, reconstruct_repair_state, release_window_placement, repair_user_schedule_change, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements, translate_quality_role, translate_quality_roles
+from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, classify_repair_placement, derive_repair_scope, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, instantiate_translated_quality_role, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, reconstruct_repair_state, release_window_placement, repair_user_schedule_change, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements, translate_quality_role, translate_quality_roles
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -605,6 +605,21 @@ def test_quality_translation_race_context_and_typed_history_are_conservative_and
         assert translated.quality_type=="AT" and translated.reason_code.endswith("completed_history_considered")
     old=translate_quality_role(role,QualityTranslationContext("threshold_development",completed_quality=(CompletedQualityExposure(date(2026,8,1),"AN"),)))
     assert old.quality_type=="AT" and not old.reason_code.endswith("completed_history_considered")
+
+def test_single_translated_quality_instantiation_reuses_v1_adapters_without_schedule_mutation():
+    role=DatedTrainingRole(date(2026,9,20),"quality",60,"threshold_development","source","provisional",(),"q")
+    at=translate_quality_role(role,QualityTranslationContext("threshold_development",True,date(2026,9,10),"move"))
+    concrete=instantiate_translated_quality_role(at,experience="experienced",race_type="head_5k")
+    assert concrete.physiological_band=="AT" and concrete.prescription["total_minutes"]<=60 and (concrete.date,concrete.placement_id,concrete.user_fixed,concrete.original_date)==(role.date,"q",True,date(2026,9,10))
+    for race in ("head_5k","erg_2k","sprint_1k"):
+        tr=translate_quality_role(role,QualityTranslationContext("race_specific_preparation"))
+        assert instantiate_translated_quality_role(tr,experience="experienced",race_type=race).physiological_band=="TR"
+    pp=translate_quality_role(role,QualityTranslationContext("race_specific_preparation",explicit_intent="SPRINT_POWER"))
+    assert instantiate_translated_quality_role(pp,experience="experienced").physiological_band=="PP"
+    an=replace(pp,quality_type="AN")
+    try: instantiate_translated_quality_role(an,experience="experienced")
+    except ValueError as error: assert str(error)=="an_concrete_adapter_not_available"
+    else: assert False
     try: translate_quality_role(role,QualityTranslationContext("post_race_recovery"))
     except ValueError as error: assert str(error)=="quality_not_valid_for_phase"
     else: assert False

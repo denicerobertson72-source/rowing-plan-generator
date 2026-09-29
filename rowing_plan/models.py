@@ -236,6 +236,15 @@ class TranslatedTrainingRole:
     original_date: date|None=None; override_id: str|None=None; reason_code: str=""
 
 @dataclass(frozen=True)
+class ConcreteTrainingRole:
+    placement_id: str; source_id: str; date: date; upstream_role: Literal["quality"]
+    quality_type: Literal["AT","TR","AN","PP"]; phase_id: str; race_type: str
+    planned_duration_minutes: int; provenance: Literal["fixed","frozen","provisional"]
+    user_fixed: bool; original_date: date|None; override_id: str|None
+    selector_role: str; archetype_id: str; physiological_band: str
+    prescription: Mapping[str,Any]; fingerprint: Mapping[str,Any]; pre_transformation: bool=True
+
+@dataclass(frozen=True)
 class ActiveWindowState:
     window_start: date; window_end: date
     frozen_placements: tuple[WindowPlacement,...]; provisional_placements: tuple[WindowPlacement,...]

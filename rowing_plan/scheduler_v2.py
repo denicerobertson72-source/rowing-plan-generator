@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 from time import perf_counter
 from dataclasses import replace
-from .models import ActiveWindowState, CandidateDateResult, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, LocalRepairResult, QualityTranslationContext, RepairChange, RepairReconstructionResult, RepairScope, ReopenedPlacement, RollingPlacementResult, ScheduleChangeResult, TargetConsequence, TargetCredit, TrainingDemand, TrainingDoseTarget, TranslatedTrainingRole, UserScheduleOverride, V2DemandPlan, WindowPlacement
+from .models import ActiveWindowState, CandidateDateResult, ConcreteTrainingRole, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, LocalRepairResult, QualityTranslationContext, RepairChange, RepairReconstructionResult, RepairScope, ReopenedPlacement, RollingPlacementResult, ScheduleChangeResult, TargetConsequence, TargetCredit, TrainingDemand, TrainingDoseTarget, TranslatedTrainingRole, UserScheduleOverride, V2DemandPlan, WindowPlacement
+from .session_selection import select_and_instantiate
 from .periodization import build_season_phases, parse, race_dates
 
 _ROLE={"LONG_AEROBIC":("long_aerobic","aerobic",0),"AEROBIC_BASE":("aerobic_base","aerobic",0),"AEROBIC_STRENGTH":("aerobic_strength","aerobic",1),"THRESHOLD":("threshold","quality",1),"RACE_PACE":("race_pace","quality",1),"SPRINT_POWER":("sprint_power","quality",1),"RECOVERY":("recovery","none",0),"TECHNIQUE_EASY":("aerobic_base","aerobic",0)}
@@ -27,6 +28,17 @@ def translate_quality_role(role: DatedTrainingRole, context: QualityTranslationC
 
 def translate_quality_roles(roles: tuple[DatedTrainingRole,...], contexts: dict[str,QualityTranslationContext]) -> tuple[TranslatedTrainingRole,...]:
     return tuple(translate_quality_role(item,contexts[item.placement_id]) for item in sorted(roles,key=lambda item:(item.date,item.placement_id)) if item.role=="quality")
+
+def instantiate_translated_quality_role(translated: TranslatedTrainingRole, *, experience: str, race_type: str="general", mode: str="erg", preference: str="varied", history=()) -> ConcreteTrainingRole:
+    """Reuse V1 concrete selection for one immutable translated quality role."""
+    adapters={"AT":"THRESHOLD","TR":"RACE_PACE","PP":"SPRINT_POWER"}
+    if translated.quality_type=="AN": raise ValueError("an_concrete_adapter_not_available")
+    selector_role=adapters[translated.quality_type]
+    selected=select_and_instantiate(role=selector_role,experience=experience,phase=translated.phase_id,race_type=race_type,mode=mode,minutes=translated.planned_duration_minutes,preference=preference,history=list(history))
+    if not selected: raise ValueError("no_eligible_quality_archetype")
+    if selected["total_minutes"]>translated.planned_duration_minutes: raise ValueError("concrete_duration_exceeds_reserved_capacity")
+    archetype=selected["archetype"]
+    return ConcreteTrainingRole(translated.placement_id,translated.source_id,translated.date,"quality",translated.quality_type,translated.phase_id,race_type,translated.planned_duration_minutes,translated.provenance,translated.user_fixed,translated.original_date,translated.override_id,selector_role,archetype["archetype_id"],archetype["primary_band"],selected,selected["fingerprint"])
 
 def _rolling_solver_windows(start: date, end: date) -> tuple[tuple[date,date],...]:
     """The concrete windows used by ``solve_v2_rolling_non_rowing``."""
