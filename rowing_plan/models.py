@@ -261,6 +261,19 @@ class ConcreteQualitySequenceResult:
     failed_placement_id: str|None=None; failed_date: date|None=None; failed_quality_type: str|None=None; failure_reason: str|None=None
 
 @dataclass(frozen=True)
+class V2SessionMaterializationRequest:
+    """One final V2 fact translated into the existing session dictionary shape."""
+    role: str; date: date; planned_duration_minutes: int; phase_id: str
+    placement_id: str=""; source_id: str=""; fixed: bool=False; mode: str|None=None
+    race_type: str="general"; race_priority: str|None=None; fact: Mapping[str,Any]|None=None
+    concrete_quality: ConcreteTrainingRole|None=None; serialized_session: Mapping[str,Any]|None=None
+
+@dataclass(frozen=True)
+class V2SessionMaterializationResult:
+    success: bool; session: Mapping[str,Any]|None=None; failure_reason: str|None=None
+    calendar_only: bool=False; reason_code: str|None=None
+
+@dataclass(frozen=True)
 class ActiveWindowState:
     window_start: date; window_end: date
     frozen_placements: tuple[WindowPlacement,...]; provisional_placements: tuple[WindowPlacement,...]
