@@ -322,21 +322,196 @@ def test_live_cohort_eligibility_and_pure_precedence(monkeypatch):
     assert main.resolve_authenticated_athlete_planner(athlete_id=athlete, internal_planner_choice=main.PlannerChoice.V2, live_enabled=True, cohort=cohort) is main.PlannerChoice.V2
 
 
-def test_live_configuration_cannot_change_d1_public_generation_paths(monkeypatch):
+def test_live_configuration_keeps_generic_generation_v1_but_routes_an_owned_cohort_athlete_to_v2(monkeypatch):
     athlete_profile = synthetic_profile()
     monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ENABLED", "true")
     monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", "550e8400-e29b-41d4-a716-446655440000")
-    calls: list[str] = []
-    original = main.generate_plan
-    monkeypatch.setattr(main, "generate_plan", lambda *args, **kwargs: (calls.append("v1"), original(*args, **kwargs))[1])
+    calls: list[main.PlannerChoice] = []
+    original = main.execute_selected_planner
+    monkeypatch.setattr(main, "execute_selected_planner", lambda **kwargs: (calls.append(kwargs["choice"]), original(**kwargs))[1])
     with TemporaryDirectory() as directory:
         client, repository, previous = _client_for_database(Path(directory) / "live-d1.sqlite3")
         try:
             generic = client.post("/api/v1/plans/generate", json={"athlete_profile": athlete_profile})
-            athlete_id = repository.create(athlete_profile, "development-user")
+            athlete_id = repository.create(_v2_ready_profile(), "development-user")
             monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", athlete_id)
             regeneration = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
         finally:
             REPOSITORIES._instance = previous
     assert generic.status_code == regeneration.status_code == 200
-    assert calls == ["v1", "v1"]
+    assert calls == [main.PlannerChoice.V1, main.PlannerChoice.V2]
+    assert "v2_diagnostics" not in generic.json()["plan"]
+    assert regeneration.json()["plan"]["v2_diagnostics"]["scheduler_version"] == "v2"
+
+
+@pytest.mark.parametrize(("live_enabled", "cohort_member"), [(False, True), (True, False)])
+def test_authenticated_live_routing_requires_both_global_flag_and_verified_cohort_membership(monkeypatch, live_enabled, cohort_member):
+    calls: list[main.PlannerChoice] = []
+    original = main.execute_selected_planner
+    monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ENABLED", "true" if live_enabled else "false")
+    monkeypatch.setattr(main, "execute_selected_planner", lambda **kwargs: (calls.append(kwargs["choice"]), original(**kwargs))[1])
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "live-cohort.sqlite3")
+        try:
+            athlete_id = repository.create(synthetic_profile(), "development-user")
+            monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", athlete_id if cohort_member else "550e8400-e29b-41d4-a716-446655440000")
+            response = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+        finally:
+            REPOSITORIES._instance = previous
+    assert response.status_code == 200
+    assert calls == [main.PlannerChoice.V1]
+
+
+def test_live_v2_expected_failure_uses_existing_safe_fallback_once_and_logs_its_mode(monkeypatch, caplog):
+    from rowing_plan import planner_v2
+
+    calls: list[main.PlannerChoice] = []
+    original = main.execute_selected_planner
+    monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ENABLED", "true")
+    monkeypatch.setattr(planner_v2, "generate_plan_v2", lambda *args, **kwargs: (_ for _ in ()).throw(planner_v2.V2PlanningError("v2_schedule_infeasible", "fixture")))
+    monkeypatch.setattr(main, "execute_selected_planner", lambda **kwargs: (calls.append(kwargs["choice"]), original(**kwargs))[1])
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "live-fallback.sqlite3")
+        try:
+            athlete_id = repository.create(synthetic_profile(), "development-user")
+            monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", athlete_id)
+            with caplog.at_level("INFO"):
+                response = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            latest = repository.latest_plan_for_athlete(athlete_id)
+        finally:
+            REPOSITORIES._instance = previous
+    assert response.status_code == 200
+    assert calls == [main.PlannerChoice.V2, main.PlannerChoice.V1]
+    assert latest and latest["version_number"] == 1
+    assert response.json()["plan"]["planner_routing"] == {"attempted_planner": "v2", "final_planner": "v1", "fallback_reason_code": "v2_schedule_infeasible"}
+    assert "mode=v2_live_optin_fallback" in caplog.text
+
+
+@pytest.mark.parametrize("optout", ["global_off", "cohort_removal"])
+def test_future_v2_authority_blocks_live_fallback_and_v2_to_v1_optout_before_any_save(monkeypatch, caplog, optout):
+    from rowing_plan import planner_v2
+
+    authority_plan = {"sessions": [], "v2_diagnostics": {"scheduler_version": "v2", "placement_authority": [{"date": "2099-01-01", "user_fixed": True, "override_id": "athlete-choice"}], "overrides": []}}
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "future-authority.sqlite3")
+        try:
+            athlete_id = repository.create(synthetic_profile(), "development-user")
+            repository.save_plan(athlete_id, authority_plan)
+            original = main.execute_selected_planner
+            calls: list[main.PlannerChoice] = []
+            monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ENABLED", "true")
+            monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", athlete_id)
+            monkeypatch.setattr(planner_v2, "generate_plan_v2", lambda *args, **kwargs: (_ for _ in ()).throw(planner_v2.V2PlanningError("v2_schedule_infeasible", "fixture")))
+            monkeypatch.setattr(main, "execute_selected_planner", lambda **kwargs: (calls.append(kwargs["choice"]), original(**kwargs))[1])
+            with caplog.at_level("WARNING"):
+                live_failure = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            assert live_failure.status_code == 409
+            assert live_failure.json()["detail"]["error_code"] == "v2_fallback_blocked_by_future_authority"
+            assert calls == [main.PlannerChoice.V2]
+            assert repository.latest_plan_for_athlete(athlete_id)["version_number"] == 1
+            calls.clear()
+            if optout == "global_off":
+                monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ENABLED", "false")
+            else:
+                monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", "")
+            transition_block = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            assert transition_block.status_code == 409
+            assert transition_block.json()["detail"]["error_code"] == "v2_future_authority_requires_resolution"
+            assert calls == []
+            assert repository.latest_plan_for_athlete(athlete_id)["version_number"] == 1
+        finally:
+            REPOSITORIES._instance = previous
+    assert "future_authority_blocks_v1_transition=true" in caplog.text
+
+
+@pytest.mark.parametrize("optout", ["global_off", "cohort_removal"])
+def test_safe_v2_to_v1_optout_preserves_completed_history_and_versions_once(monkeypatch, optout):
+    monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ENABLED", "true")
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "safe-optout.sqlite3")
+        try:
+            athlete_id = repository.create(_v2_ready_profile(), "development-user")
+            monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", athlete_id)
+            first = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            assert first.status_code == 200
+            session = first.json()["plan"]["sessions"][0]
+            session_key = f'{session["date"]}:{session.get("session_id")}:{session.get("mode")}'
+            repository.save_log(first.json()["plan_id"], session_key, {"status": "completed"})
+            if optout == "global_off":
+                monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ENABLED", "false")
+            else:
+                monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", "")
+            second = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            latest = repository.latest_plan_for_athlete(athlete_id)
+        finally:
+            REPOSITORIES._instance = previous
+    assert second.status_code == 200
+    assert "v2_diagnostics" not in second.json()["plan"]
+    assert latest and latest["version_number"] == 2
+    assert any(item.get("date") == session["date"] and item.get("session_id") == session["session_id"] and item.get("mode") == session["mode"] for item in second.json()["plan"]["sessions"])
+
+
+def test_unowned_allowlisted_athlete_is_rejected_before_any_planner_selection(monkeypatch):
+    calls: list[main.PlannerChoice] = []
+    original = main.execute_selected_planner
+    monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ENABLED", "true")
+    monkeypatch.setattr(main, "execute_selected_planner", lambda **kwargs: (calls.append(kwargs["choice"]), original(**kwargs))[1])
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "live-ownership.sqlite3")
+        try:
+            athlete_id = repository.create(_v2_ready_profile(), "owner-user")
+            monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", athlete_id)
+            main.app.dependency_overrides[main.current_user_id] = lambda: "other-user"
+            response = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+        finally:
+            main.app.dependency_overrides.pop(main.current_user_id, None)
+            REPOSITORIES._instance = previous
+    assert response.status_code == 403
+    assert calls == []
+
+
+def test_live_v2_does_not_run_a_second_shadow_execution(monkeypatch):
+    calls: list[main.PlannerChoice] = []
+    original = main.execute_selected_planner
+    monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ENABLED", "true")
+    monkeypatch.setenv("V2_PLANNER_SHADOW_ENABLED", "true")
+    monkeypatch.setattr(main, "execute_selected_planner", lambda **kwargs: (calls.append(kwargs["choice"]), original(**kwargs))[1])
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "live-no-shadow.sqlite3")
+        try:
+            athlete_id = repository.create(_v2_ready_profile(), "development-user")
+            monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", athlete_id)
+            response = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+        finally:
+            REPOSITORIES._instance = previous
+    assert response.status_code == 200
+    assert calls == [main.PlannerChoice.V2]
+
+
+def test_realistic_v1_to_v2_to_v1_transition_preserves_completed_history_and_versions(monkeypatch):
+    """Live cohort routing changes only the next authoritative PlanVersion."""
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "live-transition.sqlite3")
+        try:
+            athlete_id = repository.create(_v2_ready_profile(), "development-user")
+            monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ENABLED", "false")
+            first_v1 = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            assert first_v1.status_code == 200
+            completed = next(item for item in first_v1.json()["plan"]["sessions"] if item.get("quality_minutes", 0) == 0)
+            session_key = f'{completed["date"]}:{completed.get("session_id")}:{completed.get("mode")}'
+            repository.save_log(first_v1.json()["plan_id"], session_key, {"status": "completed"})
+            monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ENABLED", "true")
+            monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", athlete_id)
+            first_v2 = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            second_v2 = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", "")
+            final_v1 = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            latest = repository.latest_plan_for_athlete(athlete_id)
+        finally:
+            REPOSITORIES._instance = previous
+    assert first_v2.status_code == second_v2.status_code == final_v1.status_code == 200
+    assert first_v2.json()["plan"]["v2_diagnostics"]["scheduler_version"] == "v2"
+    assert second_v2.json()["plan"]["v2_diagnostics"]["scheduler_version"] == "v2"
+    assert "v2_diagnostics" not in final_v1.json()["plan"]
+    assert latest and latest["version_number"] == 4
+    assert any(item.get("date") == completed["date"] and item.get("session_id") == completed["session_id"] and item.get("mode") == completed["mode"] for item in final_v1.json()["plan"]["sessions"])

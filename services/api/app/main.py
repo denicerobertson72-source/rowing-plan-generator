@@ -175,12 +175,12 @@ def run_v2_shadow(*, profile: dict, bands: list[dict], power: dict, locked_sessi
         return ShadowPlannerResult(True, False, "unexpected", "unexpected_v2_exception")
 
 
-def log_planner_generation(*, authoritative_planner: str, shadow: ShadowPlannerResult | None = None, fallback_used: bool = False, fallback_reason_code: str | None = None) -> None:
+def log_planner_generation(*, authoritative_planner: str, shadow: ShadowPlannerResult | None = None, fallback_used: bool = False, fallback_reason_code: str | None = None, mode: str | None = None) -> None:
     """Emit non-sensitive routing telemetry without serializing plans or profiles."""
 
-    if shadow is None and not fallback_used and authoritative_planner == "v1":
+    if shadow is None and not fallback_used and authoritative_planner == "v1" and mode is None:
         return
-    logger.info("planner_generation authoritative_planner=%s shadow_planner=%s shadow_attempted=%s shadow_success=%s shadow_failure_category=%s shadow_failure_code=%s shadow_invariants=%s shadow_target_statuses=%s fallback_used=%s fallback_reason_code=%s", authoritative_planner, "v2" if shadow else None, shadow.attempted if shadow else False, shadow.success if shadow else None, shadow.failure_category if shadow else None, shadow.failure_reason_code if shadow else None, shadow.invariants if shadow else (), shadow.target_statuses if shadow else (), fallback_used, fallback_reason_code)
+    logger.info("planner_generation mode=%s authoritative_planner=%s shadow_planner=%s shadow_attempted=%s shadow_success=%s shadow_failure_category=%s shadow_failure_code=%s shadow_invariants=%s shadow_target_statuses=%s fallback_used=%s fallback_reason_code=%s", mode, authoritative_planner, "v2" if shadow else None, shadow.attempted if shadow else False, shadow.success if shadow else None, shadow.failure_category if shadow else None, shadow.failure_reason_code if shadow else None, shadow.invariants if shadow else (), shadow.target_statuses if shadow else (), fallback_used, fallback_reason_code)
 
 
 def resolve_planner_choice(internal_planner_choice: PlannerChoice | None = None) -> PlannerChoice:
@@ -252,11 +252,13 @@ async def prevent_dynamic_api_caching(request, call_next):
     if request.url.path.startswith("/api/v1/") and request.method=="GET": response.headers["Cache-Control"]="no-store"
     return response
 
-def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: PlannerChoice | None = None, prior_plan: dict | None = None) -> dict:
+def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: PlannerChoice | None = None, server_authorized_planner_choice: PlannerChoice | None = None, prior_plan: dict | None = None, routing_mode: str | None = None) -> dict:
     """Run shared pre-planner work, then the selected in-memory planner.
 
-    ``internal_planner_choice`` is intentionally unavailable to public request
-    schemas and routes. Public callers therefore always resolve to V1.
+    ``internal_planner_choice`` and ``server_authorized_planner_choice`` are
+    intentionally unavailable to public request schemas. The latter is only
+    supplied after the authenticated route has verified athlete ownership and
+    resolved server-side live-cohort eligibility.
     """
     profile = normalize_recurring_schedule_for_planning(request.athlete_profile)
     errors = validate_profile(profile)
@@ -264,7 +266,9 @@ def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: Plann
         raise HTTPException(status_code=422, detail={"error_code":"profile_validation","validation_errors": errors,"diagnostic":{"conflict_type":"profile_validation","reason":errors[0],"validation_rule":"profile_validation"}})
     bands = build_intensity_profile(profile, CONFIG)
     power = build_power_profile(profile, CONFIG)
-    choice = resolve_planner_choice(internal_planner_choice)
+    if internal_planner_choice is not None and server_authorized_planner_choice is not None:
+        raise PlannerRoutingError("ambiguous_planner_choice")
+    choice = server_authorized_planner_choice or resolve_planner_choice(internal_planner_choice)
     fallback_reason_code = None
     try:
         plan = execute_selected_planner(choice=choice, profile=profile, bands=bands, power=power, locked_sessions=request.locked_sessions)
@@ -281,12 +285,13 @@ def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: Plann
     if hard_errors:
         raise HTTPException(status_code=422, detail={"error_code":"hard_constraint","constraint_errors":hard_errors,"planning_conflicts":hard_errors,"diagnostic":{"conflict_type":"hard_constraint","reason":hard_errors[0],"validation_rule":"hard_constraint_errors"}})
     if fallback_reason_code:
-        log_planner_generation(authoritative_planner="v1", fallback_used=True, fallback_reason_code=fallback_reason_code)
+        fallback_mode = "v2_live_optin_fallback" if routing_mode == "v2_live_optin" else routing_mode
+        log_planner_generation(authoritative_planner="v1", fallback_used=True, fallback_reason_code=fallback_reason_code, mode=fallback_mode)
     elif choice is PlannerChoice.V1 and v2_planner_shadow_enabled():
         shadow = run_v2_shadow(profile=profile, bands=bands, power=power, locked_sessions=request.locked_sessions, v1_plan=plan)
         log_planner_generation(authoritative_planner="v1", shadow=shadow)
     elif choice is PlannerChoice.V2:
-        log_planner_generation(authoritative_planner="v2")
+        log_planner_generation(authoritative_planner="v2", mode=routing_mode or "v2_internal")
     return plan
 
 def owned_athlete(athlete_id: str, user_id: str) -> dict:
@@ -541,20 +546,36 @@ def update_athlete(athlete_id: str, request: AthleteUpdateRequest, user_id: str 
 def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: str = Depends(current_user_id)) -> PlanResponse:
     profile=owned_athlete(athlete_id,user_id)
     stage="locked_session_loading"; planversion_creation_started=False
+    choice=PlannerChoice.V1
     try:
         previous=REPOSITORIES.latest_plan_for_athlete(athlete_id)
         locked=list(request.locked_sessions)
         if previous:
             completed={entry["session_key"] for entry in REPOSITORIES.logs_for_plan(previous["plan_id"]) if entry["payload"].get("status")=="completed"}
             locked.extend(session for session in previous["plan"].get("sessions",[]) if f'{session["date"]}:{session.get("session_id")}:{session.get("mode")}' in completed)
+        choice=resolve_authenticated_athlete_planner(athlete_id=athlete_id)
+        prior_plan=previous["plan"] if previous else None
+        if choice is PlannerChoice.V1 and not v1_fallback_allowed(prior_plan):
+            logger.warning("planner_generation mode=v2_live_optin_transition_blocked future_authority_blocks_v1_transition=true")
+            raise HTTPException(status_code=409, detail={"error_code":"v2_future_authority_requires_resolution", "diagnostic":{"conflict_type":"planner_transition", "reason":"v2_future_authority_requires_resolution"}})
         stage="plan_generation"
-        plan=build_plan(PlanGenerationRequest(athlete_profile=profile, locked_sessions=locked), prior_plan=previous["plan"] if previous else None)
+        plan=build_plan(
+            PlanGenerationRequest(athlete_profile=profile, locked_sessions=locked),
+            server_authorized_planner_choice=choice,
+            prior_plan=prior_plan,
+            routing_mode="v2_live_optin" if choice is PlannerChoice.V2 else None,
+        )
     except HTTPException as error:
         detail=error.detail if isinstance(error.detail, dict) else {}
         code=detail.get("error_code", "planning_rejected" if error.status_code == 422 else "request_rejected")
         diagnostic=generation_rejection_diagnostic(error.detail, code)
         logger.warning("plan_generation_failed endpoint=athlete_regenerate status=%s code=%s conflict_type=%s reason=%s activity_type=%s scheduling_status=%s requested_frequency=%s candidate_days=%s prohibited_days=%s fixed_days=%s week_start=%s validation_rule=%s", error.status_code, code, diagnostic.get("conflict_type","request_rejected"), diagnostic.get("reason","request_rejected"), diagnostic.get("activity_type"), diagnostic.get("scheduling_status"), diagnostic.get("requested_frequency"), diagnostic.get("candidate_days"), diagnostic.get("prohibited_days"), diagnostic.get("fixed_days"), diagnostic.get("week_start"), diagnostic.get("validation_rule"))
         raise
+    except PlannerRoutingError as error:
+        if choice is PlannerChoice.V2 and error.reason_code in _V2_FALLBACK_ELIGIBLE and not v1_fallback_allowed(previous["plan"] if previous else None):
+            logger.warning("planner_generation mode=v2_live_optin_transition_blocked future_authority_blocks_v1_transition=true")
+            raise HTTPException(status_code=409, detail={"error_code":"v2_fallback_blocked_by_future_authority", "diagnostic":{"conflict_type":"planner_transition", "reason":"v2_fallback_blocked_by_future_authority"}}) from error
+        raise unexpected_generation_error(error, profile, athlete_id, stage, planversion_creation_started) from error
     except Exception as error:
         raise unexpected_generation_error(error, profile, athlete_id, stage, planversion_creation_started) from error
     try:
