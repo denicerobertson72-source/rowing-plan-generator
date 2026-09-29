@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import date, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -59,6 +60,88 @@ def v2_planner_internal_enabled() -> bool:
     """Permission for test/internal V2 routing; never a public traffic switch."""
 
     return os.getenv("V2_PLANNER_INTERNAL_ENABLED", "").strip().lower() in _TRUE_ENV_VALUES
+
+
+def v2_planner_shadow_enabled() -> bool:
+    """Permit diagnostic V2 shadow execution; never changes public routing."""
+
+    return os.getenv("V2_PLANNER_SHADOW_ENABLED", "").strip().lower() in _TRUE_ENV_VALUES
+
+
+@dataclass(frozen=True)
+class ShadowPlannerResult:
+    attempted: bool
+    success: bool
+    failure_category: str | None = None
+    failure_reason_code: str | None = None
+    invariants: tuple[tuple[str, bool], ...] = ()
+    target_statuses: tuple[tuple[str, str], ...] = ()
+
+
+def compare_planner_invariants(v1_plan: dict, v2_plan: dict, *, locked_sessions=()) -> tuple[tuple[str, bool], ...]:
+    """Compare only external hard facts; never rank intentionally different plans."""
+
+    from rowing_plan.planner_v2 import validate_v2_plan_contract
+
+    fields = {"date", "day", "session_id", "mode", "title", "band", "total_cardio_minutes", "phase", "structure"}
+    v2_sessions = tuple(v2_plan.get("sessions", ()))
+    v2_keys = {(item.get("date"), item.get("session_id"), item.get("mode")) for item in v2_sessions}
+    v1_races = {(item.get("date"), item.get("session_id"), item.get("mode")) for item in v1_plan.get("sessions", ()) if item.get("session_id") == "RACE"}
+    v1_private_dates = {item.get("date") for item in v1_plan.get("sessions", ()) if item.get("title") == "Private coaching"}
+    v2_private_dates = {item.get("date") for item in v2_sessions if item.get("title") == "Private coaching"}
+    v1_dates = tuple(item.get("date") for item in v1_plan.get("calendar_days", ()))
+    v2_dates = tuple(item.get("date") for item in v2_plan.get("calendar_days", ()))
+    rest_dates = {item.get("date") for item in v2_plan.get("calendar_days", ()) if item.get("designated_rest")}
+    return (
+        ("v2_contract_valid", validate_v2_plan_contract(v2_plan, authoritative_sessions=locked_sessions) is None),
+        ("required_session_fields_complete", all(fields <= set(item) for item in v2_sessions)),
+        ("external_session_keys_unique", len(v2_keys) == len(v2_sessions)),
+        ("race_commitments_preserved", v1_races <= v2_keys),
+        ("fixed_private_commitments_preserved", v1_private_dates <= v2_private_dates),
+        ("completed_locked_sessions_preserved", all((item.get("date"), item.get("session_id"), item.get("mode")) in v2_keys for item in locked_sessions)),
+        ("calendar_date_range_valid", bool(v2_dates) and (not v1_dates or (v1_dates[0], v1_dates[-1]) == (v2_dates[0], v2_dates[-1]))),
+        ("designated_rest_calendar_only", not any(item.get("date") in rest_dates for item in v2_sessions)),
+        ("no_rest_session_emitted", not any(item.get("session_id") == "REST" for item in v2_sessions)),
+        ("materialization_complete", all(fields <= set(item) for item in v2_sessions)),
+    )
+
+
+def _shadow_target_statuses(v2_plan: dict) -> tuple[tuple[str, str], ...]:
+    """Expose V2 target state descriptively, without comparing it to V1 totals."""
+
+    records = []
+    for window in v2_plan.get("v2_diagnostics", {}).get("rolling_targets", ()):
+        if not isinstance(window, dict):
+            continue
+        suffix = window.get("window_end", "")
+        strength = window.get("strength", {})
+        if isinstance(strength, dict) and strength.get("status"):
+            records.append((f"strength:{suffix}", str(strength["status"])))
+        for target in window.get("rowing_targets", ()):
+            if isinstance(target, dict) and target.get("category") and target.get("status"):
+                records.append((f"{target['category']}:{suffix}", str(target["status"])))
+    return tuple(sorted(records))
+
+
+def run_v2_shadow(*, profile: dict, bands: list[dict], power: dict, locked_sessions: list[dict], v1_plan: dict) -> ShadowPlannerResult:
+    """Build V2 read-only beside authoritative V1; no exception reaches users."""
+
+    try:
+        shadow_plan = execute_selected_planner(choice=PlannerChoice.V2, profile=profile, bands=bands, power=power, locked_sessions=locked_sessions)
+        return ShadowPlannerResult(True, True, invariants=compare_planner_invariants(v1_plan, shadow_plan, locked_sessions=locked_sessions), target_statuses=_shadow_target_statuses(shadow_plan))
+    except PlannerRoutingError as error:
+        category = "plan_contract" if error.reason_code == "v2_plan_contract_failed" else "expected_v2_failure"
+        return ShadowPlannerResult(True, False, category, error.reason_code)
+    except Exception:
+        return ShadowPlannerResult(True, False, "unexpected", "unexpected_v2_exception")
+
+
+def log_planner_generation(*, authoritative_planner: str, shadow: ShadowPlannerResult | None = None, fallback_used: bool = False, fallback_reason_code: str | None = None) -> None:
+    """Emit non-sensitive routing telemetry without serializing plans or profiles."""
+
+    if shadow is None and not fallback_used and authoritative_planner == "v1":
+        return
+    logger.info("planner_generation authoritative_planner=%s shadow_planner=%s shadow_attempted=%s shadow_success=%s shadow_failure_category=%s shadow_failure_code=%s shadow_invariants=%s shadow_target_statuses=%s fallback_used=%s fallback_reason_code=%s", authoritative_planner, "v2" if shadow else None, shadow.attempted if shadow else False, shadow.success if shadow else None, shadow.failure_category if shadow else None, shadow.failure_reason_code if shadow else None, shadow.invariants if shadow else (), shadow.target_statuses if shadow else (), fallback_used, fallback_reason_code)
 
 
 def resolve_planner_choice(internal_planner_choice: PlannerChoice | None = None) -> PlannerChoice:
@@ -143,11 +226,13 @@ def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: Plann
     bands = build_intensity_profile(profile, CONFIG)
     power = build_power_profile(profile, CONFIG)
     choice = resolve_planner_choice(internal_planner_choice)
+    fallback_reason_code = None
     try:
         plan = execute_selected_planner(choice=choice, profile=profile, bands=bands, power=power, locked_sessions=request.locked_sessions)
     except PlannerRoutingError as error:
         if choice is not PlannerChoice.V2 or error.reason_code not in _V2_FALLBACK_ELIGIBLE or not v1_fallback_allowed(prior_plan):
             raise
+        fallback_reason_code = error.reason_code
         plan = execute_selected_planner(choice=PlannerChoice.V1, profile=profile, bands=bands, power=power, locked_sessions=request.locked_sessions)
         # Add routing provenance only for an actual V2-to-V1 recovery; pure
         # public V1 output stays byte/behavior compatible.
@@ -156,6 +241,13 @@ def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: Plann
     hard_errors = hard_constraint_errors(plan, profile)
     if hard_errors:
         raise HTTPException(status_code=422, detail={"error_code":"hard_constraint","constraint_errors":hard_errors,"planning_conflicts":hard_errors,"diagnostic":{"conflict_type":"hard_constraint","reason":hard_errors[0],"validation_rule":"hard_constraint_errors"}})
+    if fallback_reason_code:
+        log_planner_generation(authoritative_planner="v1", fallback_used=True, fallback_reason_code=fallback_reason_code)
+    elif choice is PlannerChoice.V1 and v2_planner_shadow_enabled():
+        shadow = run_v2_shadow(profile=profile, bands=bands, power=power, locked_sessions=request.locked_sessions, v1_plan=plan)
+        log_planner_generation(authoritative_planner="v1", shadow=shadow)
+    elif choice is PlannerChoice.V2:
+        log_planner_generation(authoritative_planner="v2")
     return plan
 
 def owned_athlete(athlete_id: str, user_id: str) -> dict:

@@ -203,3 +203,89 @@ def test_completed_locked_history_is_carried_by_v2_and_does_not_block_fallback(m
     plan = main.build_plan(PlanGenerationRequest(athlete_profile=profile, locked_sessions=[locked]), internal_planner_choice=main.PlannerChoice.V2)
     assert next(item for item in plan["sessions"] if item["session_id"] == "completed-row") == locked
     assert main.v1_fallback_allowed({"v2_diagnostics": {"scheduler_version": "v2", "placement_authority": [], "overrides": []}})
+
+
+def test_shadow_flag_off_does_not_execute_v2(monkeypatch):
+    monkeypatch.setenv("V2_PLANNER_SHADOW_ENABLED", "false")
+    monkeypatch.setattr(main, "run_v2_shadow", lambda **_: (_ for _ in ()).throw(AssertionError("shadow must be off")))
+    plan = main.build_plan(PlanGenerationRequest(athlete_profile=synthetic_profile()))
+    assert "v2_diagnostics" not in plan and "planner_routing" not in plan
+
+
+@pytest.mark.parametrize("value, expected", [(None, False), ("false", False), ("0", False), ("true", True), ("1", True), ("yes", True)])
+def test_shadow_flag_parsing_is_independent_from_internal_v2_permission(monkeypatch, value, expected):
+    if value is None:
+        monkeypatch.delenv("V2_PLANNER_SHADOW_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("V2_PLANNER_SHADOW_ENABLED", value)
+    monkeypatch.setenv("V2_PLANNER_INTERNAL_ENABLED", "false")
+    assert main.v2_planner_shadow_enabled() is expected
+    assert main.v2_planner_internal_enabled() is False
+
+
+def test_public_v1_shadow_success_saves_only_v1_once(monkeypatch):
+    calls: list[main.PlannerChoice] = []
+    original = main.execute_selected_planner
+
+    def tracked(**kwargs):
+        calls.append(kwargs["choice"])
+        return original(**kwargs)
+
+    monkeypatch.setenv("V2_PLANNER_SHADOW_ENABLED", "true")
+    monkeypatch.setattr(main, "execute_selected_planner", tracked)
+    request = PlanGenerationRequest(athlete_profile=_v2_ready_profile())
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "shadow-success.sqlite3")
+        try:
+            response = client.post("/api/v1/plans/generate", json=request.model_dump())
+            saved = repository.get_plan(response.json()["plan_id"])
+        finally:
+            REPOSITORIES._instance = previous
+    assert response.status_code == 200
+    assert calls == [main.PlannerChoice.V1, main.PlannerChoice.V2]
+    assert saved and saved["version_number"] == 1 and saved["plan"] == response.json()["plan"]
+    assert "v2_diagnostics" not in response.json()["plan"] and "planner_routing" not in response.json()["plan"]
+
+
+@pytest.mark.parametrize("failure, category, code", [(main.PlannerRoutingError("v2_materialization_failed"), "expected_v2_failure", "v2_materialization_failed"), (RuntimeError("invariant"), "unexpected", "unexpected_v2_exception")])
+def test_shadow_failures_are_non_authoritative(monkeypatch, failure, category, code):
+    original = main.execute_selected_planner
+
+    def shadow_failure(**kwargs):
+        if kwargs["choice"] is main.PlannerChoice.V2:
+            raise failure
+        return original(**kwargs)
+
+    monkeypatch.setenv("V2_PLANNER_SHADOW_ENABLED", "true")
+    monkeypatch.setattr(main, "execute_selected_planner", shadow_failure)
+    result = main.run_v2_shadow(profile=synthetic_profile(), bands=[], power={}, locked_sessions=[], v1_plan={"sessions": [], "calendar_days": []})
+    assert result == main.ShadowPlannerResult(True, False, category, code)
+    # The public route remains V1 and does not gain fallback metadata.
+    plan = main.build_plan(PlanGenerationRequest(athlete_profile=synthetic_profile()))
+    assert "planner_routing" not in plan
+
+
+def test_shadow_comparison_is_deterministic_and_does_not_compare_schedule_equality(monkeypatch):
+    monkeypatch.setenv("V2_PLANNER_INTERNAL_ENABLED", "true")
+    v2 = main.build_plan(PlanGenerationRequest(athlete_profile=_v2_ready_profile()), internal_planner_choice=main.PlannerChoice.V2)
+    v1 = main.build_plan(PlanGenerationRequest(athlete_profile=_v2_ready_profile()))
+    first = main.compare_planner_invariants(v1, v2)
+    second = main.compare_planner_invariants(v1, v2)
+    names = {name for name, _ in first}
+    assert first == second and {"v2_contract_valid", "external_session_keys_unique", "no_rest_session_emitted", "materialization_complete"} <= names
+    assert not {"same_training_date", "same_session_count", "winner"} & names
+
+
+def test_explicit_v2_does_not_create_a_second_shadow_copy(monkeypatch):
+    calls: list[main.PlannerChoice] = []
+    original = main.execute_selected_planner
+
+    def tracked(**kwargs):
+        calls.append(kwargs["choice"])
+        return original(**kwargs)
+
+    monkeypatch.setenv("V2_PLANNER_INTERNAL_ENABLED", "true")
+    monkeypatch.setenv("V2_PLANNER_SHADOW_ENABLED", "true")
+    monkeypatch.setattr(main, "execute_selected_planner", tracked)
+    plan = main.build_plan(PlanGenerationRequest(athlete_profile=_v2_ready_profile()), internal_planner_choice=main.PlannerChoice.V2)
+    assert calls == [main.PlannerChoice.V2] and plan["v2_diagnostics"]["scheduler_version"] == "v2"
