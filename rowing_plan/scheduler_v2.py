@@ -3,8 +3,9 @@ from __future__ import annotations
 from datetime import date, timedelta
 from time import perf_counter
 from dataclasses import replace
-from .models import ActiveWindowState, CandidateDateResult, ConcreteQualitySequenceResult, ConcreteTrainingRole, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, LocalRepairResult, QualityTranslationContext, RepairChange, RepairReconstructionResult, RepairScope, ReopenedPlacement, RollingPlacementResult, ScheduleChangeResult, TargetConsequence, TargetCredit, TrainingDemand, TrainingDoseTarget, TranslatedTrainingRole, UserScheduleOverride, V2DemandPlan, WindowPlacement
+from .models import ActiveWindowState, CandidateDateResult, ConcreteFinalizationResult, ConcreteQualitySequenceResult, ConcreteTrainingRole, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, LocalRepairResult, QualityTranslationContext, RepairChange, RepairReconstructionResult, RepairScope, ReopenedPlacement, RollingPlacementResult, ScheduleChangeResult, TargetConsequence, TargetCredit, TrainingDemand, TrainingDoseTarget, TranslatedTrainingRole, UserScheduleOverride, V2DemandPlan, WindowPlacement
 from .session_selection import select_and_instantiate
+from .load_transformations import transform
 from .periodization import build_season_phases, parse, race_dates
 
 _ROLE={"LONG_AEROBIC":("long_aerobic","aerobic",0),"AEROBIC_BASE":("aerobic_base","aerobic",0),"AEROBIC_STRENGTH":("aerobic_strength","aerobic",1),"THRESHOLD":("threshold","quality",1),"RACE_PACE":("race_pace","quality",1),"SPRINT_POWER":("sprint_power","quality",1),"RECOVERY":("recovery","none",0),"TECHNIQUE_EASY":("aerobic_base","aerobic",0)}
@@ -49,6 +50,36 @@ def instantiate_translated_quality_sequence(roles: tuple[TranslatedTrainingRole,
             return ConcreteQualitySequenceResult(False,(),tuple(history),translated.placement_id,translated.date,translated.quality_type,str(error))
         output.append(concrete); history.append(dict(concrete.fingerprint))
     return ConcreteQualitySequenceResult(True,tuple(output),tuple(history))
+
+def finalize_concrete_quality_role(concrete: ConcreteTrainingRole, *, phase: str|None=None, race_priority: str|None=None) -> ConcreteFinalizationResult:
+    """Apply V1's post-selection transform without selecting a new workout.
+
+    ``prescription``/``fingerprint`` always retain the selector result.  The
+    result exposes the separately reconciled athlete-visible form so C-2 can
+    later use it for chronological history without changing C-1 semantics.
+    """
+    requested_phase=phase or concrete.phase_id
+    failure=lambda reason: ConcreteFinalizationResult(False,None,concrete.placement_id,concrete.date,concrete.quality_type,reason)
+    # A generic quality role is invalid in these V2 phases; do not use V1's
+    # recovery transform to make an invalid scheduled role appear legitimate.
+    if requested_phase in {"race_recovery","post_race_recovery"}:
+        return failure("quality_not_valid_for_phase")
+    # V2's public phase name maps to the exact V1 transform phase identifier.
+    transform_phase={"taper":"taper_sharpen"}.get(requested_phase,requested_phase)
+    try:
+        selected=concrete.prescription
+        minutes=int(selected["total_minutes"])
+        session={"session_id":concrete.archetype_id,"archetype_id":concrete.archetype_id,"band":concrete.physiological_band,"phase":transform_phase,"session_role":concrete.selector_role,"total_cardio_minutes":minutes,"rowing_minutes":minutes,"quality_minutes":minutes,"modeled_overhead_minutes":12,"structure":f"{selected['repetitions']} × {selected['work_interval_duration']} min {concrete.physiological_band}; {selected['recovery_duration']} min easy recovery.","session_fingerprint":dict(concrete.fingerprint)}
+    except (KeyError, TypeError, ValueError):
+        return failure("malformed_concrete_prescription")
+    try:
+        final=transform(session,phase=transform_phase,race_priority=race_priority)
+    except (KeyError, TypeError, ValueError):
+        return failure("transformation_incompatible")
+    if int(final.get("total_cardio_minutes",0))>concrete.planned_duration_minutes:
+        return failure("concrete_duration_exceeds_reserved_capacity")
+    role=replace(concrete,pre_transformation=False,final_prescription=final,final_fingerprint=final.get("session_fingerprint",concrete.fingerprint))
+    return ConcreteFinalizationResult(True,role,concrete.placement_id,concrete.date,concrete.quality_type)
 
 def _rolling_solver_windows(start: date, end: date) -> tuple[tuple[date,date],...]:
     """The concrete windows used by ``solve_v2_rolling_non_rowing``."""

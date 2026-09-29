@@ -2,7 +2,7 @@ from datetime import date, timedelta
 from dataclasses import replace
 from services.api.tests.disposable_browser_fixture import synthetic_profile
 from rowing_plan.models import CompletedQualityExposure, DatedTrainingRole, FrequencyTarget, QualityTranslationContext, RepairScope, TargetCredit, TrainingDoseTarget, V2DemandPlan, WindowPlacement
-from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, classify_repair_placement, derive_repair_scope, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, instantiate_translated_quality_role, instantiate_translated_quality_sequence, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, reconstruct_repair_state, release_window_placement, repair_user_schedule_change, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements, translate_quality_role, translate_quality_roles
+from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, classify_repair_placement, derive_repair_scope, finalize_concrete_quality_role, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, instantiate_translated_quality_role, instantiate_translated_quality_sequence, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, reconstruct_repair_state, release_window_placement, repair_user_schedule_change, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements, translate_quality_role, translate_quality_roles
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -629,7 +629,56 @@ def test_concrete_quality_sequence_is_chronological_and_accumulates_selector_fin
     first=instantiate_translated_quality_sequence((thursday,saturday,tuesday),experience="experienced",race_types={"a":"head_5k","b":"head_5k","c":"head_5k"})
     second=instantiate_translated_quality_sequence((tuesday,thursday,saturday),experience="experienced",race_types={"a":"head_5k","b":"head_5k","c":"head_5k"})
     assert first==second and first.success and [item.placement_id for item in first.roles]==["b","a","c"] and len(first.selector_history)==3 and all(item.physiological_band=="TR" for item in first.roles)
+    # C-1 deliberately retains selector-stage history; C-2 must finalize a
+    # role before appending its final fingerprint to sequence history.
+    assert first.selector_history[0]==first.roles[0].fingerprint and first.roles[0].pre_transformation
     an=replace(tuesday,quality_type="AN"); mixed=instantiate_translated_quality_sequence((an,thursday),experience="experienced",race_types={"b":"sprint_1k","a":"erg_2k"})
     assert mixed.success and [item.physiological_band for item in mixed.roles]==["AN","TR"]
     failed=instantiate_translated_quality_sequence((replace(tuesday,quality_type="AN"),),experience="novice",race_types={"b":"sprint_1k"})
     assert not failed.success and failed.failed_placement_id=="b" and failed.failure_reason=="no_eligible_quality_archetype"
+
+def test_concrete_quality_finalization_preserves_selector_state_and_reconciles_v1_taper():
+    dated=DatedTrainingRole(date(2026,9,14),"quality",60,"race_specific_preparation","source","provisional",(),"moved-quality")
+    translated=translate_quality_role(dated,QualityTranslationContext("race_specific_preparation",True,date(2026,9,10),"move-1"))
+    concrete=instantiate_translated_quality_role(translated,experience="experienced",race_type="head_5k")
+    normal=finalize_concrete_quality_role(concrete,phase="race_specific_preparation")
+    taper=finalize_concrete_quality_role(concrete,phase="taper",race_priority="A")
+    assert taper==finalize_concrete_quality_role(concrete,phase="taper",race_priority="A")
+    assert normal.success and taper.success
+    assert normal.role.final_prescription["total_cardio_minutes"]==concrete.prescription["total_minutes"]
+    assert normal.role.final_fingerprint==concrete.fingerprint
+    assert taper.role.final_prescription["total_cardio_minutes"]<concrete.prescription["total_minutes"]
+    assert taper.role.final_fingerprint==taper.role.final_prescription["session_fingerprint"]
+    assert taper.role.final_fingerprint!=concrete.fingerprint
+    assert taper.role.final_prescription["load_transformation"]["transformation_type"]=="taper"
+    assert taper.role.final_prescription["total_cardio_minutes"]<=taper.role.planned_duration_minutes
+    final_fingerprint=taper.role.final_fingerprint
+    assert final_fingerprint["modeled_overhead_minutes"]+final_fingerprint["total_work_duration"]+(final_fingerprint["repetitions"]-1)*final_fingerprint["recovery_duration"]+final_fingerprint["modeled_cooldown_minutes"]==taper.role.final_prescription["total_cardio_minutes"]
+    assert (taper.role.placement_id,taper.role.source_id,taper.role.date,taper.role.quality_type,taper.role.physiological_band,taper.role.archetype_id,taper.role.selector_role,taper.role.user_fixed,taper.role.original_date,taper.role.override_id)==("moved-quality","source",date(2026,9,14),"TR","TR",concrete.archetype_id,"RACE_PACE",True,date(2026,9,10),"move-1")
+    assert concrete.pre_transformation and concrete.final_prescription is None and concrete.final_fingerprint is None
+
+def test_concrete_quality_finalization_preserves_every_supported_band_without_reselection():
+    role=DatedTrainingRole(date(2026,9,14),"quality",60,"race_specific_preparation","source","provisional",(),"quality")
+    translated=(
+        translate_quality_role(role,QualityTranslationContext("threshold_development")),
+        translate_quality_role(role,QualityTranslationContext("race_specific_preparation")),
+        replace(translate_quality_role(role,QualityTranslationContext("race_specific_preparation",explicit_intent="SPRINT_POWER")),quality_type="AN"),
+        translate_quality_role(role,QualityTranslationContext("race_specific_preparation",explicit_intent="SPRINT_POWER")),
+    )
+    race_types=("head_5k","head_5k","sprint_1k","sprint_1k")
+    for item,race in zip(translated,race_types):
+        selected=instantiate_translated_quality_role(item,experience="experienced",race_type=race)
+        result=finalize_concrete_quality_role(selected,phase="taper_sharpen",race_priority="A")
+        assert result.success
+        final=result.role
+        assert (final.quality_type,final.physiological_band,final.archetype_id,final.selector_role)==(selected.quality_type,selected.physiological_band,selected.archetype_id,selected.selector_role)
+        assert final.final_prescription["total_cardio_minutes"]<=selected.planned_duration_minutes
+
+def test_concrete_quality_finalization_returns_atomic_structured_failures():
+    role=DatedTrainingRole(date(2026,9,14),"quality",60,"race_specific_preparation","source","provisional",(),"quality")
+    concrete=instantiate_translated_quality_role(translate_quality_role(role,QualityTranslationContext("race_specific_preparation")),experience="experienced",race_type="head_5k")
+    for invalid,reason in ((concrete,"quality_not_valid_for_phase"),(replace(concrete,prescription={}),"malformed_concrete_prescription"),(replace(concrete,planned_duration_minutes=10),"concrete_duration_exceeds_reserved_capacity")):
+        result=finalize_concrete_quality_role(invalid,phase="post_race_recovery" if reason=="quality_not_valid_for_phase" else "race_specific_preparation")
+        assert not result.success and result.role is None
+        assert (result.placement_id,result.date,result.quality_type,result.failure_reason)==("quality",date(2026,9,14),"TR",reason)
+        assert invalid.final_prescription is None and invalid.final_fingerprint is None and invalid.pre_transformation

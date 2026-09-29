@@ -243,6 +243,14 @@ class ConcreteTrainingRole:
     user_fixed: bool; original_date: date|None; override_id: str|None
     selector_role: str; archetype_id: str; physiological_band: str
     prescription: Mapping[str,Any]; fingerprint: Mapping[str,Any]; pre_transformation: bool=True
+    final_prescription: Mapping[str,Any]|None=None; final_fingerprint: Mapping[str,Any]|None=None
+
+@dataclass(frozen=True)
+class ConcreteFinalizationResult:
+    """The final athlete-visible form of one selected quality role."""
+    success: bool; role: ConcreteTrainingRole|None
+    placement_id: str; date: date; quality_type: Literal["AT","TR","AN","PP"]
+    failure_reason: str|None=None
 
 @dataclass(frozen=True)
 class ConcreteQualitySequenceResult:
