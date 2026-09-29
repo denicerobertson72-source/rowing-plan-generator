@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from time import perf_counter
 from dataclasses import replace
-from .models import ActiveWindowState, CandidateDateResult, ConcreteTrainingRole, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, LocalRepairResult, QualityTranslationContext, RepairChange, RepairReconstructionResult, RepairScope, ReopenedPlacement, RollingPlacementResult, ScheduleChangeResult, TargetConsequence, TargetCredit, TrainingDemand, TrainingDoseTarget, TranslatedTrainingRole, UserScheduleOverride, V2DemandPlan, WindowPlacement
+from .models import ActiveWindowState, CandidateDateResult, ConcreteQualitySequenceResult, ConcreteTrainingRole, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, LocalRepairResult, QualityTranslationContext, RepairChange, RepairReconstructionResult, RepairScope, ReopenedPlacement, RollingPlacementResult, ScheduleChangeResult, TargetConsequence, TargetCredit, TrainingDemand, TrainingDoseTarget, TranslatedTrainingRole, UserScheduleOverride, V2DemandPlan, WindowPlacement
 from .session_selection import select_and_instantiate
 from .periodization import build_season_phases, parse, race_dates
 
@@ -38,6 +38,17 @@ def instantiate_translated_quality_role(translated: TranslatedTrainingRole, *, e
     if selected["total_minutes"]>translated.planned_duration_minutes: raise ValueError("concrete_duration_exceeds_reserved_capacity")
     archetype=selected["archetype"]
     return ConcreteTrainingRole(translated.placement_id,translated.source_id,translated.date,"quality",translated.quality_type,translated.phase_id,race_type,translated.planned_duration_minutes,translated.provenance,translated.user_fixed,translated.original_date,translated.override_id,selector_role,archetype["archetype_id"],archetype["primary_band"],selected,selected["fingerprint"])
+
+def instantiate_translated_quality_sequence(roles: tuple[TranslatedTrainingRole,...], *, experience: str, race_types=None, mode: str="erg", preference: str="varied", initial_history=()) -> ConcreteQualitySequenceResult:
+    """Chronological selector-stage history only; V2.6C will replace it after transforms."""
+    history=list(initial_history); output=[]; race_types=race_types or {}
+    for translated in sorted(roles,key=lambda item:(item.date,item.placement_id)):
+        try:
+            concrete=instantiate_translated_quality_role(translated,experience=experience,race_type=race_types.get(translated.placement_id,"general"),mode=mode,preference=preference,history=history)
+        except ValueError as error:
+            return ConcreteQualitySequenceResult(False,(),tuple(history),translated.placement_id,translated.date,translated.quality_type,str(error))
+        output.append(concrete); history.append(dict(concrete.fingerprint))
+    return ConcreteQualitySequenceResult(True,tuple(output),tuple(history))
 
 def _rolling_solver_windows(start: date, end: date) -> tuple[tuple[date,date],...]:
     """The concrete windows used by ``solve_v2_rolling_non_rowing``."""

@@ -2,7 +2,7 @@ from datetime import date, timedelta
 from dataclasses import replace
 from services.api.tests.disposable_browser_fixture import synthetic_profile
 from rowing_plan.models import CompletedQualityExposure, DatedTrainingRole, FrequencyTarget, QualityTranslationContext, RepairScope, TargetCredit, TrainingDoseTarget, V2DemandPlan, WindowPlacement
-from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, classify_repair_placement, derive_repair_scope, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, instantiate_translated_quality_role, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, reconstruct_repair_state, release_window_placement, repair_user_schedule_change, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements, translate_quality_role, translate_quality_roles
+from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, classify_repair_placement, derive_repair_scope, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, instantiate_translated_quality_role, instantiate_translated_quality_sequence, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, reconstruct_repair_state, release_window_placement, repair_user_schedule_change, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements, translate_quality_role, translate_quality_roles
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -594,6 +594,9 @@ def test_quality_translation_is_pure_phase_based_and_preserves_user_metadata():
     try: translate_quality_role(DatedTrainingRole(role.date,"strength",30,"p","s","provisional",(),"s"),QualityTranslationContext("threshold_development"))
     except ValueError as error: assert str(error)=="quality_translation_requires_quality_role"
     else: assert False
+    try: translate_quality_role(role,QualityTranslationContext("post_race_recovery"))
+    except ValueError as error: assert str(error)=="quality_not_valid_for_phase"
+    else: assert False
 
 def test_quality_translation_race_context_and_typed_history_are_conservative_and_bounded():
     role=DatedTrainingRole(date(2026,9,20),"quality",50,"ignored","source","provisional",(),"q")
@@ -618,6 +621,15 @@ def test_single_translated_quality_instantiation_reuses_v1_adapters_without_sche
     assert instantiate_translated_quality_role(pp,experience="experienced").physiological_band=="PP"
     an=replace(pp,quality_type="AN")
     assert instantiate_translated_quality_role(an,experience="experienced",race_type="sprint_1k").physiological_band=="AN"
-    try: translate_quality_role(role,QualityTranslationContext("post_race_recovery"))
-    except ValueError as error: assert str(error)=="quality_not_valid_for_phase"
-    else: assert False
+
+def test_concrete_quality_sequence_is_chronological_and_accumulates_selector_fingerprints():
+    def translated(day,ident,phase="race_specific_preparation",intent=None):
+        return translate_quality_role(DatedTrainingRole(day,"quality",60,phase,"src","provisional",(),ident),QualityTranslationContext(phase,explicit_intent=intent))
+    tuesday=translated(date(2026,9,8),"b"); thursday=translated(date(2026,9,10),"a"); saturday=translated(date(2026,9,12),"c")
+    first=instantiate_translated_quality_sequence((thursday,saturday,tuesday),experience="experienced",race_types={"a":"head_5k","b":"head_5k","c":"head_5k"})
+    second=instantiate_translated_quality_sequence((tuesday,thursday,saturday),experience="experienced",race_types={"a":"head_5k","b":"head_5k","c":"head_5k"})
+    assert first==second and first.success and [item.placement_id for item in first.roles]==["b","a","c"] and len(first.selector_history)==3 and all(item.physiological_band=="TR" for item in first.roles)
+    an=replace(tuesday,quality_type="AN"); mixed=instantiate_translated_quality_sequence((an,thursday),experience="experienced",race_types={"b":"sprint_1k","a":"erg_2k"})
+    assert mixed.success and [item.physiological_band for item in mixed.roles]==["AN","TR"]
+    failed=instantiate_translated_quality_sequence((replace(tuesday,quality_type="AN"),),experience="novice",race_types={"b":"sprint_1k"})
+    assert not failed.success and failed.failed_placement_id=="b" and failed.failure_reason=="no_eligible_quality_archetype"

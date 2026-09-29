@@ -245,6 +245,11 @@ class ConcreteTrainingRole:
     prescription: Mapping[str,Any]; fingerprint: Mapping[str,Any]; pre_transformation: bool=True
 
 @dataclass(frozen=True)
+class ConcreteQualitySequenceResult:
+    success: bool; roles: tuple[ConcreteTrainingRole,...]=(); selector_history: tuple[Mapping[str,Any],...]=()
+    failed_placement_id: str|None=None; failed_date: date|None=None; failed_quality_type: str|None=None; failure_reason: str|None=None
+
+@dataclass(frozen=True)
 class ActiveWindowState:
     window_start: date; window_end: date
     frozen_placements: tuple[WindowPlacement,...]; provisional_placements: tuple[WindowPlacement,...]
