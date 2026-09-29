@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 from dataclasses import replace
 from services.api.tests.disposable_browser_fixture import synthetic_profile
-from rowing_plan.models import DatedTrainingRole, FrequencyTarget, QualityTranslationContext, RepairScope, TargetCredit, TrainingDoseTarget, V2DemandPlan, WindowPlacement
+from rowing_plan.models import CompletedQualityExposure, DatedTrainingRole, FrequencyTarget, QualityTranslationContext, RepairScope, TargetCredit, TrainingDoseTarget, V2DemandPlan, WindowPlacement
 from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, classify_repair_placement, derive_repair_scope, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, reconstruct_repair_state, release_window_placement, repair_user_schedule_change, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements, translate_quality_role, translate_quality_roles
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
@@ -594,6 +594,17 @@ def test_quality_translation_is_pure_phase_based_and_preserves_user_metadata():
     try: translate_quality_role(DatedTrainingRole(role.date,"strength",30,"p","s","provisional",(),"s"),QualityTranslationContext("threshold_development"))
     except ValueError as error: assert str(error)=="quality_translation_requires_quality_role"
     else: assert False
+
+def test_quality_translation_race_context_and_typed_history_are_conservative_and_bounded():
+    role=DatedTrainingRole(date(2026,9,20),"quality",50,"ignored","source","provisional",(),"q")
+    for race_type in ("head_5k","erg_2k","sprint_1k"):
+        translated=translate_quality_role(role,QualityTranslationContext("race_specific_preparation",race_type=race_type,days_to_race=4))
+        assert translated.quality_type=="TR"
+    for quality in ("AT","TR","AN","PP"):
+        translated=translate_quality_role(role,QualityTranslationContext("threshold_development",completed_quality=(CompletedQualityExposure(date(2026,9,12),quality),)))
+        assert translated.quality_type=="AT" and translated.reason_code.endswith("completed_history_considered")
+    old=translate_quality_role(role,QualityTranslationContext("threshold_development",completed_quality=(CompletedQualityExposure(date(2026,8,1),"AN"),)))
+    assert old.quality_type=="AT" and not old.reason_code.endswith("completed_history_considered")
     try: translate_quality_role(role,QualityTranslationContext("post_race_recovery"))
     except ValueError as error: assert str(error)=="quality_not_valid_for_phase"
     else: assert False

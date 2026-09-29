@@ -222,6 +222,11 @@ class DatedTrainingRole:
 class QualityTranslationContext:
     phase_id: str; user_fixed: bool=False; original_date: date|None=None; override_id: str|None=None
     explicit_intent: str|None=None
+    race_type: str|None=None; days_to_race: int|None=None; completed_quality: tuple["CompletedQualityExposure",...]=()
+
+@dataclass(frozen=True)
+class CompletedQualityExposure:
+    date: date; quality_type: Literal["AT","TR","AN","PP"]; provenance: str="completed"
 
 @dataclass(frozen=True)
 class TranslatedTrainingRole:

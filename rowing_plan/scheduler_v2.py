@@ -15,10 +15,14 @@ def translate_quality_role(role: DatedTrainingRole, context: QualityTranslationC
     """Pure phase-baseline interpretation; never changes scheduled facts."""
     if role.role!="quality": raise ValueError("quality_translation_requires_quality_role")
     phase=context.phase_id
+    # Completed evidence is deliberately bounded (14 days) and currently
+    # explanatory only: V1 varies concrete prescriptions, not generic type.
+    recent=tuple(item for item in context.completed_quality if 0 <= (role.date-item.date).days < 14)
     if context.explicit_intent=="SPRINT_POWER": quality,reason="PP","explicit_sprint_power"
     elif phase in {"threshold_development"}: quality,reason="AT","phase_threshold_default"
     elif phase in {"race_specific_preparation","taper","taper_sharpen","specific_preparation","race_build"}: quality,reason="TR","taper_race_specific_default" if phase in {"taper","taper_sharpen"} else "phase_race_specific_default"
     else: raise ValueError("quality_not_valid_for_phase")
+    if recent: reason=f"{reason}_completed_history_considered"
     return TranslatedTrainingRole(role.placement_id,role.source_id,role.date,role.duration_minutes,phase,"quality",quality,role.provenance,context.user_fixed,context.original_date,context.override_id,reason)
 
 def translate_quality_roles(roles: tuple[DatedTrainingRole,...], contexts: dict[str,QualityTranslationContext]) -> tuple[TranslatedTrainingRole,...]:
