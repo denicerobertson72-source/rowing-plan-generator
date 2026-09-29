@@ -1,8 +1,9 @@
 from datetime import date, timedelta
 from dataclasses import replace
+import rowing_plan.scheduler_v2 as scheduler_v2
 from services.api.tests.disposable_browser_fixture import synthetic_profile
 from rowing_plan.models import CompletedQualityExposure, DatedTrainingRole, FrequencyTarget, QualityTranslationContext, RepairScope, TargetCredit, TrainingDoseTarget, V2DemandPlan, WindowPlacement
-from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, classify_repair_placement, derive_repair_scope, finalize_concrete_quality_role, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, instantiate_translated_quality_role, instantiate_translated_quality_sequence, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, reconstruct_repair_state, release_window_placement, repair_user_schedule_change, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements, translate_quality_role, translate_quality_roles
+from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, classify_repair_placement, derive_repair_scope, finalize_concrete_quality_role, finalize_translated_quality_sequence, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, instantiate_translated_quality_role, instantiate_translated_quality_sequence, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, reconstruct_repair_state, release_window_placement, repair_user_schedule_change, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements, translate_quality_role, translate_quality_roles
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -682,3 +683,79 @@ def test_concrete_quality_finalization_returns_atomic_structured_failures():
         assert not result.success and result.role is None
         assert (result.placement_id,result.date,result.quality_type,result.failure_reason)==("quality",date(2026,9,14),"TR",reason)
         assert invalid.final_prescription is None and invalid.final_fingerprint is None and invalid.pre_transformation
+
+def test_final_quality_sequence_uses_final_history_once_and_preserves_b2_selector_api(monkeypatch):
+    def translated(day,ident,phase):
+        return translate_quality_role(DatedTrainingRole(day,"quality",60,phase,"source","provisional",(),ident),QualityTranslationContext(phase))
+    taper=translated(date(2026,9,8),"taper","taper")
+    later=translated(date(2026,9,10),"later","race_specific_preparation")
+    last=translated(date(2026,9,12),"last","race_specific_preparation")
+    captured=[]; original=scheduler_v2.instantiate_translated_quality_role
+    def capture(*args,**kwargs):
+        captured.append(tuple(kwargs["history"]))
+        return original(*args,**kwargs)
+    monkeypatch.setattr(scheduler_v2,"instantiate_translated_quality_role",capture)
+    result=finalize_translated_quality_sequence((later,last,taper),experience="experienced",race_types={"taper":"head_5k","later":"head_5k","last":"head_5k"},race_priorities={"taper":"A"})
+    assert result.success and [item.placement_id for item in result.roles]==["taper","later","last"]
+    first,second,third=result.roles
+    assert not captured[0] and captured[1]==(first.final_fingerprint,)
+    assert captured[2]==(first.final_fingerprint,second.final_fingerprint)
+    assert first.fingerprint!=first.final_fingerprint and first.final_prescription["load_transformation"]["transformation_type"]=="taper"
+    assert result.final_history==(first.final_fingerprint,second.final_fingerprint,third.final_fingerprint) and len(result.final_history)==3
+    assert [item.quality_type for item in result.roles]==["TR","TR","TR"]
+    assert all(not item.pre_transformation and item.final_prescription and item.final_fingerprint for item in result.roles)
+    # The intentionally preserved B-2 helper remains selector-stage only.
+    selector=instantiate_translated_quality_sequence((later,taper),experience="experienced",race_types={"taper":"head_5k","later":"head_5k"})
+    assert selector.success and selector.final_history==() and selector.selector_history[0]==selector.roles[0].fingerprint
+
+def test_final_quality_sequence_preserves_bands_phase_context_and_user_move_metadata():
+    def translated(day,ident,phase,intent=None,*,moved=False):
+        role=DatedTrainingRole(day,"quality",60,phase,"source","provisional",(),ident)
+        return translate_quality_role(role,QualityTranslationContext(phase,moved,date(2026,9,1) if moved else None,"move-1" if moved else None,intent))
+    at=translated(date(2026,9,8),"at","threshold_development")
+    tr=translated(date(2026,9,10),"tr","taper",moved=True)
+    an=replace(translated(date(2026,9,12),"an","race_specific_preparation",intent="SPRINT_POWER"),quality_type="AN")
+    pp=translated(date(2026,9,14),"pp","race_specific_preparation",intent="SPRINT_POWER")
+    first=finalize_translated_quality_sequence((pp,an,tr,at),experience="experienced",race_types={"at":"head_5k","tr":"erg_2k","an":"sprint_1k","pp":"sprint_1k"},race_priorities={"tr":"A"})
+    second=finalize_translated_quality_sequence((at,tr,an,pp),experience="experienced",race_types={"at":"head_5k","tr":"erg_2k","an":"sprint_1k","pp":"sprint_1k"},race_priorities={"tr":"A"})
+    assert first==second and first.success
+    assert [(item.placement_id,item.quality_type,item.physiological_band) for item in first.roles]==[("at","AT","AT"),("tr","TR","TR"),("an","AN","AN"),("pp","PP","PP")]
+    moved=next(item for item in first.roles if item.placement_id=="tr")
+    assert (moved.date,moved.user_fixed,moved.original_date,moved.override_id)==(date(2026,9,10),True,date(2026,9,1),"move-1")
+    assert moved.final_prescription["load_transformation"]["transformation_type"]=="taper"
+    assert all(item.final_prescription["total_cardio_minutes"]<=item.planned_duration_minutes for item in first.roles)
+    assert len({item.placement_id for item in first.roles})==4 and len(first.final_history)==4
+
+def test_final_quality_sequence_keeps_at_an_pp_and_race_specific_tr_histories_separate():
+    def quality(day,ident,phase="race_specific_preparation",intent=None):
+        return translate_quality_role(DatedTrainingRole(day,"quality",60,phase,"source","provisional",(),ident),QualityTranslationContext(phase,explicit_intent=intent))
+    at=finalize_translated_quality_sequence((quality(date(2026,9,8),"at-1","threshold_development"),quality(date(2026,9,10),"at-2","threshold_development")),experience="experienced")
+    assert at.success and [item.quality_type for item in at.roles]==["AT","AT"] and all(item.fingerprint==item.final_fingerprint for item in at.roles)
+    for quality_type,intent,race in (("AN","SPRINT_POWER","sprint_1k"),("PP","SPRINT_POWER","sprint_1k")):
+        first=quality(date(2026,9,8),f"{quality_type}-1",intent=intent)
+        second=quality(date(2026,9,10),f"{quality_type}-2",intent=intent)
+        if quality_type=="AN": first,second=replace(first,quality_type="AN"),replace(second,quality_type="AN")
+        result=finalize_translated_quality_sequence((second,first),experience="experienced",race_types={first.placement_id:race,second.placement_id:race})
+        assert result.success and [item.quality_type for item in result.roles]==[quality_type,quality_type] and [item.physiological_band for item in result.roles]==[quality_type,quality_type]
+        assert result.final_history==tuple(item.final_fingerprint for item in result.roles)
+    tr=tuple(quality(date(2026,9,8+2*index),f"tr-{index}") for index in range(3))
+    races={"tr-0":"head_5k","tr-1":"erg_2k","tr-2":"sprint_1k"}
+    result=finalize_translated_quality_sequence(tuple(reversed(tr)),experience="experienced",race_types=races)
+    assert result.success and [item.quality_type for item in result.roles]==["TR","TR","TR"] and [item.race_type for item in result.roles]==["head_5k","erg_2k","sprint_1k"]
+
+def test_final_quality_sequence_returns_prefix_and_does_not_append_failed_workout(monkeypatch):
+    valid=translate_quality_role(DatedTrainingRole(date(2026,9,8),"quality",60,"race_specific_preparation","source","provisional",(),"valid"),QualityTranslationContext("race_specific_preparation"))
+    selector_failure=replace(valid,placement_id="selector-failure",quality_type="AN",date=date(2026,9,10))
+    supplied=({"already":"final"},)
+    failed=finalize_translated_quality_sequence((valid,selector_failure),experience="intermediate",race_types={"valid":"head_5k","selector-failure":"sprint_1k"},initial_history=supplied)
+    assert not failed.success and failed.failed_placement_id=="selector-failure" and failed.failure_reason=="no_eligible_quality_archetype"
+    assert [item.placement_id for item in failed.roles]==["valid"] and len(failed.final_history)==2 and supplied==({"already":"final"},)
+    original=scheduler_v2.instantiate_translated_quality_role
+    def malformed(translated,**kwargs):
+        result=original(translated,**kwargs)
+        return replace(result,prescription={}) if translated.placement_id=="finalization-failure" else result
+    monkeypatch.setattr(scheduler_v2,"instantiate_translated_quality_role",malformed)
+    finalization_failure=replace(valid,placement_id="finalization-failure",date=date(2026,9,10))
+    failed=finalize_translated_quality_sequence((valid,finalization_failure),experience="experienced",race_types={"valid":"head_5k","finalization-failure":"head_5k"})
+    assert not failed.success and failed.failed_placement_id=="finalization-failure" and failed.failure_reason=="malformed_concrete_prescription"
+    assert [item.placement_id for item in failed.roles]==["valid"] and len(failed.final_history)==1

@@ -255,6 +255,9 @@ class ConcreteFinalizationResult:
 @dataclass(frozen=True)
 class ConcreteQualitySequenceResult:
     success: bool; roles: tuple[ConcreteTrainingRole,...]=(); selector_history: tuple[Mapping[str,Any],...]=()
+    # Populated by the C-2 finalization pipeline.  It deliberately never
+    # mixes selector-stage fingerprints with athlete-visible fingerprints.
+    final_history: tuple[Mapping[str,Any],...]=()
     failed_placement_id: str|None=None; failed_date: date|None=None; failed_quality_type: str|None=None; failure_reason: str|None=None
 
 @dataclass(frozen=True)

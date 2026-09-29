@@ -41,15 +41,35 @@ def instantiate_translated_quality_role(translated: TranslatedTrainingRole, *, e
     return ConcreteTrainingRole(translated.placement_id,translated.source_id,translated.date,"quality",translated.quality_type,translated.phase_id,race_type,translated.planned_duration_minutes,translated.provenance,translated.user_fixed,translated.original_date,translated.override_id,selector_role,archetype["archetype_id"],archetype["primary_band"],selected,selected["fingerprint"])
 
 def instantiate_translated_quality_sequence(roles: tuple[TranslatedTrainingRole,...], *, experience: str, race_types=None, mode: str="erg", preference: str="varied", initial_history=()) -> ConcreteQualitySequenceResult:
-    """Chronological selector-stage history only; V2.6C will replace it after transforms."""
+    """B-2 selector-stage sequence retained for backwards-compatible use."""
     history=list(initial_history); output=[]; race_types=race_types or {}
     for translated in sorted(roles,key=lambda item:(item.date,item.placement_id)):
         try:
             concrete=instantiate_translated_quality_role(translated,experience=experience,race_type=race_types.get(translated.placement_id,"general"),mode=mode,preference=preference,history=history)
         except ValueError as error:
-            return ConcreteQualitySequenceResult(False,(),tuple(history),translated.placement_id,translated.date,translated.quality_type,str(error))
+            return ConcreteQualitySequenceResult(False,selector_history=tuple(history),failed_placement_id=translated.placement_id,failed_date=translated.date,failed_quality_type=translated.quality_type,failure_reason=str(error))
         output.append(concrete); history.append(dict(concrete.fingerprint))
-    return ConcreteQualitySequenceResult(True,tuple(output),tuple(history))
+    return ConcreteQualitySequenceResult(True,roles=tuple(output),selector_history=tuple(history))
+
+def finalize_translated_quality_sequence(roles: tuple[TranslatedTrainingRole,...], *, experience: str, race_types=None, race_priorities=None, mode: str="erg", preference: str="varied", initial_history=()) -> ConcreteQualitySequenceResult:
+    """Build final quality roles and feed only final fingerprints forward.
+
+    ``initial_history`` represents already athlete-visible concrete work.  It
+    is copied before selection, so caller-owned history stays immutable.
+    """
+    history=list(initial_history); output=[]; race_types=race_types or {}; race_priorities=race_priorities or {}
+    for translated in sorted(roles,key=lambda item:(item.date,item.placement_id)):
+        try:
+            selected=instantiate_translated_quality_role(translated,experience=experience,race_type=race_types.get(translated.placement_id,"general"),mode=mode,preference=preference,history=history)
+        except ValueError as error:
+            return ConcreteQualitySequenceResult(False,roles=tuple(output),final_history=tuple(history),failed_placement_id=translated.placement_id,failed_date=translated.date,failed_quality_type=translated.quality_type,failure_reason=str(error))
+        finalized=finalize_concrete_quality_role(selected,phase=translated.phase_id,race_priority=race_priorities.get(translated.placement_id))
+        if not finalized.success:
+            return ConcreteQualitySequenceResult(False,roles=tuple(output),final_history=tuple(history),failed_placement_id=finalized.placement_id,failed_date=finalized.date,failed_quality_type=finalized.quality_type,failure_reason=finalized.failure_reason)
+        output.append(finalized.role)
+        # One athlete-visible workout contributes one history record.
+        history.append(dict(finalized.role.final_fingerprint))
+    return ConcreteQualitySequenceResult(True,roles=tuple(output),final_history=tuple(history))
 
 def finalize_concrete_quality_role(concrete: ConcreteTrainingRole, *, phase: str|None=None, race_priority: str|None=None) -> ConcreteFinalizationResult:
     """Apply V1's post-selection transform without selecting a new workout.
