@@ -549,6 +549,8 @@ def test_local_repair_weather_swap_reopens_third_strength_and_preserves_history_
     assert final["ut2"].date==date(2026,9,10) and final["ut2"].user_fixed
     assert "c" not in final and final["history"].date==date(2026,9,4)
     assert not any(item.role=="dedicated_ut2" and item.date==date(2026,9,7) for item in repaired.merged_placements)
+    assert [(item.kind,item.placement_id) for item in repaired.repair_changes]==[("removed","c")]
+    assert not repaired.target_consequences
 
 def test_local_repair_relocates_open_rest_and_returns_original_on_hard_invalid_move():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile); demands=tuple(generate_training_demands(profile)); rest=next(item for item in demands if item.type=="rest")
@@ -562,9 +564,11 @@ def test_local_repair_relocates_open_rest_and_returns_original_on_hard_invalid_m
     assert final["lift"].date==date(2026,9,8) and final["lift"].user_fixed
     rests=[item for item in final.values() if item.source_id==rest.demand_id]
     assert len(rests)==1 and rests[0].date!=date(2026,9,8)
+    assert any(item.placement_id=="rest" and item.kind in {"moved","removed"} for item in repaired.repair_changes)
     raced=tuple(replace(item,race=True) if item.date==date(2026,9,10) else item for item in calendar)
     invalid=repair_user_schedule_change(profile,state,action_type="move",placement_ids=("lift",),destination=date(2026,9,10),override_id="race",demand_plan=plan,calendar=raced)
     assert not invalid.success and invalid.hard_failures==("hard_calendar_conflict",) and invalid.state==state and invalid.merged_placements==tuple(sorted((*state.frozen_placements,*state.provisional_placements),key=lambda item:(item.date,item.placement_id,item.role)))
+    assert not invalid.repair_changes and not invalid.target_consequences
 
 def test_local_repair_reopens_conflicting_generic_quality_without_undoing_user_move():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}; calendar=build_v2_season_calendar(profile)

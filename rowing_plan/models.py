@@ -199,6 +199,18 @@ class LocalRepairResult:
     reconstruction: RepairReconstructionResult|None=None
     hard_failures: tuple[str,...]=()
     overrides: tuple[UserScheduleOverride,...]=()
+    repair_changes: tuple[Any,...]=()
+    target_consequences: tuple[Any,...]=()
+
+@dataclass(frozen=True)
+class RepairChange:
+    kind: Literal["moved","removed","added","role_changed"]
+    placement_id: str; source_id: str; from_date: date|None=None; to_date: date|None=None; role: str|None=None
+
+@dataclass(frozen=True)
+class TargetConsequence:
+    target_id: str; category: str; before_status: str; after_status: str
+    before_value: int; after_value: int; minimum: int; direction: Literal["worsened","improved"]
 
 @dataclass(frozen=True)
 class DatedTrainingRole:

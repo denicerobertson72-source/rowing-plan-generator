@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from time import perf_counter
 from dataclasses import replace
-from .models import ActiveWindowState, CandidateDateResult, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, LocalRepairResult, RepairReconstructionResult, RepairScope, ReopenedPlacement, RollingPlacementResult, ScheduleChangeResult, TargetCredit, TrainingDemand, TrainingDoseTarget, UserScheduleOverride, V2DemandPlan, WindowPlacement
+from .models import ActiveWindowState, CandidateDateResult, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, LocalRepairResult, RepairChange, RepairReconstructionResult, RepairScope, ReopenedPlacement, RollingPlacementResult, ScheduleChangeResult, TargetConsequence, TargetCredit, TrainingDemand, TrainingDoseTarget, UserScheduleOverride, V2DemandPlan, WindowPlacement
 from .periodization import build_season_phases, parse, race_dates
 
 _ROLE={"LONG_AEROBIC":("long_aerobic","aerobic",0),"AEROBIC_BASE":("aerobic_base","aerobic",0),"AEROBIC_STRENGTH":("aerobic_strength","aerobic",1),"THRESHOLD":("threshold","quality",1),"RACE_PACE":("race_pace","quality",1),"SPRINT_POWER":("sprint_power","quality",1),"RECOVERY":("recovery","none",0),"TECHNIQUE_EASY":("aerobic_base","aerobic",0)}
@@ -195,6 +195,41 @@ def _restore_stable_reopened_placements(state: ActiveWindowState, reopened: tupl
             pass
     return result
 
+def _repair_diff(before, after, requested_ids):
+    left={item.placement_id:item for item in before}; right={item.placement_id:item for item in after}; changes=[]
+    matched=set()
+    for ident,item in left.items():
+        if ident in requested_ids or item.user_fixed: continue
+        other=right.get(ident)
+        if other is None:
+            candidates=[value for key,value in right.items() if key not in left and key not in matched and value.source_id==item.source_id and value.role==item.role and not value.user_fixed]
+            if len(candidates)==1:
+                other=candidates[0]; matched.add(other.placement_id); changes.append(RepairChange("moved",ident,item.source_id,item.date,other.date,item.role))
+            else: changes.append(RepairChange("removed",ident,item.source_id,item.date,None,item.role))
+        elif item.role!=other.role: changes.append(RepairChange("role_changed",ident,item.source_id,item.date,other.date,other.role))
+        elif item.date!=other.date: changes.append(RepairChange("moved",ident,item.source_id,item.date,other.date,item.role))
+    for ident,item in right.items():
+        if ident not in left and ident not in matched and not item.user_fixed: changes.append(RepairChange("added",ident,item.source_id,None,item.date,item.role))
+    return tuple(sorted(changes,key=lambda item:((item.from_date or item.to_date),item.kind,item.placement_id)))
+
+def _repair_consequences(before, after, scope, plan, calendar):
+    contexts={item.date:item for item in calendar if scope.history_start<=item.date<=scope.reconciliation_end}
+    def state(items): return ActiveWindowState(scope.history_start,scope.reconciliation_end,tuple(items),(),{},contexts,{}, {}, {})
+    old,new=state(before),state(after); records=[]
+    for demand in plan.weekly_commitment_demands:
+        if demand.type not in {"coached_training","rest"} or demand.canonical_week_end<scope.mutable_start or demand.canonical_week_start>scope.reconciliation_end:
+            continue
+        a=any(item.source_id==demand.demand_id for item in before); b=any(item.source_id==demand.demand_id for item in after)
+        if a!=b:
+            records.append(TargetConsequence(demand.demand_id,demand.type,"satisfied" if a else "missed","satisfied" if b else "missed",int(a),int(b),1,"worsened" if a and not b else "improved"))
+    for target in plan.frequency_targets:
+        a=_strength_target_summary(old,target,scope.reconciliation_end-timedelta(days=target.window_days-1),scope.reconciliation_end); b=_strength_target_summary(new,target,scope.reconciliation_end-timedelta(days=target.window_days-1),scope.reconciliation_end)
+        if a["status"]!=b["status"] or (b["achieved"]<a["achieved"] and b["achieved"]<b["minimum"]): records.append(TargetConsequence(target.group_id,"strength",a["status"],b["status"],a["achieved"],b["achieved"],b["minimum"],"worsened" if b["achieved"]<a["achieved"] else "improved"))
+    for target in plan.rowing_dose_targets:
+        start=max(target.window_start,scope.reconciliation_end-timedelta(days=target.window_days-1)); end=min(target.window_end,scope.reconciliation_end); a=_dose_target_summary(old,target,start,end); b=_dose_target_summary(new,target,start,end)
+        if a["status"]!=b["status"] or (b["achieved_minutes"]<a["achieved_minutes"] and b["achieved_minutes"]<b["minimum_minutes"]): records.append(TargetConsequence(_dose_target_id(target),target.category,a["status"],b["status"],a["achieved_minutes"],b["achieved_minutes"],b["minimum_minutes"],"worsened" if b["achieved_minutes"]<a["achieved_minutes"] else "improved"))
+    return tuple(sorted(records,key=lambda item:(item.category,item.target_id)))
+
 def repair_user_schedule_change(profile: dict, authoritative_state: ActiveWindowState, *, action_type: str, placement_ids: tuple[str,...], override_id: str, destination: date|None=None, reason: str|None=None, demand_plan: V2DemandPlan|None=None, calendar: tuple[DateContext,...]|None=None) -> LocalRepairResult:
     """Execute the bounded V2 local-repair core around one athlete change."""
     plan=demand_plan or generate_v2_demand_plan(profile)
@@ -232,7 +267,7 @@ def repair_user_schedule_change(profile: dict, authoritative_state: ActiveWindow
     inside=tuple(item for item in _all_placements(repaired) if scope.mutable_start<=item.date<=scope.mutable_end)
     outside=tuple(item for item in authoritative if not scope.mutable_start<=item.date<=scope.mutable_end)
     merged=tuple(sorted(inside+outside,key=lambda item:(item.date,item.placement_id,item.role)))
-    return LocalRepairResult(True,repaired,merged,scope,reconstruction,(),change.overrides)
+    return LocalRepairResult(True,repaired,merged,scope,reconstruction,(),change.overrides,_repair_diff(authoritative,merged,set(placement_ids)),_repair_consequences(authoritative,merged,scope,plan,cal))
 
 def _weeks(start,end):
     monday=start-timedelta(days=start.weekday())
