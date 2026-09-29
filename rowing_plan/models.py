@@ -274,6 +274,10 @@ class V2SessionMaterializationResult:
     calendar_only: bool=False; reason_code: str|None=None
 
 @dataclass(frozen=True)
+class V2PlanAssemblyResult:
+    success: bool; plan: Mapping[str,Any]|None=None; failure_reason: str|None=None
+
+@dataclass(frozen=True)
 class ActiveWindowState:
     window_start: date; window_end: date
     frozen_placements: tuple[WindowPlacement,...]; provisional_placements: tuple[WindowPlacement,...]
