@@ -1,8 +1,8 @@
 from datetime import date, timedelta
 from dataclasses import replace
 from services.api.tests.disposable_browser_fixture import synthetic_profile
-from rowing_plan.models import FrequencyTarget, RepairScope, TargetCredit, TrainingDoseTarget, V2DemandPlan, WindowPlacement
-from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, classify_repair_placement, derive_repair_scope, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, reconstruct_repair_state, release_window_placement, repair_user_schedule_change, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements
+from rowing_plan.models import DatedTrainingRole, FrequencyTarget, QualityTranslationContext, RepairScope, TargetCredit, TrainingDoseTarget, V2DemandPlan, WindowPlacement
+from rowing_plan.scheduler_v2 import _dose_target_summary, assign_window_placement, build_dated_training_roles, build_v2_season_calendar, candidate_dates_for_demand, classify_repair_placement, derive_repair_scope, freeze_leading_half, generate_frequency_targets, generate_rowing_dose_targets, generate_training_demands, generate_v2_demand_plan, initialize_active_window_state, move_user_placement, placements_compatible, place_v2_non_rowing, place_v2_rowing, reconcile_demand_satisfaction, reconstruct_repair_state, release_window_placement, repair_user_schedule_change, replace_window_placement, role_family, solve_v2_rolling_non_rowing, swap_user_placements, translate_quality_role, translate_quality_roles
 
 def test_v2_demands_are_pure_deterministic_and_leave_flexible_dates_unplaced():
     profile=synthetic_profile(); profile["season"]={**profile["season"],"start_date":"2026-09-07","end_date":"2026-09-20"}
@@ -581,3 +581,19 @@ def test_local_repair_reopens_conflicting_generic_quality_without_undoing_user_m
     repaired=repair_user_schedule_change(profile,state,action_type="move",placement_ids=("user-q",),destination=date(2026,9,7),override_id="q",demand_plan=V2DemandPlan((),(FrequencyTarget("strength",14,0,0,0,"strong",1,"test",""),),(target,)),calendar=calendar)
     final={item.placement_id:item for item in repaired.merged_placements}
     assert repaired.success and final["user-q"].date==date(2026,9,7) and final["user-q"].user_fixed and "planner-q" not in final
+
+def test_quality_translation_is_pure_phase_based_and_preserves_user_metadata():
+    role=DatedTrainingRole(date(2026,9,14),"quality",50,"ignored","source","provisional",(),"quality-1")
+    moved=translate_quality_role(role,QualityTranslationContext("race_specific_preparation",True,date(2026,9,10),"move"))
+    threshold=translate_quality_role(role,QualityTranslationContext("threshold_development"))
+    taper=translate_quality_role(role,QualityTranslationContext("taper"))
+    sprint=translate_quality_role(role,QualityTranslationContext("race_specific_preparation",explicit_intent="SPRINT_POWER"))
+    assert (moved.quality_type,threshold.quality_type,taper.quality_type,sprint.quality_type)==("TR","AT","TR","PP")
+    assert (moved.date,moved.placement_id,moved.source_id,moved.planned_duration_minutes,moved.user_fixed,moved.original_date,moved.override_id)==(role.date,"quality-1","source",50,True,date(2026,9,10),"move")
+    assert [item.quality_type for item in translate_quality_roles((role,role),{"quality-1":QualityTranslationContext("threshold_development")})]==["AT","AT"]
+    try: translate_quality_role(DatedTrainingRole(role.date,"strength",30,"p","s","provisional",(),"s"),QualityTranslationContext("threshold_development"))
+    except ValueError as error: assert str(error)=="quality_translation_requires_quality_role"
+    else: assert False
+    try: translate_quality_role(role,QualityTranslationContext("post_race_recovery"))
+    except ValueError as error: assert str(error)=="quality_not_valid_for_phase"
+    else: assert False

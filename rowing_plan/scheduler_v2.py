@@ -3,13 +3,26 @@ from __future__ import annotations
 from datetime import date, timedelta
 from time import perf_counter
 from dataclasses import replace
-from .models import ActiveWindowState, CandidateDateResult, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, LocalRepairResult, RepairChange, RepairReconstructionResult, RepairScope, ReopenedPlacement, RollingPlacementResult, ScheduleChangeResult, TargetConsequence, TargetCredit, TrainingDemand, TrainingDoseTarget, UserScheduleOverride, V2DemandPlan, WindowPlacement
+from .models import ActiveWindowState, CandidateDateResult, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, LocalRepairResult, QualityTranslationContext, RepairChange, RepairReconstructionResult, RepairScope, ReopenedPlacement, RollingPlacementResult, ScheduleChangeResult, TargetConsequence, TargetCredit, TrainingDemand, TrainingDoseTarget, TranslatedTrainingRole, UserScheduleOverride, V2DemandPlan, WindowPlacement
 from .periodization import build_season_phases, parse, race_dates
 
 _ROLE={"LONG_AEROBIC":("long_aerobic","aerobic",0),"AEROBIC_BASE":("aerobic_base","aerobic",0),"AEROBIC_STRENGTH":("aerobic_strength","aerobic",1),"THRESHOLD":("threshold","quality",1),"RACE_PACE":("race_pace","quality",1),"SPRINT_POWER":("sprint_power","quality",1),"RECOVERY":("recovery","none",0),"TECHNIQUE_EASY":("aerobic_base","aerobic",0)}
 ROLLING_WINDOW_DAYS=14
 ROLLING_OVERLAP_DAYS=7
 BEAM_WIDTH=16
+
+def translate_quality_role(role: DatedTrainingRole, context: QualityTranslationContext) -> TranslatedTrainingRole:
+    """Pure phase-baseline interpretation; never changes scheduled facts."""
+    if role.role!="quality": raise ValueError("quality_translation_requires_quality_role")
+    phase=context.phase_id
+    if context.explicit_intent=="SPRINT_POWER": quality,reason="PP","explicit_sprint_power"
+    elif phase in {"threshold_development"}: quality,reason="AT","phase_threshold_default"
+    elif phase in {"race_specific_preparation","taper","taper_sharpen","specific_preparation","race_build"}: quality,reason="TR","taper_race_specific_default" if phase in {"taper","taper_sharpen"} else "phase_race_specific_default"
+    else: raise ValueError("quality_not_valid_for_phase")
+    return TranslatedTrainingRole(role.placement_id,role.source_id,role.date,role.duration_minutes,phase,"quality",quality,role.provenance,context.user_fixed,context.original_date,context.override_id,reason)
+
+def translate_quality_roles(roles: tuple[DatedTrainingRole,...], contexts: dict[str,QualityTranslationContext]) -> tuple[TranslatedTrainingRole,...]:
+    return tuple(translate_quality_role(item,contexts[item.placement_id]) for item in sorted(roles,key=lambda item:(item.date,item.placement_id)) if item.role=="quality")
 
 def _rolling_solver_windows(start: date, end: date) -> tuple[tuple[date,date],...]:
     """The concrete windows used by ``solve_v2_rolling_non_rowing``."""

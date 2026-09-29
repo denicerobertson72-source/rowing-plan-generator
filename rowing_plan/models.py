@@ -219,6 +219,18 @@ class DatedTrainingRole:
     provenance: Literal["fixed","frozen","provisional"]; target_credits: tuple[TargetCredit,...]; placement_id: str
 
 @dataclass(frozen=True)
+class QualityTranslationContext:
+    phase_id: str; user_fixed: bool=False; original_date: date|None=None; override_id: str|None=None
+    explicit_intent: str|None=None
+
+@dataclass(frozen=True)
+class TranslatedTrainingRole:
+    placement_id: str; source_id: str; date: date; planned_duration_minutes: int; phase_id: str
+    upstream_role: Literal["quality"]; quality_type: Literal["AT","TR","AN","PP"]
+    provenance: Literal["fixed","frozen","provisional"]; user_fixed: bool=False
+    original_date: date|None=None; override_id: str|None=None; reason_code: str=""
+
+@dataclass(frozen=True)
 class ActiveWindowState:
     window_start: date; window_end: date
     frozen_placements: tuple[WindowPlacement,...]; provisional_placements: tuple[WindowPlacement,...]
