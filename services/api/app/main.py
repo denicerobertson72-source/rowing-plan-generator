@@ -13,6 +13,7 @@ from secrets import token_urlsafe
 from traceback import extract_tb
 from enum import Enum
 from typing import Optional
+from uuid import UUID
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -66,6 +67,44 @@ def v2_planner_shadow_enabled() -> bool:
     """Permit diagnostic V2 shadow execution; never changes public routing."""
 
     return os.getenv("V2_PLANNER_SHADOW_ENABLED", "").strip().lower() in _TRUE_ENV_VALUES
+
+
+def v2_planner_live_optin_enabled() -> bool:
+    """Global permission for a future server-selected live V2 cohort."""
+
+    return os.getenv("V2_PLANNER_LIVE_OPTIN_ENABLED", "").strip().lower() in _TRUE_ENV_VALUES
+
+
+def parse_v2_live_optin_athlete_ids(raw: str | None = None) -> frozenset[str]:
+    """Return a canonical, fail-safe server-side V2 cohort from UUID text."""
+
+    entries = os.getenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", "") if raw is None else raw
+    result = set()
+    for item in str(entries or "").split(","):
+        try:
+            value = str(UUID(item.strip()))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        result.add(value)
+    return frozenset(result)
+
+
+def is_live_v2_athlete(athlete_id: str, *, live_enabled: bool | None = None, cohort: frozenset[str] | None = None) -> bool:
+    """Pure live-cohort membership; callers must have already verified ownership."""
+
+    try:
+        normalized = str(UUID(athlete_id))
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return bool(v2_planner_live_optin_enabled() if live_enabled is None else live_enabled) and normalized in (parse_v2_live_optin_athlete_ids() if cohort is None else cohort)
+
+
+def resolve_authenticated_athlete_planner(*, athlete_id: str, internal_planner_choice: PlannerChoice | None = None, live_enabled: bool | None = None, cohort: frozenset[str] | None = None) -> PlannerChoice:
+    """Future D-2 routing precedence, deliberately unused by live endpoints here."""
+
+    if internal_planner_choice is not None:
+        return resolve_planner_choice(internal_planner_choice)
+    return PlannerChoice.V2 if is_live_v2_athlete(athlete_id, live_enabled=live_enabled, cohort=cohort) else PlannerChoice.V1
 
 
 @dataclass(frozen=True)

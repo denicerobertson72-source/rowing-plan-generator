@@ -289,3 +289,54 @@ def test_explicit_v2_does_not_create_a_second_shadow_copy(monkeypatch):
     monkeypatch.setattr(main, "execute_selected_planner", tracked)
     plan = main.build_plan(PlanGenerationRequest(athlete_profile=_v2_ready_profile()), internal_planner_choice=main.PlannerChoice.V2)
     assert calls == [main.PlannerChoice.V2] and plan["v2_diagnostics"]["scheduler_version"] == "v2"
+
+
+@pytest.mark.parametrize("raw, expected", [(None, frozenset()), ("", frozenset()), (" , , ", frozenset()), ("not-a-uuid", frozenset()), ("550e8400-e29b-41d4-a716-446655440000", frozenset({"550e8400-e29b-41d4-a716-446655440000"})), (" 550E8400-E29B-41D4-A716-446655440000 ,550e8400-e29b-41d4-a716-446655440000, bad,", frozenset({"550e8400-e29b-41d4-a716-446655440000"}))])
+def test_live_cohort_parser_is_uuid_normalized_deterministic_and_fail_safe(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", raising=False)
+        actual = main.parse_v2_live_optin_athlete_ids()
+    else:
+        actual = main.parse_v2_live_optin_athlete_ids(raw)
+    assert actual == expected
+
+
+@pytest.mark.parametrize("value, expected", [(None, False), ("false", False), ("0", False), ("true", True), ("1", True), ("yes", True), ("on", True)])
+def test_live_global_flag_uses_the_existing_boolean_convention(monkeypatch, value, expected):
+    if value is None:
+        monkeypatch.delenv("V2_PLANNER_LIVE_OPTIN_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ENABLED", value)
+    assert main.v2_planner_live_optin_enabled() is expected
+
+
+def test_live_cohort_eligibility_and_pure_precedence(monkeypatch):
+    athlete = "550e8400-e29b-41d4-a716-446655440000"
+    cohort = main.parse_v2_live_optin_athlete_ids(athlete)
+    assert not main.is_live_v2_athlete(athlete, live_enabled=False, cohort=cohort)
+    assert not main.is_live_v2_athlete("550e8400-e29b-41d4-a716-446655440001", live_enabled=True, cohort=cohort)
+    assert main.is_live_v2_athlete(athlete.upper(), live_enabled=True, cohort=cohort)
+    assert main.resolve_authenticated_athlete_planner(athlete_id=athlete, live_enabled=True, cohort=cohort) is main.PlannerChoice.V2
+    assert main.resolve_authenticated_athlete_planner(athlete_id=athlete, internal_planner_choice=main.PlannerChoice.V1, live_enabled=True, cohort=cohort) is main.PlannerChoice.V1
+    monkeypatch.setenv("V2_PLANNER_INTERNAL_ENABLED", "true")
+    assert main.resolve_authenticated_athlete_planner(athlete_id=athlete, internal_planner_choice=main.PlannerChoice.V2, live_enabled=True, cohort=cohort) is main.PlannerChoice.V2
+
+
+def test_live_configuration_cannot_change_d1_public_generation_paths(monkeypatch):
+    athlete_profile = synthetic_profile()
+    monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ENABLED", "true")
+    monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", "550e8400-e29b-41d4-a716-446655440000")
+    calls: list[str] = []
+    original = main.generate_plan
+    monkeypatch.setattr(main, "generate_plan", lambda *args, **kwargs: (calls.append("v1"), original(*args, **kwargs))[1])
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "live-d1.sqlite3")
+        try:
+            generic = client.post("/api/v1/plans/generate", json={"athlete_profile": athlete_profile})
+            athlete_id = repository.create(athlete_profile, "development-user")
+            monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", athlete_id)
+            regeneration = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+        finally:
+            REPOSITORIES._instance = previous
+    assert generic.status_code == regeneration.status_code == 200
+    assert calls == ["v1", "v1"]
