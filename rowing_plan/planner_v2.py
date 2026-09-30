@@ -26,10 +26,25 @@ from .scheduler_v2 import (
 class V2PlanningError(RuntimeError):
     """Expected, safe-to-report V2 execution failure with a stable category."""
 
-    def __init__(self, reason_code: str, detail: str | None = None):
+    def __init__(self, reason_code: str, detail: str | None = None, diagnostics: dict[str, Any] | None = None):
         super().__init__(reason_code)
         self.reason_code = reason_code
         self.detail = detail or reason_code
+        self.diagnostics = dict(diagnostics or {})
+
+
+def _concrete_failure_diagnostics(*, failure_stage: str, failure_origin: str, reason_code: str, placement_id: str | None = None, day: date | None = None, role: str | None = None, quality_type: str | None = None) -> dict[str, Any]:
+    """Return JSON-safe, non-sensitive V2 concrete-workout failure context."""
+
+    return {
+        "failure_stage": failure_stage,
+        "failure_origin": failure_origin,
+        "placement_id": placement_id,
+        "date": day.isoformat() if day else None,
+        "role": role,
+        "quality_type": quality_type,
+        "reason_code": reason_code,
+    }
 
 
 def _context_minutes(context, activity_type: str, fallback: int) -> int:
@@ -75,12 +90,24 @@ def _quality_requests(profile: dict, roles, phase_types: dict[str, str]) -> tupl
     try:
         translated = translate_quality_roles(quality_roles, contexts)
     except ValueError as error:
-        raise V2PlanningError("v2_concrete_workout_failed", str(error)) from error
+        raise V2PlanningError("v2_concrete_workout_failed", str(error), _concrete_failure_diagnostics(failure_stage="quality_translation", failure_origin="translation", reason_code=str(error), role="quality")) from error
     experience = profile.get("athlete", {}).get("experience_level", "experienced")
     preference = profile.get("preferences", {}).get("workout_structure_preference", "varied")
     finalized = finalize_translated_quality_sequence(translated, experience=experience, preference=preference)
     if not finalized.success:
-        raise V2PlanningError("v2_concrete_workout_failed", finalized.failure_reason)
+        raise V2PlanningError(
+            "v2_concrete_workout_failed",
+            finalized.failure_reason,
+            _concrete_failure_diagnostics(
+                failure_stage="quality_finalization",
+                failure_origin=finalized.failure_stage or "finalization",
+                reason_code=finalized.failure_reason or "unknown_quality_failure",
+                placement_id=finalized.failed_placement_id,
+                day=finalized.failed_date,
+                role="quality",
+                quality_type=finalized.failed_quality_type,
+            ),
+        )
     by_id = {item.placement_id: item for item in finalized.roles}
     return tuple(V2SessionMaterializationRequest("quality", item.date, item.duration_minutes, item.phase_id, placement_id=item.placement_id, source_id=item.source_id, concrete_quality=by_id[item.placement_id]) for item in quality_roles)
 
@@ -132,7 +159,10 @@ def generate_plan_v2(profile: dict, config: dict, bands, power: dict, locked_ses
     if not result.success:
         reason = result.failure_reason or "unknown_materialization_failure"
         category = "v2_materialization_failed" if reason not in {"incomplete_session_shape", "duplicate_external_session_key", "rest_session_conflict"} else "v2_plan_contract_failed"
-        raise V2PlanningError(category, reason)
+        diagnostics = dict(result.failure_diagnostics)
+        if not diagnostics:
+            diagnostics = _concrete_failure_diagnostics(failure_stage="plan_assembly", failure_origin="materialization", reason_code=reason)
+        raise V2PlanningError(category, reason, diagnostics)
     return dict(result.plan)
 
 

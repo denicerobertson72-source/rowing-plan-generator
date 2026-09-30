@@ -49,9 +49,10 @@ class PlannerChoice(str, Enum):
 class PlannerRoutingError(RuntimeError):
     """A deterministic internal routing failure before any persistence occurs."""
 
-    def __init__(self, reason_code: str):
+    def __init__(self, reason_code: str, diagnostics: dict | None = None):
         super().__init__(reason_code)
         self.reason_code = reason_code
+        self.diagnostics = dict(diagnostics or {})
 
 
 _TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
@@ -175,12 +176,12 @@ def run_v2_shadow(*, profile: dict, bands: list[dict], power: dict, locked_sessi
         return ShadowPlannerResult(True, False, "unexpected", "unexpected_v2_exception")
 
 
-def log_planner_generation(*, authoritative_planner: str, shadow: ShadowPlannerResult | None = None, fallback_used: bool = False, fallback_reason_code: str | None = None, mode: str | None = None) -> None:
+def log_planner_generation(*, authoritative_planner: str, shadow: ShadowPlannerResult | None = None, fallback_used: bool = False, fallback_reason_code: str | None = None, failure_diagnostics: dict | None = None, mode: str | None = None) -> None:
     """Emit non-sensitive routing telemetry without serializing plans or profiles."""
 
     if shadow is None and not fallback_used and authoritative_planner == "v1" and mode is None:
         return
-    logger.info("planner_generation mode=%s authoritative_planner=%s shadow_planner=%s shadow_attempted=%s shadow_success=%s shadow_failure_category=%s shadow_failure_code=%s shadow_invariants=%s shadow_target_statuses=%s fallback_used=%s fallback_reason_code=%s", mode, authoritative_planner, "v2" if shadow else None, shadow.attempted if shadow else False, shadow.success if shadow else None, shadow.failure_category if shadow else None, shadow.failure_reason_code if shadow else None, shadow.invariants if shadow else (), shadow.target_statuses if shadow else (), fallback_used, fallback_reason_code)
+    logger.info("planner_generation mode=%s authoritative_planner=%s shadow_planner=%s shadow_attempted=%s shadow_success=%s shadow_failure_category=%s shadow_failure_code=%s shadow_invariants=%s shadow_target_statuses=%s fallback_used=%s fallback_reason_code=%s failure_diagnostics=%s", mode, authoritative_planner, "v2" if shadow else None, shadow.attempted if shadow else False, shadow.success if shadow else None, shadow.failure_category if shadow else None, shadow.failure_reason_code if shadow else None, shadow.invariants if shadow else (), shadow.target_statuses if shadow else (), fallback_used, fallback_reason_code, failure_diagnostics or {})
 
 
 def resolve_planner_choice(internal_planner_choice: PlannerChoice | None = None) -> PlannerChoice:
@@ -208,7 +209,7 @@ def execute_selected_planner(*, choice: PlannerChoice, profile: dict, bands: lis
         try:
             plan = generate_plan_v2(profile, CONFIG, bands, power, locked_sessions)
         except V2PlanningError as error:
-            raise PlannerRoutingError(error.reason_code) from error
+            raise PlannerRoutingError(error.reason_code, error.diagnostics) from error
         contract_error = validate_v2_plan_contract(plan, authoritative_sessions=locked_sessions)
         if contract_error:
             raise PlannerRoutingError("v2_plan_contract_failed") from ValueError(contract_error)
@@ -270,23 +271,28 @@ def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: Plann
         raise PlannerRoutingError("ambiguous_planner_choice")
     choice = server_authorized_planner_choice or resolve_planner_choice(internal_planner_choice)
     fallback_reason_code = None
+    fallback_diagnostics: dict = {}
     try:
         plan = execute_selected_planner(choice=choice, profile=profile, bands=bands, power=power, locked_sessions=request.locked_sessions)
     except PlannerRoutingError as error:
         if choice is not PlannerChoice.V2 or error.reason_code not in _V2_FALLBACK_ELIGIBLE or not v1_fallback_allowed(prior_plan):
             raise
         fallback_reason_code = error.reason_code
+        fallback_diagnostics = error.diagnostics
         plan = execute_selected_planner(choice=PlannerChoice.V1, profile=profile, bands=bands, power=power, locked_sessions=request.locked_sessions)
         # Add routing provenance only for an actual V2-to-V1 recovery; pure
         # public V1 output stays byte/behavior compatible.
-        plan = {**plan, "planner_routing": {"attempted_planner": "v2", "final_planner": "v1", "fallback_reason_code": error.reason_code}}
+        routing = {"attempted_planner": "v2", "final_planner": "v1", "fallback_reason_code": error.reason_code}
+        if error.diagnostics:
+            routing["failure_diagnostics"] = error.diagnostics
+        plan = {**plan, "planner_routing": routing}
     except PlanningConflict as error: raise HTTPException(status_code=422, detail={"error_code":"planning_conflict","planning_conflicts":[str(error)],"diagnostic":error.details}) from error
     hard_errors = hard_constraint_errors(plan, profile)
     if hard_errors:
         raise HTTPException(status_code=422, detail={"error_code":"hard_constraint","constraint_errors":hard_errors,"planning_conflicts":hard_errors,"diagnostic":{"conflict_type":"hard_constraint","reason":hard_errors[0],"validation_rule":"hard_constraint_errors"}})
     if fallback_reason_code:
         fallback_mode = "v2_live_optin_fallback" if routing_mode == "v2_live_optin" else routing_mode
-        log_planner_generation(authoritative_planner="v1", fallback_used=True, fallback_reason_code=fallback_reason_code, mode=fallback_mode)
+        log_planner_generation(authoritative_planner="v1", fallback_used=True, fallback_reason_code=fallback_reason_code, failure_diagnostics=fallback_diagnostics, mode=fallback_mode)
     elif choice is PlannerChoice.V1 and v2_planner_shadow_enabled():
         shadow = run_v2_shadow(profile=profile, bands=bands, power=power, locked_sessions=request.locked_sessions, v1_plan=plan)
         log_planner_generation(authoritative_planner="v1", shadow=shadow)

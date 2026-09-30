@@ -50,9 +50,10 @@ def build_plan_version_from_v2(*, profile: dict, bands, power: dict, calendar: t
     if any(day not in valid_dates for day in rest_dates): return V2PlanAssemblyResult(False,failure_reason="rest_date_outside_calendar")
     histories=selector_histories or {}; materialized=[]
     for request in requests:
-        if request.date not in valid_dates: return V2PlanAssemblyResult(False,failure_reason="session_date_outside_calendar")
+        if request.date not in valid_dates: return V2PlanAssemblyResult(False,failure_reason="session_date_outside_calendar",failure_diagnostics={"failure_stage":"plan_assembly","failure_origin":"materialization","placement_id":request.placement_id or None,"date":request.date.isoformat(),"role":request.role,"reason_code":"session_date_outside_calendar"})
         result=materialize_v2_session(request,profile=profile,bands=bands,power=power,selector_history=histories.get(request.placement_id,()))
-        if not result.success: return V2PlanAssemblyResult(False,failure_reason=result.failure_reason)
+        if not result.success:
+            return V2PlanAssemblyResult(False,failure_reason=result.failure_reason,failure_diagnostics={"failure_stage":"plan_assembly","failure_origin":"materialization","placement_id":request.placement_id or None,"date":request.date.isoformat(),"role":request.role,"quality_type":getattr(request.concrete_quality,"quality_type",None),"reason_code":result.failure_reason})
         if result.calendar_only: continue
         if not _REQUIRED <= set(result.session): return V2PlanAssemblyResult(False,failure_reason="incomplete_session_shape")
         materialized.append(dict(result.session))

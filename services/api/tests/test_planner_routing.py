@@ -387,6 +387,16 @@ def test_live_v2_expected_failure_uses_existing_safe_fallback_once_and_logs_its_
     assert "mode=v2_live_optin_fallback" in caplog.text
 
 
+def test_concrete_v2_fallback_preserves_structured_failure_diagnostics(monkeypatch):
+    from rowing_plan import planner_v2
+
+    diagnostic = {"failure_stage": "quality_finalization", "failure_origin": "finalization", "placement_id": "quality-1", "date": "2026-09-12", "role": "quality", "quality_type": "TR", "reason_code": "malformed_concrete_prescription"}
+    monkeypatch.setenv("V2_PLANNER_INTERNAL_ENABLED", "true")
+    monkeypatch.setattr(planner_v2, "generate_plan_v2", lambda *args, **kwargs: (_ for _ in ()).throw(planner_v2.V2PlanningError("v2_concrete_workout_failed", "fixture", diagnostic)))
+    plan = main.build_plan(PlanGenerationRequest(athlete_profile=synthetic_profile()), internal_planner_choice=main.PlannerChoice.V2)
+    assert plan["planner_routing"] == {"attempted_planner": "v2", "final_planner": "v1", "fallback_reason_code": "v2_concrete_workout_failed", "failure_diagnostics": diagnostic}
+
+
 @pytest.mark.parametrize("optout", ["global_off", "cohort_removal"])
 def test_future_v2_authority_blocks_live_fallback_and_v2_to_v1_optout_before_any_save(monkeypatch, caplog, optout):
     from rowing_plan import planner_v2

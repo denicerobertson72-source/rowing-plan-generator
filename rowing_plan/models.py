@@ -1,6 +1,6 @@
 """Small typed model helpers; public plans deliberately remain JSON dictionaries."""
 from __future__ import annotations
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Any, Literal, Mapping
 from datetime import date
 
@@ -113,6 +113,7 @@ class TrainingDoseTarget:
     target_exposures: int; minimum_exposures: int; target_minutes: int; minimum_minutes: int
     quality_class: Literal["none","aerobic","quality","race"]="none"; priority: Literal["hard","strong","soft"]="strong"
     minimum_recovery_days: int=0; source: str="season_phase"; rationale: str=""
+    phase_type: str|None=None
     def to_dict(self) -> dict[str,Any]:
         result=asdict(self); result["window_start"]=self.window_start.isoformat(); result["window_end"]=self.window_end.isoformat(); return result
 
@@ -258,7 +259,7 @@ class ConcreteQualitySequenceResult:
     # Populated by the C-2 finalization pipeline.  It deliberately never
     # mixes selector-stage fingerprints with athlete-visible fingerprints.
     final_history: tuple[Mapping[str,Any],...]=()
-    failed_placement_id: str|None=None; failed_date: date|None=None; failed_quality_type: str|None=None; failure_reason: str|None=None
+    failed_placement_id: str|None=None; failed_date: date|None=None; failed_quality_type: str|None=None; failure_reason: str|None=None; failure_stage: str|None=None
 
 @dataclass(frozen=True)
 class V2SessionMaterializationRequest:
@@ -276,6 +277,7 @@ class V2SessionMaterializationResult:
 @dataclass(frozen=True)
 class V2PlanAssemblyResult:
     success: bool; plan: Mapping[str,Any]|None=None; failure_reason: str|None=None
+    failure_diagnostics: Mapping[str,Any]=field(default_factory=dict)
 
 @dataclass(frozen=True)
 class ActiveWindowState:
