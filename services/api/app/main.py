@@ -303,7 +303,7 @@ def resolve_planner_choice(internal_planner_choice: PlannerChoice | None = None)
     return internal_planner_choice or default_planner_choice()
 
 
-def execute_selected_planner(*, choice: PlannerChoice, profile: dict, bands: list[dict], power: dict, locked_sessions: list[dict]) -> dict:
+def execute_selected_planner(*, choice: PlannerChoice, profile: dict, bands: list[dict], power: dict, locked_sessions: list[dict], prior_plan: dict | None = None, history_actuals: dict[str, dict] | None = None, planning_date: date | None = None) -> dict:
     """Return a complete in-memory plan. Persistence remains exclusively with callers.
 
     V2.8B will connect the complete V2 in-memory PlanVersion builder here. Any
@@ -317,7 +317,7 @@ def execute_selected_planner(*, choice: PlannerChoice, profile: dict, bands: lis
         # normalized input contract as V1 and still performs no persistence.
         from rowing_plan.planner_v2 import V2PlanningError, generate_plan_v2, validate_v2_plan_contract
         try:
-            plan = generate_plan_v2(profile, CONFIG, bands, power, locked_sessions)
+            plan = generate_plan_v2(profile, CONFIG, bands, power, locked_sessions, prior_plan=prior_plan, history_actuals=history_actuals, planning_date=planning_date)
         except V2PlanningError as error:
             raise PlannerRoutingError(error.reason_code, error.diagnostics) from error
         validation_started = perf_counter()
@@ -365,7 +365,7 @@ async def prevent_dynamic_api_caching(request, call_next):
     if request.url.path.startswith("/api/v1/") and request.method=="GET": response.headers["Cache-Control"]="no-store"
     return response
 
-def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: PlannerChoice | None = None, server_authorized_planner_choice: PlannerChoice | None = None, prior_plan: dict | None = None, routing_mode: str | None = None) -> dict:
+def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: PlannerChoice | None = None, server_authorized_planner_choice: PlannerChoice | None = None, prior_plan: dict | None = None, routing_mode: str | None = None, history_actuals: dict[str, dict] | None = None, planning_date: date | None = None) -> dict:
     """Run shared pre-planner work, then the selected in-memory planner.
 
     ``internal_planner_choice`` and ``server_authorized_planner_choice`` are
@@ -388,7 +388,7 @@ def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: Plann
     fallback_reason_code = None
     fallback_diagnostics: dict = {}
     try:
-        plan = execute_selected_planner(choice=choice, profile=profile, bands=bands, power=power, locked_sessions=request.locked_sessions)
+        plan = execute_selected_planner(choice=choice, profile=profile, bands=bands, power=power, locked_sessions=request.locked_sessions, prior_plan=prior_plan, history_actuals=history_actuals, planning_date=planning_date)
     except PlannerRoutingError as error:
         if choice is not PlannerChoice.V2 or error.reason_code not in _V2_FALLBACK_ELIGIBLE or not v1_fallback_allowed(prior_plan):
             raise
@@ -743,6 +743,8 @@ def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: s
             server_authorized_planner_choice=choice,
             prior_plan=prior_plan,
             routing_mode="v2_default" if choice is PlannerChoice.V2 else "v1_emergency_rollback",
+            history_actuals=effective_actuals,
+            planning_date=current_planning_date(),
         )
         actual_choice=_authoritative_choice_for_plan(plan, choice)
         plan["generation_input_context"]={

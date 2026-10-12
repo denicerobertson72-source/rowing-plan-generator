@@ -40,7 +40,7 @@ def _json(value):
     if isinstance(value,(tuple,list)): return [_json(item) for item in value]
     return value
 
-def build_plan_version_from_v2(*, profile: dict, bands, power: dict, calendar: tuple[DateContext,...], requests: tuple[V2SessionMaterializationRequest,...], rest_dates=(), authoritative_sessions=(), selector_histories=None, generated_at=None, v2_diagnostics=None, warnings=(), plan_impacts=()) -> V2PlanAssemblyResult:
+def build_plan_version_from_v2(*, profile: dict, bands, power: dict, calendar: tuple[DateContext,...], requests: tuple[V2SessionMaterializationRequest,...], rest_dates=(), authoritative_sessions=(), historical_calendar_days=None, selector_histories=None, generated_at=None, v2_diagnostics=None, warnings=(), plan_impacts=()) -> V2PlanAssemblyResult:
     """Materialize resolved V2 facts into a PlanVersion-shaped dictionary.
 
     It never invokes placement, translation, finalization, persistence, or API
@@ -67,5 +67,8 @@ def build_plan_version_from_v2(*, profile: dict, bands, power: dict, calendar: t
     keys=[(item["date"],item["session_id"],item["mode"]) for item in sessions]
     if len(keys)!=len(set(keys)): return V2PlanAssemblyResult(False,failure_reason="duplicate_external_session_key")
     sessions=sorted(sessions,key=_sort_key)
-    plan={"plan_version":"0.7.0","profile_id":profile.get("athlete",{}).get("display_name","athlete"),"generated_at":generated_at or date.today().isoformat(),"schedule_signature":schedule_signature(profile),"intensity_profile":_json(bands),"power_profile":_json(power),"sessions":sessions,"calendar_days":_calendar_days(calendar,rest_dates),"phases":[{"date":item.date.isoformat(),"phase":item.phase_id} for item in calendar],"weekly_totals":_totals(sessions),"warnings":_json(warnings),"plan_impacts":_json(plan_impacts),"v2_diagnostics":_json(v2_diagnostics or {"scheduler_version":"v2","demand_satisfaction":[],"rolling_targets":[],"repair_changes":[],"target_consequences":[],"overrides":[]})}
+    generated_calendar=_calendar_days(calendar,rest_dates)
+    historical=dict(historical_calendar_days or {})
+    calendar_days=[dict(historical.get(item["date"],item)) for item in generated_calendar]
+    plan={"plan_version":"0.7.0","profile_id":profile.get("athlete",{}).get("display_name","athlete"),"generated_at":generated_at or date.today().isoformat(),"schedule_signature":schedule_signature(profile),"intensity_profile":_json(bands),"power_profile":_json(power),"sessions":sessions,"calendar_days":calendar_days,"phases":[{"date":item.date.isoformat(),"phase":item.phase_id} for item in calendar],"weekly_totals":_totals(sessions),"warnings":_json(warnings),"plan_impacts":_json(plan_impacts),"v2_diagnostics":_json(v2_diagnostics or {"scheduler_version":"v2","demand_satisfaction":[],"rolling_targets":[],"repair_changes":[],"target_consequences":[],"overrides":[]})}
     return V2PlanAssemblyResult(True,plan)

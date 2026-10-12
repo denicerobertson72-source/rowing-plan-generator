@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -72,15 +73,16 @@ def test_optional_off_day_actual_is_carried_once_as_completed_history_and_preser
 
 def test_optional_erg_is_included_once_in_real_v2_completed_history():
     profile=synthetic_profile()
+    prior={"calendar_days":[{"date":"2026-09-07","designated_rest":True,"unavailable":False,"state":"designated_rest","commitments":[]}],"sessions":[]}
     locked=[{
         "date":"2026-09-07", "session_id":"ACTUAL_ERG", "mode":"erg",
         "source_id":"actual:2026-09-07:erg", "total_cardio_minutes":20,
         "total_training_minutes":20, "band":"UT2",
     }]
-    plan=generate_plan_v2(profile,CONFIG,build_intensity_profile(profile,CONFIG),build_power_profile(profile,CONFIG),locked)
+    plan=generate_plan_v2(profile,CONFIG,build_intensity_profile(profile,CONFIG),build_power_profile(profile,CONFIG),locked,prior_plan=prior,history_actuals={"actual:2026-09-07:erg":{"status":"completed","actual_duration_min":20,"actual_intensity":"UT2"}},planning_date=date(2026,10,12))
     actuals=[session for session in plan["sessions"] if session.get("source_id")=="actual:2026-09-07:erg"]
-    assert len(actuals) == 1
-    assert actuals[0]["session_id"] == "ACTUAL_ERG"
+    assert actuals == []
+    assert plan["v2_diagnostics"]["historical_preserved"]["completed_history_count"] == 1
 
 
 def test_optional_actual_rejects_a_day_that_is_not_planned_off():

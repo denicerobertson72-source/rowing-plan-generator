@@ -12,7 +12,7 @@ from datetime import date
 from time import perf_counter
 from typing import Any
 
-from .models import QualityTranslationContext, V2SessionMaterializationRequest
+from .models import QualityTranslationContext, TargetCredit, V2SessionMaterializationRequest, WindowPlacement
 from .periodization import build_season_phases, race_dates
 from .plan_assembly_v2 import build_plan_version_from_v2
 from .scheduler_v2 import (
@@ -137,7 +137,61 @@ def _routing_diagnostics(state, diagnostics) -> dict[str, Any]:
     }
 
 
-def generate_plan_v2(profile: dict, config: dict, bands, power: dict, locked_sessions: list[dict] | None = None) -> dict:
+def _historical_snapshot(prior_plan: dict | None, planning_date: date | None) -> tuple[dict[str, dict], tuple[dict, ...]]:
+    """Return immutable serialized history strictly before the planning date."""
+    if not prior_plan or planning_date is None:
+        return {}, ()
+    calendar={item.get("date"):dict(item) for item in prior_plan.get("calendar_days",()) if isinstance(item,dict) and isinstance(item.get("date"),str) and item["date"] < planning_date.isoformat()}
+    sessions=tuple(dict(item) for item in prior_plan.get("sessions",()) if isinstance(item,dict) and isinstance(item.get("date"),str) and item["date"] < planning_date.isoformat())
+    return calendar, sessions
+
+
+def _history_role(session: dict) -> str | None:
+    role=str(session.get("session_role") or "").upper()
+    if session.get("session_id")=="LIFT" or session.get("mode")=="strength": return "strength"
+    if role=="LONG_AEROBIC": return "long_aerobic"
+    if role=="AEROBIC_STRENGTH": return "ut1_aerobic_strength"
+    if role in {"THRESHOLD","RACE_PACE","SPRINT_POWER"} or session.get("band") in {"AT","TR","AN","PP"}: return "quality"
+    if session.get("session_id")=="COACHED" or session.get("coached"): return "coached_training"
+    if session.get("mode") in {"erg","on_water"}: return "dedicated_ut2"
+    return None
+
+
+def _completed_history_placements(*, historical_sessions: tuple[dict, ...], locked_sessions: tuple[dict, ...], actuals: dict[str, dict] | None, demands, calendar, planning_date: date | None) -> tuple[WindowPlacement, ...]:
+    """Create frozen physiological context only for completed actuals.
+
+    A prior prescription alone is deliberately not credited.  This keeps audit
+    history separate from what the athlete actually completed.
+    """
+    if planning_date is None or not actuals:
+        return ()
+    sessions={f'{item.get("date")}:{item.get("session_id")}:{item.get("mode")}':item for item in historical_sessions}
+    sessions.update({str(item.get("source_id")):item for item in locked_sessions if item.get("source_id")})
+    contexts={item.date:item for item in calendar}
+    placements=[]
+    for key,payload in sorted(actuals.items()):
+        if payload.get("status")!="completed": continue
+        session=sessions.get(key)
+        if not session: continue
+        try: day=date.fromisoformat(str(session.get("date")))
+        except (TypeError,ValueError): continue
+        if day>=planning_date: continue
+        role=_history_role(session)
+        if role is None: continue
+        minutes=int(payload.get("actual_duration_min") or session.get("total_training_minutes") or session.get("total_cardio_minutes") or 0)
+        credits=[]; context=contexts.get(day)
+        if role in {"dedicated_ut2","long_aerobic","ut1_aerobic_strength","quality"} and context:
+            for target in demands.rowing_dose_targets:
+                if target.phase_id==context.phase_id and target.category==role and target.window_start<=day<=target.window_end:
+                    credits.append(TargetCredit(f"{target.phase_id}:{target.category}",target.category,1,minutes))
+                    if role=="long_aerobic":
+                        ut2=next((item for item in demands.rowing_dose_targets if item.phase_id==target.phase_id and item.category=="dedicated_ut2"),None)
+                        if ut2: credits.append(TargetCredit(f"{ut2.phase_id}:dedicated_ut2","dedicated_ut2",1,minutes))
+        placements.append(WindowPlacement(f"completed:{key}",day,role,key,minutes,True,tuple(credits)))
+    return tuple(placements)
+
+
+def generate_plan_v2(profile: dict, config: dict, bands, power: dict, locked_sessions: list[dict] | None = None, *, prior_plan: dict | None = None, history_actuals: dict[str, dict] | None = None, planning_date: date | None = None) -> dict:
     """Build a complete V2 PlanVersion in memory, without saving it.
 
     The argument shape intentionally matches V1 ``generate_plan`` at the API
@@ -151,10 +205,14 @@ def generate_plan_v2(profile: dict, config: dict, bands, power: dict, locked_ses
         orchestration_started = perf_counter()
         phases = build_season_phases(profile)
         demands = generate_v2_demand_plan(profile, phases)
-        calendar = build_v2_season_calendar(profile, phases, locked_sessions=list(locked))
+        historical_calendar, historical_sessions = _historical_snapshot(prior_plan, planning_date)
+        calendar = build_v2_season_calendar(profile, phases, locked_sessions=list(locked), historical_calendar_days=historical_calendar)
+        completed_history=_completed_history_placements(historical_sessions=historical_sessions,locked_sessions=locked,actuals=history_actuals,demands=demands,calendar=calendar,planning_date=planning_date)
         _log_generation_timing("input_orchestration", orchestration_started)
         solver_started = perf_counter()
-        state, diagnostics = solve_v2_rolling_non_rowing(profile, demands, calendar)
+        preserving_history=bool(historical_calendar)
+        solver_start=planning_date if preserving_history and calendar[0].date<=planning_date<=calendar[-1].date else None
+        state, diagnostics = solve_v2_rolling_non_rowing(profile, demands, calendar, historical_placements=completed_history, start_date=solver_start)
         _log_generation_timing("solver", solver_started)
         # The rolling solver retains full-season frozen placement history but
         # its final active context is only the closing window. Expand that
@@ -165,10 +223,15 @@ def generate_plan_v2(profile: dict, config: dict, bands, power: dict, locked_ses
         ordinary = tuple(V2SessionMaterializationRequest(item.role, item.date, item.duration_minutes, item.phase_id, placement_id=item.placement_id, source_id=item.source_id) for item in roles if item.role not in {"rest", "quality"})
         phase_types = {item["phase_id"]: item["phase_type"] for item in phases}
         quality_started = perf_counter()
-        requests = ordinary + _quality_requests(profile, roles, phase_types) + _fixed_private_requests(profile, calendar) + _race_requests(profile, calendar)
+        active_requests=ordinary + _quality_requests(profile, roles, phase_types) + _fixed_private_requests(profile, calendar) + _race_requests(profile, calendar)
+        requests=tuple(item for item in active_requests if not preserving_history or item.date>=planning_date)
         _log_generation_timing("quality_translation_finalization", quality_started)
         materialization_started = perf_counter()
-        result = build_plan_version_from_v2(profile=profile, bands=bands, power=power, calendar=calendar, requests=requests, rest_dates=rest_dates, authoritative_sessions=locked, v2_diagnostics=_routing_diagnostics(full_state, diagnostics))
+        carryable_locked=tuple(item for item in locked if {"date","day","session_id","mode","title","band","total_cardio_minutes","phase","structure"} <= set(item))
+        carried_by_key={(item["date"],item["session_id"],item["mode"]):item for item in (*historical_sessions,*carryable_locked)}
+        diagnostics_payload=_routing_diagnostics(full_state, diagnostics)
+        diagnostics_payload["historical_preserved"]={"calendar_dates":tuple(sorted(historical_calendar)),"session_count":len(historical_sessions),"completed_history_count":len(completed_history),"planning_date":planning_date.isoformat() if planning_date else None}
+        result = build_plan_version_from_v2(profile=profile, bands=bands, power=power, calendar=calendar, requests=requests, rest_dates=rest_dates, authoritative_sessions=tuple(carried_by_key.values()), historical_calendar_days=historical_calendar, v2_diagnostics=diagnostics_payload)
         _log_generation_timing("materialization", materialization_started)
     except V2PlanningError:
         raise

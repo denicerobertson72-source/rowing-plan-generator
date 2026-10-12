@@ -420,10 +420,10 @@ def generate_rowing_dose_targets(profile: dict, season_phases: list[dict]|None=N
 def generate_v2_demand_plan(profile: dict, season_phases: list[dict]|None=None, races: list[dict]|None=None, recurring_activities: list[dict]|None=None) -> V2DemandPlan:
     return V2DemandPlan(tuple(generate_training_demands(profile,season_phases,races,recurring_activities)),tuple(generate_frequency_targets(profile,recurring_activities)),tuple(generate_rowing_dose_targets(profile,season_phases)))
 
-def build_v2_season_calendar(profile: dict, season_phases: list[dict]|None=None, races: list[dict]|None=None, locked_sessions: list[dict]|None=None) -> tuple[DateContext,...]:
+def build_v2_season_calendar(profile: dict, season_phases: list[dict]|None=None, races: list[dict]|None=None, locked_sessions: list[dict]|None=None, historical_calendar_days: dict[str,dict]|None=None) -> tuple[DateContext,...]:
     """Build dated hard context only; no flexible activity is placed here."""
     start,end=parse(profile["season"]["start_date"]),parse(profile["season"]["end_date"]); phases=season_phases or build_season_phases(profile); races=races if races is not None else profile.get("races",[]); locks=locked_sessions or []
-    availability={item["weekday"]:item for item in profile.get("weekly_availability",[])}; activities=profile.get("recurring_activities",[]); result=[]; current=start
+    availability={item["weekday"]:item for item in profile.get("weekly_availability",[])}; activities=profile.get("recurring_activities",[]); history=historical_calendar_days or {}; result=[]; current=start
     names=("monday","tuesday","wednesday","thursday","friday","saturday","sunday")
     while current<=end:
         weekday=names[current.weekday()]; avail=availability.get(weekday,{}); max_minutes=int(avail.get("max_training_minutes",0)); unavailable=not avail.get("available",True) or max_minutes<=0
@@ -436,6 +436,9 @@ def build_v2_season_calendar(profile: dict, season_phases: list[dict]|None=None,
         if practice: commitments.append({"type":"course_practice","minutes":int(practice.get("duration_minutes",30)),"fixed":True})
         used=sum(item["minutes"] for item in commitments); reasons=tuple(code for code,truth in (("unavailable",unavailable),("race_day",race),("race_practice",bool(practice))) if truth)
         permitted=() if unavailable or race else ("coached_training","strength","rest","rowing")
+        if current.isoformat() in history:
+            commitments.append({"type":"historical_preserved","minutes":max_minutes,"fixed":True})
+            unavailable=True; used=max_minutes; permitted=(); reasons=tuple(sorted(set(reasons+("historical_preserved",))))
         result.append(DateContext(current,weekday,phase["phase_id"],not unavailable,max_minutes,used,max(0,max_minutes-used),unavailable,race,bool(practice),phase["phase_type"] in {"taper","post_race_recovery"},tuple(commitments),tuple(item for item in locks if item.get("date")==current.isoformat()),permitted,reasons)); current+=timedelta(days=1)
     return tuple(result)
 
@@ -705,7 +708,7 @@ def _window_diagnostic(state, demands, active, target, start, end, strength_pref
     doses=[{"target_id":_dose_target_id(item),"category":item.category,"target_horizon_start":max(item.window_start,end-timedelta(days=item.window_days-1)).isoformat(),"target_horizon_end":min(item.window_end,end).isoformat(),**_dose_target_summary(reconciled,item,max(item.window_start,end-timedelta(days=item.window_days-1)),min(item.window_end,end)),**policies.get(_dose_target_id(item),{})} for item in rowing_targets]
     return {"window_start":start.isoformat(),"window_end":end.isoformat(),"coached_demands":records("coached_training"),"rest_demands":records("rest"),"strength":{**strength,"dates":[day.isoformat() for day in strength["dates"]]},"rowing_targets":doses,"target":strength["target"],"minimum":strength["minimum"],"maximum":strength["maximum"],"achieved":strength["achieved"],"status":strength["status"],"frozen_placements":[{"placement_id":item.placement_id,"date":item.date.isoformat(),"role":item.role,"source_id":item.source_id} for item in reconciled.frozen_placements],"provisional_placements":[{"placement_id":item.placement_id,"date":item.date.isoformat(),"role":item.role,"source_id":item.source_id} for item in reconciled.provisional_placements],"score_vector":score,"search":search}
 
-def solve_v2_rolling_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=None, calendar: tuple[DateContext,...]|None=None, *, initial_state: ActiveWindowState|None=None) -> tuple[ActiveWindowState, tuple[dict,...]]:
+def solve_v2_rolling_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=None, calendar: tuple[DateContext,...]|None=None, *, initial_state: ActiveWindowState|None=None, historical_placements: tuple[WindowPlacement,...]=(), start_date: date|None=None) -> tuple[ActiveWindowState, tuple[dict,...]]:
     """Bounded shared V2.2R-2 solver for coached/rest/strength; no rowing roles.
 
     Each seven-day advance reconstructs immutable capacity, imports the trailing
@@ -718,9 +721,11 @@ def solve_v2_rolling_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=No
     dose_targets=tuple(plan.rowing_dose_targets)
     preferences=set(next((item for item in profile.get("recurring_activities",[]) if item.get("activity_type")=="strength"),{}).get("preferred_days",()))
     first,last=cal[0].date,cal[-1].date
-    if initial_state and initial_state.window_start!=first:
+    if start_date is not None and not first<=start_date<=last:
+        raise ValueError("solver_start_outside_calendar")
+    if initial_state and initial_state.window_start!=(start_date or first):
         raise ValueError("initial_state_window_start_mismatch")
-    frozen=initial_state.frozen_placements if initial_state else (); provisional=initial_state.provisional_placements if initial_state else (); diagnostics=[]; final=None; start=first
+    frozen=initial_state.frozen_placements if initial_state else tuple(historical_placements); provisional=initial_state.provisional_placements if initial_state else (); diagnostics=[]; final=None; start=start_date or first
     while start<=last:
         window_clock=perf_counter()
         end=min(last,start+timedelta(days=ROLLING_WINDOW_DAYS-1))
