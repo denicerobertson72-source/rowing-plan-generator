@@ -149,6 +149,9 @@ def test_unexpected_generation_failure_is_safe_and_creates_no_plan(monkeypatch, 
         try:
             athlete_id=client.post("/api/v1/athletes",json={"athlete_profile":synthetic_profile()}).json()["athlete_id"]
             initial=client.post(f"/api/v1/athletes/{athlete_id}/plans/generate",json={})
+            changed_profile=REPOSITORIES.get(athlete_id)
+            changed_profile["season"]["target_peak_weekly_endurance_minutes"] += 10
+            REPOSITORIES.save(athlete_id,changed_profile)
             stored_before=copy.deepcopy(REPOSITORIES.get(athlete_id))
             monkeypatch.setattr("services.api.app.main.generate_plan", raise_unexpected)
             caplog.set_level(logging.ERROR, logger="services.api.app.main")
@@ -246,7 +249,9 @@ def test_real_profile_shaped_regeneration_normalizes_legacy_flexible_rest_withou
             initial=client.post(f"/api/v1/athletes/{athlete_id}/plans/generate",json={})
             before_save=REPOSITORIES.get(athlete_id)
             current=client.get(f"/api/v1/athletes/{athlete_id}").json()
-            saved=client.put(f"/api/v1/athletes/{athlete_id}",json={"athlete_profile":current["athlete_profile"],"expected_revision":current["profile_revision"]})
+            changed_profile=copy.deepcopy(current["athlete_profile"])
+            changed_profile["athlete"]["current_approx_weekly_rowing_minutes"] += 1
+            saved=client.put(f"/api/v1/athletes/{athlete_id}",json={"athlete_profile":changed_profile,"expected_revision":current["profile_revision"]})
             generated=client.post(f"/api/v1/athletes/{athlete_id}/plans/generate",json={})
             plan_id=generated.json()["plan_id"]
             persisted=REPOSITORIES.get_plan(plan_id)

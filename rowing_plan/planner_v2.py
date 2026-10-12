@@ -6,8 +6,10 @@ contains neither API routing nor persistence.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
 from datetime import date
+from time import perf_counter
 from typing import Any
 
 from .models import QualityTranslationContext, V2SessionMaterializationRequest
@@ -21,6 +23,14 @@ from .scheduler_v2 import (
     solve_v2_rolling_non_rowing,
     translate_quality_roles,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _log_generation_timing(stage: str, started: float) -> None:
+    """Emit stage timing without adding nondeterministic data to PlanVersion."""
+
+    logger.info("planner_generation_timing planner=v2 stage=%s duration_ms=%.3f", stage, (perf_counter() - started) * 1000)
 
 
 class V2PlanningError(RuntimeError):
@@ -138,10 +148,14 @@ def generate_plan_v2(profile: dict, config: dict, bands, power: dict, locked_ses
     del config  # V2's validated primitives currently have no additional config input.
     locked = tuple(dict(item) for item in (locked_sessions or ()))
     try:
+        orchestration_started = perf_counter()
         phases = build_season_phases(profile)
         demands = generate_v2_demand_plan(profile, phases)
         calendar = build_v2_season_calendar(profile, phases, locked_sessions=list(locked))
+        _log_generation_timing("input_orchestration", orchestration_started)
+        solver_started = perf_counter()
         state, diagnostics = solve_v2_rolling_non_rowing(profile, demands, calendar)
+        _log_generation_timing("solver", solver_started)
         # The rolling solver retains full-season frozen placement history but
         # its final active context is only the closing window. Expand that
         # immutable context for the existing final-state role adapter.
@@ -150,8 +164,12 @@ def generate_plan_v2(profile: dict, config: dict, bands, power: dict, locked_ses
         rest_dates = tuple(item.date for item in roles if item.role == "rest")
         ordinary = tuple(V2SessionMaterializationRequest(item.role, item.date, item.duration_minutes, item.phase_id, placement_id=item.placement_id, source_id=item.source_id) for item in roles if item.role not in {"rest", "quality"})
         phase_types = {item["phase_id"]: item["phase_type"] for item in phases}
+        quality_started = perf_counter()
         requests = ordinary + _quality_requests(profile, roles, phase_types) + _fixed_private_requests(profile, calendar) + _race_requests(profile, calendar)
+        _log_generation_timing("quality_translation_finalization", quality_started)
+        materialization_started = perf_counter()
         result = build_plan_version_from_v2(profile=profile, bands=bands, power=power, calendar=calendar, requests=requests, rest_dates=rest_dates, authoritative_sessions=locked, v2_diagnostics=_routing_diagnostics(full_state, diagnostics))
+        _log_generation_timing("materialization", materialization_started)
     except V2PlanningError:
         raise
     except ValueError as error:

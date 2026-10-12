@@ -1,6 +1,8 @@
 """V2.8A routing boundary: V1 remains the sole public planner."""
 from __future__ import annotations
 
+from datetime import date, timedelta
+import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -111,6 +113,173 @@ def test_athlete_regeneration_uses_v1_and_saves_one_new_plan(monkeypatch):
     assert response.status_code == 200
     assert calls == ["v1"]
     assert latest and latest["version_number"] == 1
+
+
+def _track_selected_planner(monkeypatch):
+    calls: list[main.PlannerChoice] = []
+    original = main.execute_selected_planner
+    monkeypatch.setattr(main, "execute_selected_planner", lambda **kwargs: (calls.append(kwargs["choice"]), original(**kwargs))[1])
+    return calls
+
+
+def test_authenticated_repeat_generation_returns_existing_plan_without_planning_or_save(monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger=main.__name__)
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "noop.sqlite3")
+        try:
+            athlete_id = repository.create(synthetic_profile(), "development-user")
+            first = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            calls = _track_selected_planner(monkeypatch)
+            save_calls: list[str] = []
+            original_save = repository.save_plan
+            monkeypatch.setattr(repository, "save_plan", lambda athlete_id, plan: (save_calls.append(athlete_id), original_save(athlete_id, plan))[1])
+            second = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            latest = repository.latest_plan_for_athlete(athlete_id)
+        finally:
+            REPOSITORIES._instance = previous
+    assert first.status_code == second.status_code == 200
+    assert second.json()["plan_id"] == first.json()["plan_id"]
+    assert calls == [] and save_calls == []
+    assert latest and latest["version_number"] == 1
+    assert "planner_generation mode=noop_existing_plan authoritative_planner=v1 regeneration_skipped=True" in caplog.text
+
+
+def test_authenticated_live_v2_repeat_generation_returns_existing_plan_without_planning(monkeypatch):
+    monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ENABLED", "true")
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "v2-noop.sqlite3")
+        try:
+            athlete_id = repository.create(_v2_ready_profile(), "development-user")
+            monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", athlete_id)
+            first = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            calls = _track_selected_planner(monkeypatch)
+            second = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            latest = repository.latest_plan_for_athlete(athlete_id)
+        finally:
+            REPOSITORIES._instance = previous
+    assert first.status_code == second.status_code == 200
+    assert first.json()["plan"]["v2_diagnostics"]["scheduler_version"] == "v2"
+    assert second.json()["plan_id"] == first.json()["plan_id"]
+    assert calls == []
+    assert latest and latest["version_number"] == 1
+
+
+def test_profile_change_regenerates_authenticated_plan(monkeypatch):
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "profile-change.sqlite3")
+        try:
+            athlete_id = repository.create(synthetic_profile(), "development-user")
+            assert client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={}).status_code == 200
+            profile = repository.get(athlete_id)
+            profile["season"]["target_peak_weekly_endurance_minutes"] += 10
+            repository.save(athlete_id, profile)
+            calls = _track_selected_planner(monkeypatch)
+            response = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            latest = repository.latest_plan_for_athlete(athlete_id)
+        finally:
+            REPOSITORIES._instance = previous
+    assert response.status_code == 200
+    assert calls == [main.PlannerChoice.V1]
+    assert latest and latest["version_number"] == 2
+
+
+def test_completed_actual_change_regenerates_authenticated_plan(monkeypatch):
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "actual-change.sqlite3")
+        try:
+            athlete_id = repository.create(synthetic_profile(), "development-user")
+            first = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            session = next(item for item in first.json()["plan"]["sessions"] if item.get("session_id") != "RACE")
+            repository.save_log(first.json()["plan_id"], f'{session["date"]}:{session.get("session_id")}:{session.get("mode")}', {"status": "completed", "actual_duration_min": 42})
+            calls = _track_selected_planner(monkeypatch)
+            response = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            latest = repository.latest_plan_for_athlete(athlete_id)
+        finally:
+            REPOSITORIES._instance = previous
+    assert response.status_code == 200
+    assert calls == [main.PlannerChoice.V1]
+    assert latest and latest["version_number"] == 2
+
+
+def test_race_change_regenerates_authenticated_plan(monkeypatch):
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "race-change.sqlite3")
+        try:
+            athlete_id = repository.create(synthetic_profile(), "development-user")
+            assert client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={}).status_code == 200
+            profile = repository.get(athlete_id)
+            profile["races"][0]["event_name"] = "Changed target race"
+            repository.save(athlete_id, profile)
+            calls = _track_selected_planner(monkeypatch)
+            response = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+        finally:
+            REPOSITORIES._instance = previous
+    assert response.status_code == 200
+    assert calls == [main.PlannerChoice.V1]
+
+
+def test_weekly_override_change_regenerates_authenticated_plan(monkeypatch):
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "override-change.sqlite3")
+        try:
+            athlete_id = repository.create(synthetic_profile(), "development-user")
+            assert client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={}).status_code == 200
+            repository.save_weekly_override(athlete_id, {"week_start": "2026-09-07", "scope": "this_week_only", "changes": [{"date": "2026-09-08", "kind": "rest"}]})
+            calls = _track_selected_planner(monkeypatch)
+            response = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+        finally:
+            REPOSITORIES._instance = previous
+    assert response.status_code == 200
+    assert calls == [main.PlannerChoice.V1]
+
+
+def test_user_fixed_placement_authority_changes_generation_fingerprint():
+    common = {
+        "profile": synthetic_profile(),
+        "choice": main.PlannerChoice.V2,
+        "locked_sessions": [],
+        "actuals": {},
+        "weekly_overrides": [],
+        "as_of": date(2026, 10, 12),
+    }
+    ordinary = main.generation_input_fingerprint(**common, prior_plan={"v2_diagnostics": {"placement_authority": [], "overrides": []}})
+    user_fixed = main.generation_input_fingerprint(
+        **common,
+        prior_plan={"v2_diagnostics": {"placement_authority": [{"placement_id": "strength:1", "date": "2026-10-13", "user_fixed": True, "original_date": "2026-10-11", "override_id": "move-1"}], "overrides": []}},
+    )
+    assert user_fixed["sha256"] != ordinary["sha256"]
+
+
+def test_planning_date_boundary_regenerates_authenticated_plan(monkeypatch):
+    today = date(2026, 10, 12)
+    monkeypatch.setattr(main, "current_planning_date", lambda: today)
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "date-change.sqlite3")
+        try:
+            athlete_id = repository.create(synthetic_profile(), "development-user")
+            assert client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={}).status_code == 200
+            monkeypatch.setattr(main, "current_planning_date", lambda: today + timedelta(days=1))
+            calls = _track_selected_planner(monkeypatch)
+            response = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+        finally:
+            REPOSITORIES._instance = previous
+    assert response.status_code == 200
+    assert calls == [main.PlannerChoice.V1]
+
+
+def test_planner_algorithm_version_change_regenerates_authenticated_plan(monkeypatch):
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "planner-version-change.sqlite3")
+        try:
+            athlete_id = repository.create(synthetic_profile(), "development-user")
+            assert client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={}).status_code == 200
+            monkeypatch.setattr(main, "PLANNER_VERSION", "planner-version-test-change")
+            calls = _track_selected_planner(monkeypatch)
+            response = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+        finally:
+            REPOSITORIES._instance = previous
+    assert response.status_code == 200
+    assert calls == [main.PlannerChoice.V1]
 
 
 def test_planner_failure_happens_before_save(monkeypatch):
@@ -523,5 +692,6 @@ def test_realistic_v1_to_v2_to_v1_transition_preserves_completed_history_and_ver
     assert first_v2.json()["plan"]["v2_diagnostics"]["scheduler_version"] == "v2"
     assert second_v2.json()["plan"]["v2_diagnostics"]["scheduler_version"] == "v2"
     assert "v2_diagnostics" not in final_v1.json()["plan"]
-    assert latest and latest["version_number"] == 4
+    assert second_v2.json()["plan_id"] == first_v2.json()["plan_id"]
+    assert latest and latest["version_number"] == 3
     assert any(item.get("date") == completed["date"] and item.get("session_id") == completed["session_id"] and item.get("mode") == completed["mode"] for item in final_v1.json()["plan"]["sessions"])

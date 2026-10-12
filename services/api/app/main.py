@@ -1,6 +1,7 @@
 """API-first adapter around the preserved deterministic planning engine."""
 from __future__ import annotations
 import json
+import hashlib
 import logging
 import os
 import sys
@@ -10,6 +11,7 @@ from datetime import date, timedelta
 from io import BytesIO
 from pathlib import Path
 from secrets import token_urlsafe
+from time import perf_counter
 from traceback import extract_tb
 from enum import Enum
 from typing import Optional
@@ -56,6 +58,25 @@ class PlannerRoutingError(RuntimeError):
 
 
 _TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+GENERATION_INPUT_FINGERPRINT_VERSION = "generation-input-v1"
+
+# The source digest is intentionally part of the input contract.  It makes a
+# deployed planner/scheduler algorithm change invalidate older PlanVersions
+# even if an individual engine module has not yet introduced a separate
+# version constant.
+_PLANNER_SOURCE_FILES = {
+    PlannerChoice.V1: (
+        "scheduler.py", "periodization.py", "intensity.py", "power_profile.py",
+        "recurring_activities.py", "session_archetypes.py", "session_selection.py",
+        "session_selector.py", "load_transformations.py",
+    ),
+    PlannerChoice.V2: (
+        "planner_v2.py", "scheduler_v2.py", "periodization.py", "intensity.py",
+        "power_profile.py", "recurring_activities.py", "materialization_v2.py",
+        "plan_assembly_v2.py", "session_archetypes.py", "session_selection.py",
+        "session_selector.py",
+    ),
+}
 
 
 def v2_planner_internal_enabled() -> bool:
@@ -176,12 +197,128 @@ def run_v2_shadow(*, profile: dict, bands: list[dict], power: dict, locked_sessi
         return ShadowPlannerResult(True, False, "unexpected", "unexpected_v2_exception")
 
 
-def log_planner_generation(*, authoritative_planner: str, shadow: ShadowPlannerResult | None = None, fallback_used: bool = False, fallback_reason_code: str | None = None, failure_diagnostics: dict | None = None, mode: str | None = None) -> None:
+def log_planner_generation(*, authoritative_planner: str, shadow: ShadowPlannerResult | None = None, fallback_used: bool = False, fallback_reason_code: str | None = None, failure_diagnostics: dict | None = None, mode: str | None = None, regeneration_skipped: bool = False) -> None:
     """Emit non-sensitive routing telemetry without serializing plans or profiles."""
 
     if shadow is None and not fallback_used and authoritative_planner == "v1" and mode is None:
         return
-    logger.info("planner_generation mode=%s authoritative_planner=%s shadow_planner=%s shadow_attempted=%s shadow_success=%s shadow_failure_category=%s shadow_failure_code=%s shadow_invariants=%s shadow_target_statuses=%s fallback_used=%s fallback_reason_code=%s failure_diagnostics=%s", mode, authoritative_planner, "v2" if shadow else None, shadow.attempted if shadow else False, shadow.success if shadow else None, shadow.failure_category if shadow else None, shadow.failure_reason_code if shadow else None, shadow.invariants if shadow else (), shadow.target_statuses if shadow else (), fallback_used, fallback_reason_code, failure_diagnostics or {})
+    logger.info("planner_generation mode=%s authoritative_planner=%s regeneration_skipped=%s shadow_planner=%s shadow_attempted=%s shadow_success=%s shadow_failure_category=%s shadow_failure_code=%s shadow_invariants=%s shadow_target_statuses=%s fallback_used=%s fallback_reason_code=%s failure_diagnostics=%s", mode, authoritative_planner, regeneration_skipped, "v2" if shadow else None, shadow.attempted if shadow else False, shadow.success if shadow else None, shadow.failure_category if shadow else None, shadow.failure_reason_code if shadow else None, shadow.invariants if shadow else (), shadow.target_statuses if shadow else (), fallback_used, fallback_reason_code, failure_diagnostics or {})
+
+
+def _canonical_json(value) -> str:
+    """Canonical JSON for deterministic, non-secret planner-input hashing."""
+
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=lambda item: item.isoformat() if isinstance(item, (date,)) else str(item))
+
+
+def current_planning_date() -> date:
+    """Single clock boundary for generation-input validity semantics."""
+
+    return date.today()
+
+
+def _planner_source_digest(choice: PlannerChoice) -> str:
+    digest = hashlib.sha256()
+    for filename in _PLANNER_SOURCE_FILES[choice]:
+        path = ROOT / "rowing_plan" / filename
+        digest.update(filename.encode("utf-8"))
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _user_placement_authority(plan: dict | None) -> tuple[dict, ...]:
+    diagnostics = (plan or {}).get("v2_diagnostics")
+    if not isinstance(diagnostics, dict):
+        return ()
+    authority = tuple(item for item in diagnostics.get("placement_authority", ()) if isinstance(item, dict) and (item.get("user_fixed") or item.get("override_id")))
+    overrides = tuple(item for item in diagnostics.get("overrides", ()) if isinstance(item, dict))
+    return tuple(sorted((dict(item) for item in authority + overrides), key=_canonical_json))
+
+
+def generation_input_fingerprint(*, profile: dict, choice: PlannerChoice, locked_sessions: list[dict], actuals: dict[str, dict], weekly_overrides: list[dict], prior_plan: dict | None, as_of: date | None = None) -> dict:
+    """Hash every currently consumed or authority-bearing generation input.
+
+    The fingerprint deliberately excludes persistence IDs and timestamps that
+    do not alter planning, while retaining actual payloads and override order
+    because those records can alter the authoritative displayed/training state.
+    """
+
+    normalized = normalize_recurring_schedule_for_planning(profile)
+    effective_profile = {key: value for key, value in normalized.items() if key != "_profile_revision"}
+    payload = {
+        "fingerprint_version": GENERATION_INPUT_FINGERPRINT_VERSION,
+        "planner": choice.value,
+        "planner_version": PLANNER_VERSION,
+        "planner_source_digest": _planner_source_digest(choice),
+        "config": CONFIG,
+        "planning_date": (as_of or current_planning_date()).isoformat(),
+        "profile": effective_profile,
+        "locked_sessions": tuple(sorted((dict(item) for item in locked_sessions), key=_canonical_json)),
+        "actuals": {key: actuals[key] for key in sorted(actuals)},
+        "weekly_overrides": tuple(dict(item) for item in weekly_overrides),
+        "user_placement_authority": _user_placement_authority(prior_plan),
+    }
+    return {
+        "version": GENERATION_INPUT_FINGERPRINT_VERSION,
+        "planner": choice.value,
+        "planning_date": payload["planning_date"],
+        "sha256": hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest(),
+    }
+
+
+def _complete_plan_for_noop(plan: dict) -> bool:
+    return bool(
+        isinstance(plan, dict)
+        and isinstance(plan.get("sessions"), list)
+        and isinstance(plan.get("calendar_days"), list)
+        and isinstance(plan.get("weekly_totals"), list)
+        and plan.get("plan_version")
+    )
+
+
+def plan_matches_generation_inputs(record: dict | None, fingerprint: dict) -> bool:
+    if not record or not _complete_plan_for_noop(record.get("plan", {})):
+        return False
+    stored = record["plan"].get("generation_input_fingerprint")
+    return isinstance(stored, dict) and stored == fingerprint
+
+
+def _authoritative_choice_for_plan(plan: dict, requested: PlannerChoice) -> PlannerChoice:
+    routing = plan.get("planner_routing") if isinstance(plan.get("planner_routing"), dict) else {}
+    if routing.get("final_planner") == "v1":
+        return PlannerChoice.V1
+    if isinstance(plan.get("v2_diagnostics"), dict) and plan["v2_diagnostics"].get("scheduler_version") == "v2":
+        return PlannerChoice.V2
+    return requested
+
+
+def _log_generation_timing(*, planner: str, stage: str, started: float) -> None:
+    logger.info("planner_generation_timing planner=%s stage=%s duration_ms=%.3f", planner, stage, (perf_counter() - started) * 1000)
+
+
+def _session_key_for_generation(session: dict) -> str:
+    return f'{session.get("date")}:{session.get("session_id")}:{session.get("mode")}'
+
+
+def _generation_history(previous: dict | None) -> tuple[list[dict], dict[str, dict], tuple[str, ...]]:
+    """Recover completed-history inputs carried through immutable versions."""
+
+    if not previous:
+        return [], {}, ()
+    plan = previous.get("plan", {})
+    context = plan.get("generation_input_context", {}) if isinstance(plan, dict) else {}
+    inherited_locked = [dict(item) for item in context.get("locked_sessions", ()) if isinstance(item, dict)] if isinstance(context, dict) else []
+    source_ids = [str(item) for item in context.get("actual_plan_ids", ()) if item] if isinstance(context, dict) else []
+    source_ids.append(previous["plan_id"])
+    actuals: dict[str, dict] = {}
+    for plan_id in source_ids:
+        for entry in REPOSITORIES.logs_for_plan(plan_id):
+            if isinstance(entry.get("payload"), dict):
+                actuals[entry["session_key"]] = entry["payload"]
+    completed = {key for key, payload in actuals.items() if payload.get("status") == "completed"}
+    newly_completed = [dict(session) for session in plan.get("sessions", ()) if _session_key_for_generation(session) in completed]
+    locked_by_key = {_session_key_for_generation(item): item for item in inherited_locked + newly_completed}
+    return list(locked_by_key.values()), actuals, tuple(dict.fromkeys(source_ids))
 
 
 def resolve_planner_choice(internal_planner_choice: PlannerChoice | None = None) -> PlannerChoice:
@@ -210,7 +347,9 @@ def execute_selected_planner(*, choice: PlannerChoice, profile: dict, bands: lis
             plan = generate_plan_v2(profile, CONFIG, bands, power, locked_sessions)
         except V2PlanningError as error:
             raise PlannerRoutingError(error.reason_code, error.diagnostics) from error
+        validation_started = perf_counter()
         contract_error = validate_v2_plan_contract(plan, authoritative_sessions=locked_sessions)
+        _log_generation_timing(planner="v2", stage="validation", started=validation_started)
         if contract_error:
             raise PlannerRoutingError("v2_plan_contract_failed") from ValueError(contract_error)
         return plan
@@ -261,6 +400,7 @@ def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: Plann
     supplied after the authenticated route has verified athlete ownership and
     resolved server-side live-cohort eligibility.
     """
+    input_started = perf_counter()
     profile = normalize_recurring_schedule_for_planning(request.athlete_profile)
     errors = validate_profile(profile)
     if errors:
@@ -270,6 +410,8 @@ def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: Plann
     if internal_planner_choice is not None and server_authorized_planner_choice is not None:
         raise PlannerRoutingError("ambiguous_planner_choice")
     choice = server_authorized_planner_choice or resolve_planner_choice(internal_planner_choice)
+    if choice is PlannerChoice.V2:
+        _log_generation_timing(planner="v2", stage="api_input_orchestration", started=input_started)
     fallback_reason_code = None
     fallback_diagnostics: dict = {}
     try:
@@ -556,11 +698,22 @@ def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: s
     try:
         previous=REPOSITORIES.latest_plan_for_athlete(athlete_id)
         locked=list(request.locked_sessions)
-        if previous:
-            completed={entry["session_key"] for entry in REPOSITORIES.logs_for_plan(previous["plan_id"]) if entry["payload"].get("status")=="completed"}
-            locked.extend(session for session in previous["plan"].get("sessions",[]) if f'{session["date"]}:{session.get("session_id")}:{session.get("mode")}' in completed)
+        inherited_locked, effective_actuals, actual_plan_ids = _generation_history(previous)
+        locked.extend(inherited_locked)
         choice=resolve_authenticated_athlete_planner(athlete_id=athlete_id)
         prior_plan=previous["plan"] if previous else None
+        fingerprint=generation_input_fingerprint(
+            profile=profile,
+            choice=choice,
+            locked_sessions=locked,
+            actuals=effective_actuals,
+            weekly_overrides=REPOSITORIES.weekly_overrides(athlete_id),
+            prior_plan=prior_plan,
+        )
+        if plan_matches_generation_inputs(previous, fingerprint):
+            authoritative=fingerprint["planner"]
+            log_planner_generation(authoritative_planner=authoritative, mode="noop_existing_plan", regeneration_skipped=True)
+            return PlanResponse(plan_id=previous["plan_id"], plan=previous["plan"])
         if choice is PlannerChoice.V1 and not v1_fallback_allowed(prior_plan):
             logger.warning("planner_generation mode=v2_live_optin_transition_blocked future_authority_blocks_v1_transition=true")
             raise HTTPException(status_code=409, detail={"error_code":"v2_future_authority_requires_resolution", "diagnostic":{"conflict_type":"planner_transition", "reason":"v2_future_authority_requires_resolution"}})
@@ -570,6 +723,19 @@ def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: s
             server_authorized_planner_choice=choice,
             prior_plan=prior_plan,
             routing_mode="v2_live_optin" if choice is PlannerChoice.V2 else None,
+        )
+        actual_choice=_authoritative_choice_for_plan(plan, choice)
+        plan["generation_input_context"]={
+            "locked_sessions": tuple(sorted((dict(item) for item in locked), key=_canonical_json)),
+            "actual_plan_ids": actual_plan_ids,
+        }
+        plan["generation_input_fingerprint"]=generation_input_fingerprint(
+            profile=profile,
+            choice=actual_choice,
+            locked_sessions=locked,
+            actuals=effective_actuals,
+            weekly_overrides=REPOSITORIES.weekly_overrides(athlete_id),
+            prior_plan=prior_plan,
         )
     except HTTPException as error:
         detail=error.detail if isinstance(error.detail, dict) else {}
@@ -586,7 +752,10 @@ def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: s
         raise unexpected_generation_error(error, profile, athlete_id, stage, planversion_creation_started) from error
     try:
         stage="persistence"; planversion_creation_started=True
+        persistence_started=perf_counter()
         plan_id=REPOSITORIES.save_plan(athlete_id,plan)
+        if _authoritative_choice_for_plan(plan, choice) is PlannerChoice.V2:
+            _log_generation_timing(planner="v2", stage="persistence", started=persistence_started)
     except Exception as error:
         raise unexpected_generation_error(error, profile, athlete_id, stage, planversion_creation_started) from error
     return PlanResponse(plan_id=plan_id, plan=plan)
