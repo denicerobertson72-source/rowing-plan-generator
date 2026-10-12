@@ -47,7 +47,7 @@ The initial local-first Streamlit MVP is in `app.py`. Create a virtual environme
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -r requirements.streamlit.txt
 .venv/bin/streamlit run app.py
 ```
 

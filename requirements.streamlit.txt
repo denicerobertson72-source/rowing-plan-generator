@@ -1,0 +1,4 @@
+# Local Streamlit pilot UI only. Vercel's FastAPI deployment installs
+# requirements.txt and must not pull the Streamlit UI dependency tree.
+-r requirements.txt
+streamlit>=1.35
