@@ -60,6 +60,11 @@ class WorkoutLogRequest(BaseModel):
     carry_cue_forward: bool = False
     actual_segments: list[ActualSessionSegment] = Field(default_factory=list)
 
+class OptionalActivityLogRequest(WorkoutLogRequest):
+    """An athlete-performed activity that was not a prescribed plan session."""
+    activity_type: Literal["erg","on_water","walk","cross_training","strength","mobility_recovery","other"]
+    distance_meters: Optional[int] = Field(default=None, ge=0)
+
 class PrivateCheckInRequest(BaseModel):
     entry_date: str
     female_health_tracking_enabled: bool = False
