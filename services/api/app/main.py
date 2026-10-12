@@ -31,7 +31,7 @@ from .repositories import REPOSITORIES, profile_revision, public_profile, with_p
 from .auth import current_user_id
 from rowing_plan.training_load import load_summary, session_load_au
 from rowing_plan.recurring_activities import normalize_recurring_schedule_for_planning, schedule_signature
-from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, AthleteUpdateRequest, OptionalActivityLogRequest, PlanGenerationRequest, PlanResponse, PrivateCheckInRequest, RacePostingRequest, RegenerateRequest, WeeklyOverrideRequest, WorkoutLogRequest
+from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, AthleteUpdateRequest, PlanGenerationRequest, PlanResponse, PrivateCheckInRequest, RacePostingRequest, RegenerateRequest, WeeklyOverrideRequest, WorkoutLogRequest
 
 CONFIG = json.loads((ROOT / "config/defaults.json").read_text())
 logger = logging.getLogger(__name__)
@@ -288,14 +288,7 @@ def _generation_history(previous: dict | None) -> tuple[list[dict], dict[str, di
                 actuals[entry["session_key"]] = entry["payload"]
     completed = {key for key, payload in actuals.items() if payload.get("status") == "completed"}
     newly_completed = [dict(session) for session in plan.get("sessions", ()) if _session_key_for_generation(session) in completed]
-    # Optional activities are persisted through the same immutable log store,
-    # but intentionally have no prescribed session in ``plan["sessions"]``.
-    # Carry them forward as completed context exactly once, without creating a
-    # retrospective planned workout.
-    optional_completed = [optional_activity_history_session(key, payload) for key, payload in actuals.items()
-                          if key.startswith("actual:") and payload.get("status") == "completed"]
-    optional_completed = [item for item in optional_completed if item]
-    locked_by_key = {_session_key_for_generation(item): item for item in inherited_locked + newly_completed + optional_completed}
+    locked_by_key = {_session_key_for_generation(item): item for item in inherited_locked + newly_completed}
     return list(locked_by_key.values()), actuals, tuple(dict.fromkeys(source_ids))
 
 
@@ -504,25 +497,6 @@ def actual_by_key(plan_id: str) -> dict[str, dict]:
             actuals={**{entry["session_key"]:entry["payload"] for entry in REPOSITORIES.logs_for_plan(source)},**actuals}
     return actuals
 
-def optional_activity_history_session(session_key: str, payload: dict) -> dict | None:
-    """Translate an unplanned actual into existing completed-session context."""
-    try:
-        _, activity_date, activity_type = session_key.split(":", 2)
-    except ValueError:
-        return None
-    duration = int(payload.get("actual_duration_min") or 0)
-    if duration <= 0:
-        return None
-    mode = {"erg": "erg", "on_water": "on_water", "strength": "strength"}.get(activity_type, activity_type)
-    return {"date": activity_date, "day": date.fromisoformat(activity_date).strftime("%A"), "phase": "completed", "fixed": True,
-            "mode": mode, "session_id": f"ACTUAL_{activity_type.upper()}", "title": f"Actual {activity_type.replace('_', ' ')}",
-            "band": payload.get("actual_intensity") or "UT3", "total_cardio_minutes": duration if activity_type in {"erg", "on_water"} else 0,
-            "total_training_minutes": duration, "rowing_minutes": duration if activity_type in {"erg", "on_water"} else 0,
-            "quality_minutes": 0, "structure": "Athlete-recorded optional activity.", "actual_activity": True}
-
-def optional_actuals_for_day(plan_id: str, activity_date: str) -> list[dict]:
-    return [dict(payload, session_key=key) for key, payload in actual_by_key(plan_id).items()
-            if key.startswith(f"actual:{activity_date}:")]
 def session_load_classification(payload: dict) -> str:
     if payload.get("completion")=="no" or payload.get("status")=="skipped": return "missed"
     composition=actual_composition(payload)
@@ -807,8 +781,7 @@ def week(plan_id: str, week_number: Optional[int] = None, week_start: Optional[d
     for offset in range(7):
         current=monday+timedelta(days=offset); day_sessions=[s for s in enriched_sessions if s["date"]==current.isoformat()]
         state=calendar.get(current.isoformat(),{}).get("state","no_additional_session")
-        days.append({"date":current.isoformat(),"day":current.strftime("%A"),"state":state,"sessions":day_sessions,
-                     "actual_activities":optional_actuals_for_day(plan_id, current.isoformat())})
+        days.append({"date":current.isoformat(),"day":current.strftime("%A"),"state":state,"sessions":day_sessions})
     return {"plan_id": plan_id,"plan_version":record["version_number"],"plan_needs_update":plan_needs_update(record,profile), "week": monday.isocalendar().week, "week_start":monday.isoformat(), "days": days, "weekly_override_applied":bool(matching_override)}
 
 @app.get("/api/v1/plans/{plan_id}/calendar")
@@ -840,18 +813,6 @@ def log_workout(plan_id: str, session_key: str, log: WorkoutLogRequest, user_id:
         payload["carry_cue_forward"]=False
     proposal=bounded_coached_proposal(record,session_key,payload) if rowing_session(source) else {"recommendation":"none","classification":"logged","changes":[]}
     return {"status": "accepted", "log_id": REPOSITORIES.save_log(plan_id, session_key, payload), "session_load_au":session_load_au(payload), "adjustment":proposal}
-
-@app.post("/api/v1/plans/{plan_id}/days/{activity_date}/actuals")
-def log_optional_activity(plan_id: str, activity_date: date, log: OptionalActivityLogRequest, user_id: str = Depends(current_user_id)) -> dict:
-    """Record voluntary activity without changing the day’s prescribed plan."""
-    owned_plan(plan_id, user_id)
-    payload = log.model_dump()
-    payload.update({"status": payload.get("status") or "completed", "completion": payload.get("completion") or "yes",
-                    "activity_date": activity_date.isoformat(), "optional_activity": True,
-                    "coach_cues": "", "carry_cue_forward": False})
-    key = f"actual:{activity_date.isoformat()}:{payload['activity_type']}"
-    return {"status": "accepted", "log_id": REPOSITORIES.save_log(plan_id, key, payload),
-            "session_key": key, "session_load_au": session_load_au(payload)}
 
 @app.post("/api/v1/plans/{plan_id}/coached-session-adjustment/apply")
 def apply_coached_session_adjustment(plan_id: str, session_key: str, user_id: str = Depends(current_user_id)) -> dict:
