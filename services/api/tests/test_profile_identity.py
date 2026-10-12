@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
 from fastapi.testclient import TestClient
 
 from services.api.app.main import app
@@ -14,6 +15,17 @@ def client_for_database(path: Path):
     previous=REPOSITORIES._instance
     REPOSITORIES._instance=SQLiteRepositories(path)
     return TestClient(app), previous
+
+
+@pytest.fixture(autouse=True)
+def _legacy_profile_contract_uses_explicit_emergency_v1(monkeypatch):
+    """Keep legacy-profile normalization assertions independent of V2 solver cost.
+
+    Default-V2 behavior is covered at the routing boundary; these tests exercise
+    compatibility and persistence of historical V1-shaped profiles.
+    """
+
+    monkeypatch.setenv("V2_PLANNER_EMERGENCY_V1_ROLLBACK", "true")
 
 
 def test_account_listing_is_owner_scoped_and_reports_safe_duplicate_metadata():
@@ -51,12 +63,12 @@ def test_onboarding_creation_is_idempotent_for_retries():
 
 
 def test_empty_or_missing_long_session_preference_is_valid_and_does_not_mutate_profile():
-    from services.api.app.main import build_plan
+    from services.api.app.main import PlannerChoice, build_plan
     from services.api.app.schemas import PlanGenerationRequest
     profile=synthetic_profile()
     profile.setdefault("preferences", {})["preferred_long_session_days"]=[]
     original=copy.deepcopy(profile)
-    plan=build_plan(PlanGenerationRequest(athlete_profile=profile))
+    plan=build_plan(PlanGenerationRequest(athlete_profile=profile), internal_planner_choice=PlannerChoice.V1)
     assert profile == original
     assert any(session.get("session_role") == "LONG_AEROBIC" for session in plan["sessions"])
 
@@ -83,7 +95,7 @@ def test_tester_shaped_profile_with_varied_structure_saves_and_generates():
 
 
 def test_legacy_profile_without_recurring_activities_uses_three_part_schedule_contract():
-    from services.api.app.main import build_plan
+    from services.api.app.main import PlannerChoice, build_plan
     from services.api.app.schemas import PlanGenerationRequest
     profile=synthetic_profile()
     profile.pop("recurring_activities")
@@ -91,7 +103,7 @@ def test_legacy_profile_without_recurring_activities_uses_three_part_schedule_co
     profile["season"].update({"start_date":"2026-09-10","end_date":"2026-11-30"})
     profile["races"]= [{"event_name":"November 5k","start_date":"2026-11-06","end_date":"2026-11-06","priority":"A","race_type":"head_5k"}]
     profile["weekly_availability"]=[{"weekday":day,"available":True,"max_training_minutes":90,"rowing_modes":["erg"],"heavy_lifting":day in {"monday","thursday"},"fixed_rest":day=="saturday"} for day in ("monday","tuesday","wednesday","thursday","friday","saturday","sunday")]
-    plan=build_plan(PlanGenerationRequest(athlete_profile=profile))
+    plan=build_plan(PlanGenerationRequest(athlete_profile=profile), internal_planner_choice=PlannerChoice.V1)
     assert plan["sessions"] and plan["schedule_candidate_audits"] == []
 
 

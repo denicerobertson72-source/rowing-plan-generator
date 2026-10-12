@@ -15,7 +15,6 @@ from time import perf_counter
 from traceback import extract_tb
 from enum import Enum
 from typing import Optional
-from uuid import UUID
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -32,7 +31,7 @@ from .repositories import REPOSITORIES, profile_revision, public_profile, with_p
 from .auth import current_user_id
 from rowing_plan.training_load import load_summary, session_load_au
 from rowing_plan.recurring_activities import normalize_recurring_schedule_for_planning, schedule_signature
-from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, AthleteUpdateRequest, PlanGenerationRequest, PlanResponse, PrivateCheckInRequest, RacePostingRequest, RegenerateRequest, WeeklyOverrideRequest, WorkoutLogRequest
+from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, AthleteUpdateRequest, OptionalActivityLogRequest, PlanGenerationRequest, PlanResponse, PrivateCheckInRequest, RacePostingRequest, RegenerateRequest, WeeklyOverrideRequest, WorkoutLogRequest
 
 CONFIG = json.loads((ROOT / "config/defaults.json").read_text())
 logger = logging.getLogger(__name__)
@@ -79,54 +78,26 @@ _PLANNER_SOURCE_FILES = {
 }
 
 
-def v2_planner_internal_enabled() -> bool:
-    """Permission for test/internal V2 routing; never a public traffic switch."""
-
-    return os.getenv("V2_PLANNER_INTERNAL_ENABLED", "").strip().lower() in _TRUE_ENV_VALUES
-
-
 def v2_planner_shadow_enabled() -> bool:
     """Permit diagnostic V2 shadow execution; never changes public routing."""
 
     return os.getenv("V2_PLANNER_SHADOW_ENABLED", "").strip().lower() in _TRUE_ENV_VALUES
 
 
-def v2_planner_live_optin_enabled() -> bool:
-    """Global permission for a future server-selected live V2 cohort."""
+def v2_emergency_v1_rollback_enabled() -> bool:
+    """Server-side emergency rollback; V2 is otherwise the production default."""
 
-    return os.getenv("V2_PLANNER_LIVE_OPTIN_ENABLED", "").strip().lower() in _TRUE_ENV_VALUES
-
-
-def parse_v2_live_optin_athlete_ids(raw: str | None = None) -> frozenset[str]:
-    """Return a canonical, fail-safe server-side V2 cohort from UUID text."""
-
-    entries = os.getenv("V2_PLANNER_LIVE_OPTIN_ATHLETE_IDS", "") if raw is None else raw
-    result = set()
-    for item in str(entries or "").split(","):
-        try:
-            value = str(UUID(item.strip()))
-        except (AttributeError, TypeError, ValueError):
-            continue
-        result.add(value)
-    return frozenset(result)
+    return os.getenv("V2_PLANNER_EMERGENCY_V1_ROLLBACK", "").strip().lower() in _TRUE_ENV_VALUES
 
 
-def is_live_v2_athlete(athlete_id: str, *, live_enabled: bool | None = None, cohort: frozenset[str] | None = None) -> bool:
-    """Pure live-cohort membership; callers must have already verified ownership."""
-
-    try:
-        normalized = str(UUID(athlete_id))
-    except (AttributeError, TypeError, ValueError):
-        return False
-    return bool(v2_planner_live_optin_enabled() if live_enabled is None else live_enabled) and normalized in (parse_v2_live_optin_athlete_ids() if cohort is None else cohort)
+def default_planner_choice() -> PlannerChoice:
+    return PlannerChoice.V1 if v2_emergency_v1_rollback_enabled() else PlannerChoice.V2
 
 
-def resolve_authenticated_athlete_planner(*, athlete_id: str, internal_planner_choice: PlannerChoice | None = None, live_enabled: bool | None = None, cohort: frozenset[str] | None = None) -> PlannerChoice:
-    """Future D-2 routing precedence, deliberately unused by live endpoints here."""
+def resolve_authenticated_athlete_planner(*, internal_planner_choice: PlannerChoice | None = None) -> PlannerChoice:
+    """Authenticated generation is V2-by-default and never cohort-gated."""
 
-    if internal_planner_choice is not None:
-        return resolve_planner_choice(internal_planner_choice)
-    return PlannerChoice.V2 if is_live_v2_athlete(athlete_id, live_enabled=live_enabled, cohort=cohort) else PlannerChoice.V1
+    return internal_planner_choice or default_planner_choice()
 
 
 @dataclass(frozen=True)
@@ -317,17 +288,21 @@ def _generation_history(previous: dict | None) -> tuple[list[dict], dict[str, di
                 actuals[entry["session_key"]] = entry["payload"]
     completed = {key for key, payload in actuals.items() if payload.get("status") == "completed"}
     newly_completed = [dict(session) for session in plan.get("sessions", ()) if _session_key_for_generation(session) in completed]
-    locked_by_key = {_session_key_for_generation(item): item for item in inherited_locked + newly_completed}
+    # Optional activities are persisted through the same immutable log store,
+    # but intentionally have no prescribed session in ``plan["sessions"]``.
+    # Carry them forward as completed context exactly once, without creating a
+    # retrospective planned workout.
+    optional_completed = [optional_activity_history_session(key, payload) for key, payload in actuals.items()
+                          if key.startswith("actual:") and payload.get("status") == "completed"]
+    optional_completed = [item for item in optional_completed if item]
+    locked_by_key = {_session_key_for_generation(item): item for item in inherited_locked + newly_completed + optional_completed}
     return list(locked_by_key.values()), actuals, tuple(dict.fromkeys(source_ids))
 
 
 def resolve_planner_choice(internal_planner_choice: PlannerChoice | None = None) -> PlannerChoice:
-    """Resolve the explicit internal choice without allowing the flag to change defaults."""
+    """Resolve explicit internal selection, otherwise the production default."""
 
-    choice = internal_planner_choice or PlannerChoice.V1
-    if choice is PlannerChoice.V2 and not v2_planner_internal_enabled():
-        raise PlannerRoutingError("v2_planner_not_enabled")
-    return choice
+    return internal_planner_choice or default_planner_choice()
 
 
 def execute_selected_planner(*, choice: PlannerChoice, profile: dict, bands: list[dict], power: dict, locked_sessions: list[dict]) -> dict:
@@ -398,7 +373,7 @@ def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: Plann
     ``internal_planner_choice`` and ``server_authorized_planner_choice`` are
     intentionally unavailable to public request schemas. The latter is only
     supplied after the authenticated route has verified athlete ownership and
-    resolved server-side live-cohort eligibility.
+    selected the server-side default or emergency rollback route.
     """
     input_started = perf_counter()
     profile = normalize_recurring_schedule_for_planning(request.athlete_profile)
@@ -433,13 +408,15 @@ def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: Plann
     if hard_errors:
         raise HTTPException(status_code=422, detail={"error_code":"hard_constraint","constraint_errors":hard_errors,"planning_conflicts":hard_errors,"diagnostic":{"conflict_type":"hard_constraint","reason":hard_errors[0],"validation_rule":"hard_constraint_errors"}})
     if fallback_reason_code:
-        fallback_mode = "v2_live_optin_fallback" if routing_mode == "v2_live_optin" else routing_mode
+        fallback_mode = f"{routing_mode or 'v2_default'}_fallback"
         log_planner_generation(authoritative_planner="v1", fallback_used=True, fallback_reason_code=fallback_reason_code, failure_diagnostics=fallback_diagnostics, mode=fallback_mode)
     elif choice is PlannerChoice.V1 and v2_planner_shadow_enabled():
         shadow = run_v2_shadow(profile=profile, bands=bands, power=power, locked_sessions=request.locked_sessions, v1_plan=plan)
         log_planner_generation(authoritative_planner="v1", shadow=shadow)
     elif choice is PlannerChoice.V2:
-        log_planner_generation(authoritative_planner="v2", mode=routing_mode or "v2_internal")
+        log_planner_generation(authoritative_planner="v2", mode=routing_mode or "v2_default")
+    elif routing_mode:
+        log_planner_generation(authoritative_planner="v1", mode=routing_mode)
     return plan
 
 def owned_athlete(athlete_id: str, user_id: str) -> dict:
@@ -526,6 +503,26 @@ def actual_by_key(plan_id: str) -> dict[str, dict]:
         if source:
             actuals={**{entry["session_key"]:entry["payload"] for entry in REPOSITORIES.logs_for_plan(source)},**actuals}
     return actuals
+
+def optional_activity_history_session(session_key: str, payload: dict) -> dict | None:
+    """Translate an unplanned actual into existing completed-session context."""
+    try:
+        _, activity_date, activity_type = session_key.split(":", 2)
+    except ValueError:
+        return None
+    duration = int(payload.get("actual_duration_min") or 0)
+    if duration <= 0:
+        return None
+    mode = {"erg": "erg", "on_water": "on_water", "strength": "strength"}.get(activity_type, activity_type)
+    return {"date": activity_date, "day": date.fromisoformat(activity_date).strftime("%A"), "phase": "completed", "fixed": True,
+            "mode": mode, "session_id": f"ACTUAL_{activity_type.upper()}", "title": f"Actual {activity_type.replace('_', ' ')}",
+            "band": payload.get("actual_intensity") or "UT3", "total_cardio_minutes": duration if activity_type in {"erg", "on_water"} else 0,
+            "total_training_minutes": duration, "rowing_minutes": duration if activity_type in {"erg", "on_water"} else 0,
+            "quality_minutes": 0, "structure": "Athlete-recorded optional activity.", "actual_activity": True}
+
+def optional_actuals_for_day(plan_id: str, activity_date: str) -> list[dict]:
+    return [dict(payload, session_key=key) for key, payload in actual_by_key(plan_id).items()
+            if key.startswith(f"actual:{activity_date}:")]
 def session_load_classification(payload: dict) -> str:
     if payload.get("completion")=="no" or payload.get("status")=="skipped": return "missed"
     composition=actual_composition(payload)
@@ -629,7 +626,8 @@ def ready() -> dict:
 
 @app.post("/api/v1/plans/generate", response_model=PlanResponse)
 def generate(request: PlanGenerationRequest) -> PlanResponse:
-    plan = build_plan(request)
+    choice=default_planner_choice()
+    plan = build_plan(request, server_authorized_planner_choice=choice, routing_mode="v1_emergency_rollback" if choice is PlannerChoice.V1 else "v2_default")
     athlete_id=REPOSITORIES.create(request.athlete_profile)
     return PlanResponse(plan_id=REPOSITORIES.save_plan(athlete_id, plan), plan=plan)
 
@@ -694,13 +692,13 @@ def update_athlete(athlete_id: str, request: AthleteUpdateRequest, user_id: str 
 def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: str = Depends(current_user_id)) -> PlanResponse:
     profile=owned_athlete(athlete_id,user_id)
     stage="locked_session_loading"; planversion_creation_started=False
-    choice=PlannerChoice.V1
+    choice=default_planner_choice()
     try:
         previous=REPOSITORIES.latest_plan_for_athlete(athlete_id)
         locked=list(request.locked_sessions)
         inherited_locked, effective_actuals, actual_plan_ids = _generation_history(previous)
         locked.extend(inherited_locked)
-        choice=resolve_authenticated_athlete_planner(athlete_id=athlete_id)
+        choice=resolve_authenticated_athlete_planner()
         prior_plan=previous["plan"] if previous else None
         fingerprint=generation_input_fingerprint(
             profile=profile,
@@ -715,14 +713,14 @@ def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: s
             log_planner_generation(authoritative_planner=authoritative, mode="noop_existing_plan", regeneration_skipped=True)
             return PlanResponse(plan_id=previous["plan_id"], plan=previous["plan"])
         if choice is PlannerChoice.V1 and not v1_fallback_allowed(prior_plan):
-            logger.warning("planner_generation mode=v2_live_optin_transition_blocked future_authority_blocks_v1_transition=true")
+            logger.warning("planner_generation mode=v1_emergency_rollback_blocked future_authority_blocks_v1_transition=true")
             raise HTTPException(status_code=409, detail={"error_code":"v2_future_authority_requires_resolution", "diagnostic":{"conflict_type":"planner_transition", "reason":"v2_future_authority_requires_resolution"}})
         stage="plan_generation"
         plan=build_plan(
             PlanGenerationRequest(athlete_profile=profile, locked_sessions=locked),
             server_authorized_planner_choice=choice,
             prior_plan=prior_plan,
-            routing_mode="v2_live_optin" if choice is PlannerChoice.V2 else None,
+            routing_mode="v2_default" if choice is PlannerChoice.V2 else "v1_emergency_rollback",
         )
         actual_choice=_authoritative_choice_for_plan(plan, choice)
         plan["generation_input_context"]={
@@ -745,7 +743,7 @@ def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: s
         raise
     except PlannerRoutingError as error:
         if choice is PlannerChoice.V2 and error.reason_code in _V2_FALLBACK_ELIGIBLE and not v1_fallback_allowed(previous["plan"] if previous else None):
-            logger.warning("planner_generation mode=v2_live_optin_transition_blocked future_authority_blocks_v1_transition=true")
+            logger.warning("planner_generation mode=v2_default_fallback_blocked future_authority_blocks_v1_transition=true")
             raise HTTPException(status_code=409, detail={"error_code":"v2_fallback_blocked_by_future_authority", "diagnostic":{"conflict_type":"planner_transition", "reason":"v2_fallback_blocked_by_future_authority"}}) from error
         raise unexpected_generation_error(error, profile, athlete_id, stage, planversion_creation_started) from error
     except Exception as error:
@@ -809,7 +807,8 @@ def week(plan_id: str, week_number: Optional[int] = None, week_start: Optional[d
     for offset in range(7):
         current=monday+timedelta(days=offset); day_sessions=[s for s in enriched_sessions if s["date"]==current.isoformat()]
         state=calendar.get(current.isoformat(),{}).get("state","no_additional_session")
-        days.append({"date":current.isoformat(),"day":current.strftime("%A"),"state":state,"sessions":day_sessions})
+        days.append({"date":current.isoformat(),"day":current.strftime("%A"),"state":state,"sessions":day_sessions,
+                     "actual_activities":optional_actuals_for_day(plan_id, current.isoformat())})
     return {"plan_id": plan_id,"plan_version":record["version_number"],"plan_needs_update":plan_needs_update(record,profile), "week": monday.isocalendar().week, "week_start":monday.isoformat(), "days": days, "weekly_override_applied":bool(matching_override)}
 
 @app.get("/api/v1/plans/{plan_id}/calendar")
@@ -841,6 +840,18 @@ def log_workout(plan_id: str, session_key: str, log: WorkoutLogRequest, user_id:
         payload["carry_cue_forward"]=False
     proposal=bounded_coached_proposal(record,session_key,payload) if rowing_session(source) else {"recommendation":"none","classification":"logged","changes":[]}
     return {"status": "accepted", "log_id": REPOSITORIES.save_log(plan_id, session_key, payload), "session_load_au":session_load_au(payload), "adjustment":proposal}
+
+@app.post("/api/v1/plans/{plan_id}/days/{activity_date}/actuals")
+def log_optional_activity(plan_id: str, activity_date: date, log: OptionalActivityLogRequest, user_id: str = Depends(current_user_id)) -> dict:
+    """Record voluntary activity without changing the day’s prescribed plan."""
+    owned_plan(plan_id, user_id)
+    payload = log.model_dump()
+    payload.update({"status": payload.get("status") or "completed", "completion": payload.get("completion") or "yes",
+                    "activity_date": activity_date.isoformat(), "optional_activity": True,
+                    "coach_cues": "", "carry_cue_forward": False})
+    key = f"actual:{activity_date.isoformat()}:{payload['activity_type']}"
+    return {"status": "accepted", "log_id": REPOSITORIES.save_log(plan_id, key, payload),
+            "session_key": key, "session_load_au": session_load_au(payload)}
 
 @app.post("/api/v1/plans/{plan_id}/coached-session-adjustment/apply")
 def apply_coached_session_adjustment(plan_id: str, session_key: str, user_id: str = Depends(current_user_id)) -> dict:
