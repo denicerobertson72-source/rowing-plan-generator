@@ -62,6 +62,25 @@ def test_onboarding_creation_is_idempotent_for_retries():
     assert len(listing.json()["athletes"]) == 1
 
 
+def test_current_athlete_returns_existing_profile_without_creating_another():
+    """A current-profile read must select persisted state, never start onboarding."""
+    with TemporaryDirectory() as directory:
+        client, previous=client_for_database(Path(directory)/"current-athlete.sqlite3")
+        try:
+            created=client.post("/api/v1/account/onboarding-athlete",json={"athlete_profile":synthetic_profile()})
+            before=client.get("/api/v1/account/athletes")
+            current=client.get("/api/v1/account/athlete")
+            selected=client.get(f"/api/v1/athletes/{created.json()['athlete_id']}")
+            after=client.get("/api/v1/account/athletes")
+        finally:
+            REPOSITORIES._instance=previous
+    assert created.status_code == before.status_code == current.status_code == selected.status_code == after.status_code == 200
+    assert current.json()["athlete_id"] == created.json()["athlete_id"]
+    assert selected.json()["athlete_id"] == created.json()["athlete_id"]
+    assert before.json()["athletes"] == after.json()["athletes"]
+    assert len(after.json()["athletes"]) == 1
+
+
 def test_empty_or_missing_long_session_preference_is_valid_and_does_not_mutate_profile():
     from services.api.app.main import PlannerChoice, build_plan
     from services.api.app.schemas import PlanGenerationRequest

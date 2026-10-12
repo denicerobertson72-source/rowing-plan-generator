@@ -259,7 +259,7 @@ class PostgresRepositories:
         with self._connect() as db, db.cursor() as cursor:
             cursor.execute("SELECT athlete_id, profile_json FROM athletes WHERE user_id=%s ORDER BY updated_at DESC LIMIT 1",(user_id,)); row=cursor.fetchone()
             if not row: return None
-            cursor.execute("SELECT plan_id FROM plan_versions WHERE athlete_id=%s ORDER BY version_number DESC LIMIT 1",(row["athlete_id"])); plan=cursor.fetchone()
+            cursor.execute("SELECT plan_id FROM plan_versions WHERE athlete_id=%s ORDER BY version_number DESC LIMIT 1",(row["athlete_id"],)); plan=cursor.fetchone()
         return {"athlete_id":row["athlete_id"],"athlete_profile":row["profile_json"],"plan_id":plan["plan_id"] if plan else None}
     def list_for_user(self, user_id: str) -> list[dict[str, Any]]:
         with self._connect() as db, db.cursor() as cursor:
