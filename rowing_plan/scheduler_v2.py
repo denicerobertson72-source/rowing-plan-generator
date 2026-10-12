@@ -6,7 +6,7 @@ from dataclasses import replace
 from .models import ActiveWindowState, CandidateDateResult, ConcreteFinalizationResult, ConcreteQualitySequenceResult, ConcreteTrainingRole, DateContext, DatedTrainingRole, DemandSatisfaction, FrequencyTarget, LocalRepairResult, QualityTranslationContext, RepairChange, RepairReconstructionResult, RepairScope, ReopenedPlacement, RollingPlacementResult, ScheduleChangeResult, TargetConsequence, TargetCredit, TrainingDemand, TrainingDoseTarget, TranslatedTrainingRole, UserScheduleOverride, V2DemandPlan, WindowPlacement
 from .session_selection import ROLE_BAND, candidates, select_and_instantiate
 from .load_transformations import transform
-from .periodization import build_season_phases, parse, race_dates
+from .periodization import RECOVERY, build_season_phases, parse, race_dates
 
 _ROLE={"LONG_AEROBIC":("long_aerobic","aerobic",0),"AEROBIC_BASE":("aerobic_base","aerobic",0),"AEROBIC_STRENGTH":("aerobic_strength","aerobic",1),"THRESHOLD":("threshold","quality",1),"RACE_PACE":("race_pace","quality",1),"SPRINT_POWER":("sprint_power","quality",1),"RECOVERY":("recovery","none",0),"TECHNIQUE_EASY":("aerobic_base","aerobic",0)}
 ROLLING_WINDOW_DAYS=14
@@ -429,17 +429,31 @@ def build_v2_season_calendar(profile: dict, season_phases: list[dict]|None=None,
         weekday=names[current.weekday()]; avail=availability.get(weekday,{}); max_minutes=int(avail.get("max_training_minutes",0)); unavailable=not avail.get("available",True) or max_minutes<=0
         phase=next(item for item in phases if item["start_date"]<=current.isoformat()<=item["end_date"]); commitments=[]
         race=any(current in race_dates(item) for item in races); practice=next((entry for item in races for entry in item.get("practice_sessions",[]) if entry.get("date")==current.isoformat()),None)
+        # The phase model already scales recovery by race priority.  Multiple
+        # actual competition days add one protected calendar day after the
+        # normal priority-based recovery span.  Practice rows are intentionally
+        # excluded: familiarization is a fixed technical/easy fact, not a race.
+        post_race_recovery=False
+        for event in races:
+            event_days=race_dates(event)
+            if not event_days:
+                continue
+            recovery_days=RECOVERY.get(event.get("priority", "B"), RECOVERY["B"]) + int(len(event_days) > 1)
+            last_race=max(event_days)
+            if last_race < current <= last_race + timedelta(days=recovery_days):
+                post_race_recovery=True
+                break
         for activity in activities:
             if activity.get("scheduling_status")=="fixed" and weekday in activity.get("fixed_days",[]): commitments.append({"type":activity.get("activity_type"),"minutes":min(50,max_minutes),"fixed":True})
         commitments += [{"type":"locked","minutes":int(item.get("total_training_minutes",item.get("total_cardio_minutes",0))),"fixed":True} for item in locks if item.get("date")==current.isoformat()]
         if race: commitments.append({"type":"race","minutes":20,"fixed":True})
         if practice: commitments.append({"type":"course_practice","minutes":int(practice.get("duration_minutes",30)),"fixed":True})
-        used=sum(item["minutes"] for item in commitments); reasons=tuple(code for code,truth in (("unavailable",unavailable),("race_day",race),("race_practice",bool(practice))) if truth)
+        used=sum(item["minutes"] for item in commitments); reasons=tuple(code for code,truth in (("unavailable",unavailable),("race_day",race),("race_practice",bool(practice)),("post_race_recovery",post_race_recovery)) if truth)
         permitted=() if unavailable or race else ("coached_training","strength","rest","rowing")
         if current.isoformat() in history:
             commitments.append({"type":"historical_preserved","minutes":max_minutes,"fixed":True})
             unavailable=True; used=max_minutes; permitted=(); reasons=tuple(sorted(set(reasons+("historical_preserved",))))
-        result.append(DateContext(current,weekday,phase["phase_id"],not unavailable,max_minutes,used,max(0,max_minutes-used),unavailable,race,bool(practice),phase["phase_type"] in {"taper","post_race_recovery"},tuple(commitments),tuple(item for item in locks if item.get("date")==current.isoformat()),permitted,reasons)); current+=timedelta(days=1)
+        result.append(DateContext(current,weekday,phase["phase_id"],not unavailable,max_minutes,used,max(0,max_minutes-used),unavailable,race,bool(practice),phase["phase_type"] in {"taper","post_race_recovery"},tuple(commitments),tuple(item for item in locks if item.get("date")==current.isoformat()),permitted,reasons,(),post_race_recovery)); current+=timedelta(days=1)
     return tuple(result)
 
 def candidate_dates_for_demand(demand, calendar: tuple[DateContext,...], required_minutes: int|None=None) -> CandidateDateResult:
@@ -522,6 +536,13 @@ def assign_window_placement(state: ActiveWindowState, placement: WindowPlacement
     if not state.window_start<=placement.date<=state.window_end: raise ValueError("outside_active_window")
     context=state.fixed_context.get(placement.date)
     if not context or context.unavailable or context.race or context.race_practice: raise ValueError("hard_calendar_conflict")
+    # A race is a high-stress event for recovery purposes even though it is a
+    # fixed calendar fact rather than a flexible solver placement.  The
+    # recovery calendar permits rest (and the phase's low-dose UT2 intent),
+    # but never lets rolling strength or generic quality refill the protected
+    # post-race days.
+    if context.post_race_recovery and (placement.role in {"strength", "long_aerobic", "ut1_aerobic_strength"} or _is_quality(placement.role)):
+        raise ValueError("post_race_recovery")
     if role_family(placement.role) in context.prohibited_role_families: raise ValueError("activity_prohibited")
     if state.remaining_minutes_by_date.get(placement.date,0)<placement.minutes: raise ValueError("insufficient_minutes")
     existing=_all_placements(state)

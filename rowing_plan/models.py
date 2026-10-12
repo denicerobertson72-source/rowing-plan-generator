@@ -130,6 +130,9 @@ class DateContext:
     taper_or_recovery: bool=False; fixed_commitments: tuple[dict[str,Any],...]=(); completed_sessions: tuple[dict[str,Any],...]=()
     permitted_activity_categories: tuple[str,...]=(); diagnostic_reason_codes: tuple[str,...]=()
     prohibited_role_families: tuple[str,...]=()
+    # This is deliberately distinct from the broader phase-level recovery
+    # label: it is a dated hard guard after a completed race event.
+    post_race_recovery: bool=False
 
 @dataclass(frozen=True)
 class CandidateDateResult:
