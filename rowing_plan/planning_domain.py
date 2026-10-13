@@ -31,6 +31,7 @@ class AuthorityType(_TextEnum):
     FIXED_COACHING = "fixed_coaching"
     FIXED_RECURRING_ACTIVITY = "fixed_recurring_activity"
     USER_FIXED_PLACEMENT = "user_fixed_placement"
+    EXPLICIT_API_LOCK = "explicit_api_lock"
 
 
 class AuthoritySource(_TextEnum):
@@ -38,6 +39,7 @@ class AuthoritySource(_TextEnum):
     RECURRING_ACTIVITY = "recurring_activity"
     USER_OVERRIDE = "user_override"
     PRIOR_PLAN = "prior_plan"
+    EXPLICIT_API_LOCK = "explicit_api_lock"
 
 
 class ConflictBehavior(_TextEnum):
@@ -80,6 +82,7 @@ class ProvenanceSource(_TextEnum):
     RECURRING_ACTIVITY = "recurring_activity"
     USER_OVERRIDE = "user_override"
     LEGACY_V2 = "legacy_v2"
+    LEGACY_LOCKED_SESSION = "legacy_locked_session"
 
 
 def _freeze(value: Any) -> Any:

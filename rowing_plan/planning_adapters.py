@@ -115,12 +115,14 @@ def adapt_historical_sessions(prior_plan: Mapping[str, Any] | None, actuals: Map
             continue
         identity = _identity(session)
         key = ":".join(identity)
-        actual = actuals.get(key)
+        actual = actuals.get(key) or actuals.get(str(session.get("source_id") or ""))
         completed = bool(actual and actual.get("status") == "completed")
         role = _session_role(session)
         facts.append(HistoricalFact(
             id=f"historical:{key}", date=day,
-            type=HistoricalFactType.COMPLETED_PLANNED_SESSION if completed else HistoricalFactType.PRESCRIBED_SESSION,
+            type=(HistoricalFactType.RACE_FACT if role is TrainingRole.RACE else
+                  HistoricalFactType.COMPLETED_PLANNED_SESSION if completed else
+                  HistoricalFactType.PRESCRIBED_SESSION),
             planned_prescription=dict(session), completed_actual=dict(actual) if completed else None,
             physiological_credit=_completed_credit(role, _session_minutes(session, actual), completed),
             provenance=Provenance(
