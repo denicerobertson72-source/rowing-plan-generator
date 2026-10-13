@@ -26,6 +26,8 @@ from .scheduler_v2 import (
 
 logger = logging.getLogger(__name__)
 
+_SERIALIZED_SESSION_REQUIRED = frozenset({"date", "day", "session_id", "mode", "title", "band", "total_cardio_minutes", "phase", "structure"})
+
 
 def _log_generation_timing(stage: str, started: float) -> None:
     """Emit stage timing without adding nondeterministic data to PlanVersion."""
@@ -231,6 +233,7 @@ def generate_plan_v2(profile: dict, config: dict, bands, power: dict, locked_ses
         carried_by_key={(item["date"],item["session_id"],item["mode"]):item for item in (*historical_sessions,*carryable_locked)}
         diagnostics_payload=_routing_diagnostics(full_state, diagnostics)
         diagnostics_payload["historical_preserved"]={"calendar_dates":tuple(sorted(historical_calendar)),"session_count":len(historical_sessions),"completed_history_count":len(completed_history),"planning_date":planning_date.isoformat() if planning_date else None}
+        diagnostics_payload["post_race_recovery_dates"]=tuple(item.date.isoformat() for item in calendar if item.post_race_recovery)
         result = build_plan_version_from_v2(profile=profile, bands=bands, power=power, calendar=calendar, requests=requests, rest_dates=rest_dates, authoritative_sessions=tuple(carried_by_key.values()), historical_calendar_days=historical_calendar, v2_diagnostics=diagnostics_payload)
         _log_generation_timing("materialization", materialization_started)
     except V2PlanningError:
@@ -247,37 +250,71 @@ def generate_plan_v2(profile: dict, config: dict, bands, power: dict, locked_ses
     return dict(result.plan)
 
 
-def validate_v2_plan_contract(plan: dict, *, authoritative_sessions=()) -> str | None:
-    """Validate the external PlanVersion shape, not scheduling physiology."""
+def _serialized_authoritative_sessions(authoritative_sessions) -> tuple[dict, ...]:
+    """Return planned-session authorities, excluding history-only inputs.
+
+    ``locked_sessions`` is also the internal transport for completed actuals
+    and optional off-day activity history.  Those records constrain physiology
+    but are not prescribed sessions and must never be required in the emitted
+    plan calendar.  The assembly layer already makes this exact distinction.
+    """
+
+    return tuple(dict(item) for item in authoritative_sessions if isinstance(item, dict) and _SERIALIZED_SESSION_REQUIRED <= set(item))
+
+
+def _authoritative_session_detail(expected: dict, actual: dict | None) -> dict:
+    key = (expected.get("date"), expected.get("session_id"), expected.get("mode"))
+    changed = () if actual is None else tuple(sorted(key for key in set(expected) | set(actual) if actual.get(key) != expected.get(key)))
+    return {
+        "reason_code": "authoritative_session_not_preserved",
+        "authority_type": "serialized_locked_or_historical_session",
+        "source_session_identity": {"date": key[0], "session_id": key[1], "mode": key[2], "source_id": expected.get("source_id")},
+        "source_date": key[0],
+        "expected_date": key[0],
+        "preservation_status": "omitted" if actual is None else "changed",
+        "changed_fields": changed,
+    }
+
+
+def validate_v2_plan_contract_details(plan: dict, *, authoritative_sessions=()) -> dict | None:
+    """Return a stable diagnostic for an external PlanVersion contract failure."""
 
     try:
         json.dumps(plan)
     except (TypeError, ValueError):
-        return "not_json_serializable"
+        return {"reason_code": "not_json_serializable"}
     required = {"plan_version", "profile_id", "generated_at", "intensity_profile", "power_profile", "sessions", "calendar_days", "phases", "weekly_totals", "v2_diagnostics"}
     if not required <= set(plan) or not isinstance(plan.get("sessions"), list) or not isinstance(plan.get("calendar_days"), list):
-        return "missing_plan_structure"
+        return {"reason_code": "missing_plan_structure"}
     session_required = {"date", "day", "session_id", "mode", "title", "band", "total_cardio_minutes", "phase", "structure"}
     sessions = plan["sessions"]
     if any(not session_required <= set(item) for item in sessions):
-        return "incomplete_session_shape"
+        return {"reason_code": "incomplete_session_shape"}
     keys = [(item["date"], item["session_id"], item["mode"]) for item in sessions]
     if len(keys) != len(set(keys)):
-        return "duplicate_external_session_key"
+        return {"reason_code": "duplicate_external_session_key"}
     for item in sessions:
         if item.get("band") in {"AT", "TR", "AN", "PP"} and (not item.get("session_fingerprint") or not item.get("structure") or "v2_finalized_quality" not in item.get("selection_reason_codes", ())):
-            return "unfinalized_quality_session"
+            return {"reason_code": "unfinalized_quality_session"}
     rest_dates = {item["date"] for item in plan["calendar_days"] if item.get("designated_rest")}
     if any(item["date"] in rest_dates for item in sessions):
-        return "rest_session_conflict"
+        return {"reason_code": "rest_session_conflict"}
     for calendar_day in plan["calendar_days"]:
         if not {"date", "designated_rest", "unavailable", "state", "commitments"} <= set(calendar_day):
-            return "incomplete_calendar_shape"
+            return {"reason_code": "incomplete_calendar_shape"}
         commitments = calendar_day.get("commitments", ())
         if any(item.get("type") == "race" for item in commitments) and not any(session["date"] == calendar_day["date"] and session["session_id"] == "RACE" for session in sessions):
-            return "race_commitment_not_represented"
-    authoritative = {(item.get("date"), item.get("session_id"), item.get("mode")): item for item in authoritative_sessions}
+            return {"reason_code": "race_commitment_not_represented", "date": calendar_day["date"], "authority_type": "fixed_race_commitment"}
+    authoritative = {(item.get("date"), item.get("session_id"), item.get("mode")): item for item in _serialized_authoritative_sessions(authoritative_sessions)}
     serialized = {(item.get("date"), item.get("session_id"), item.get("mode")): item for item in sessions}
-    if any(serialized.get(key) != item for key, item in authoritative.items()):
-        return "authoritative_session_not_preserved"
+    for key, item in authoritative.items():
+        if serialized.get(key) != item:
+            return _authoritative_session_detail(item, serialized.get(key))
     return None
+
+
+def validate_v2_plan_contract(plan: dict, *, authoritative_sessions=()) -> str | None:
+    """Validate the external PlanVersion shape, not scheduling physiology."""
+
+    detail = validate_v2_plan_contract_details(plan, authoritative_sessions=authoritative_sessions)
+    return detail["reason_code"] if detail else None

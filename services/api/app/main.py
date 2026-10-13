@@ -315,16 +315,41 @@ def execute_selected_planner(*, choice: PlannerChoice, profile: dict, bands: lis
     if choice is PlannerChoice.V2:
         # Kept here rather than in the API route so V2.8B has the same shared
         # normalized input contract as V1 and still performs no persistence.
-        from rowing_plan.planner_v2 import V2PlanningError, generate_plan_v2, validate_v2_plan_contract
+        from rowing_plan.planner_v2 import V2PlanningError, generate_plan_v2, validate_v2_plan_contract_details
         try:
             plan = generate_plan_v2(profile, CONFIG, bands, power, locked_sessions, prior_plan=prior_plan, history_actuals=history_actuals, planning_date=planning_date)
         except V2PlanningError as error:
             raise PlannerRoutingError(error.reason_code, error.diagnostics) from error
         validation_started = perf_counter()
-        contract_error = validate_v2_plan_contract(plan, authoritative_sessions=locked_sessions)
+        historical = []
+        if prior_plan and planning_date:
+            historical = [dict(item) for item in prior_plan.get("sessions", ()) if isinstance(item, dict) and isinstance(item.get("date"), str) and item["date"] < planning_date.isoformat()]
+        # Preserve the same precedence used by V2 assembly: explicit locks
+        # supersede an equal-key historical record, while history-only actuals
+        # remain physiological context rather than planned-session authority.
+        contract_authority = {
+            _session_key_for_generation(item): (item, "historical_preserved_session")
+            for item in historical if isinstance(item, dict)
+        }
+        contract_authority.update({
+            _session_key_for_generation(item): (item, "serialized_locked_session")
+            for item in locked_sessions if isinstance(item, dict)
+        })
+        contract_error = validate_v2_plan_contract_details(plan, authoritative_sessions=tuple(item for item, _ in contract_authority.values()))
         _log_generation_timing(planner="v2", stage="validation", started=validation_started)
         if contract_error:
-            raise PlannerRoutingError("v2_plan_contract_failed") from ValueError(contract_error)
+            identity = contract_error.get("source_session_identity", {})
+            key = f'{identity.get("date")}:{identity.get("session_id")}:{identity.get("mode")}'
+            source_date = identity.get("date")
+            recovery_dates = set(plan.get("v2_diagnostics", {}).get("post_race_recovery_dates", ()))
+            contract_error = {
+                **contract_error,
+                "failure_stage": "validation",
+                "authority_type": contract_authority.get(key, (None, contract_error.get("authority_type")))[1],
+                "date_relation": "historical" if planning_date and source_date and source_date < planning_date.isoformat() else "current" if planning_date and source_date == planning_date.isoformat() else "future" if planning_date and source_date else None,
+                "post_race_recovery_applies": bool(source_date in recovery_dates) if source_date else False,
+            }
+            raise PlannerRoutingError("v2_plan_contract_failed", contract_error) from ValueError(contract_error["reason_code"])
         return plan
     raise PlannerRoutingError("unknown_planner_choice")
 
