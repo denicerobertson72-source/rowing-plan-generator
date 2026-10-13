@@ -221,7 +221,15 @@ def generate_plan_v2(profile: dict, config: dict, bands, power: dict, locked_ses
         # immutable context for the existing final-state role adapter.
         full_state = replace(state, fixed_context={item.date: item for item in calendar})
         roles = build_dated_training_roles(full_state)
-        rest_dates = tuple(item.date for item in roles if item.role == "rest")
+        carryable_locked=tuple(item for item in locked if {"date","day","session_id","mode","title","band","total_cardio_minutes","phase","structure"} <= set(item))
+        carried_by_key={(item["date"],item["session_id"],item["mode"]):item for item in (*historical_sessions,*carryable_locked)}
+        carried_dates={item["date"] for item in carried_by_key.values()}
+        # The first protected day after a race is a real recovery/OFF day and
+        # fulfils the relevant rest need.  An explicit serialized authority
+        # still wins its date: do not turn that authoritative session into a
+        # rest/session assembly conflict.
+        planned_role_dates={item.date for item in roles if item.role != "rest"}
+        rest_dates = tuple(sorted({*(item.date for item in roles if item.role == "rest"), *(item.date for item in calendar if item.post_race_hard_recovery and item.date not in planned_role_dates and item.date.isoformat() not in carried_dates)}))
         ordinary = tuple(V2SessionMaterializationRequest(item.role, item.date, item.duration_minutes, item.phase_id, placement_id=item.placement_id, source_id=item.source_id) for item in roles if item.role not in {"rest", "quality"})
         phase_types = {item["phase_id"]: item["phase_type"] for item in phases}
         quality_started = perf_counter()
@@ -229,11 +237,11 @@ def generate_plan_v2(profile: dict, config: dict, bands, power: dict, locked_ses
         requests=tuple(item for item in active_requests if not preserving_history or item.date>=planning_date)
         _log_generation_timing("quality_translation_finalization", quality_started)
         materialization_started = perf_counter()
-        carryable_locked=tuple(item for item in locked if {"date","day","session_id","mode","title","band","total_cardio_minutes","phase","structure"} <= set(item))
-        carried_by_key={(item["date"],item["session_id"],item["mode"]):item for item in (*historical_sessions,*carryable_locked)}
         diagnostics_payload=_routing_diagnostics(full_state, diagnostics)
         diagnostics_payload["historical_preserved"]={"calendar_dates":tuple(sorted(historical_calendar)),"session_count":len(historical_sessions),"completed_history_count":len(completed_history),"planning_date":planning_date.isoformat() if planning_date else None}
         diagnostics_payload["post_race_recovery_dates"]=tuple(item.date.isoformat() for item in calendar if item.post_race_recovery)
+        diagnostics_payload["post_race_hard_recovery_dates"]=tuple(item.date.isoformat() for item in calendar if item.post_race_hard_recovery)
+        diagnostics_payload["post_race_return_to_training_dates"]=tuple(item.date.isoformat() for item in calendar if item.post_race_return_to_training)
         result = build_plan_version_from_v2(profile=profile, bands=bands, power=power, calendar=calendar, requests=requests, rest_dates=rest_dates, authoritative_sessions=tuple(carried_by_key.values()), historical_calendar_days=historical_calendar, v2_diagnostics=diagnostics_payload)
         _log_generation_timing("materialization", materialization_started)
     except V2PlanningError:

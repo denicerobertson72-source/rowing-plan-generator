@@ -66,6 +66,8 @@ def test_multi_race_event_extends_recovery_beyond_single_c_priority_race():
     assert next(item for item in multi if item.date==date(2026,10,19)).post_race_recovery
     assert next(item for item in multi if item.date==date(2026,10,20)).post_race_recovery
     assert not next(item for item in multi if item.date==date(2026,10,21)).post_race_recovery
+    assert next(item for item in multi if item.date==date(2026,10,19)).post_race_hard_recovery
+    assert next(item for item in multi if item.date==date(2026,10,20)).post_race_hard_recovery
 
 
 def test_post_race_guard_preserves_user_authority_by_reporting_conflict_without_mutation():
@@ -111,3 +113,39 @@ def test_rolling_strength_yields_to_race_recovery_and_moves_to_next_open_day():
     assert date(2026,10,18) not in strength_dates
     assert date(2026,10,19) in strength_dates
     assert diagnostics[0]["strength"]["achieved"]>=diagnostics[0]["strength"]["minimum"]
+
+
+def test_single_b_race_transitions_from_sunday_rest_to_monday_easy_row_before_next_sunday_race():
+    profile=synthetic_profile()
+    profile["season"]={**profile["season"],"start_date":"2026-10-12","end_date":"2026-10-25"}
+    profile["races"]=[
+        {"event_name":"Saturday B race","start_date":"2026-10-17","end_date":"2026-10-17","race_dates":["2026-10-17"],"priority":"B","race_type":"head_5k"},
+        {"event_name":"Following Sunday race","start_date":"2026-10-25","end_date":"2026-10-25","race_dates":["2026-10-25"],"priority":"C","race_type":"head_5k"},
+    ]
+    profile["recurring_activities"]=[
+        {"activity_id":"rest","activity_type":"rest","sessions_per_week":1,"scheduling_status":"flexible","fixed_days":[],"preferred_days":[],"allowed_days":[],"prohibited_days":[]},
+        {"activity_id":"lift","activity_type":"strength","sessions_per_week":2,"scheduling_status":"preferred","fixed_days":[],"preferred_days":["monday","friday"],"allowed_days":[],"prohibited_days":[]},
+    ]
+    config=json.loads((Path(__file__).resolve().parents[1] / "config" / "defaults.json").read_text())
+    calendar=build_v2_season_calendar(profile)
+    sunday=next(item for item in calendar if item.date==date(2026,10,18))
+    monday=next(item for item in calendar if item.date==date(2026,10,19))
+    assert sunday.post_race_recovery and sunday.post_race_hard_recovery
+    assert monday.post_race_recovery and not monday.post_race_hard_recovery and monday.post_race_return_to_training
+    plan=generate_plan_v2(profile,config,build_intensity_profile(profile,config),build_power_profile(profile,config))
+    calendar_by_date={item["date"]:item for item in plan["calendar_days"]}
+    monday_sessions=[item for item in plan["sessions"] if item["date"]=="2026-10-19"]
+    assert calendar_by_date["2026-10-18"]["state"]=="designated_rest"
+    assert calendar_by_date["2026-10-19"]["state"]!="designated_rest"
+    assert len(monday_sessions)==1 and monday_sessions[0]["band"]=="UT2"
+    assert any(item["session_id"]=="RACE" and item["date"]=="2026-10-25" for item in plan["sessions"])
+
+
+def test_soft_post_race_recovery_allows_easy_ut2_but_not_automatic_hard_recovery_extension():
+    calendar=build_v2_season_calendar(_profile(race_dates=["2026-10-17"],priority="B"))
+    state=_state(calendar)
+    monday=date(2026,10,19)
+    context=next(item for item in calendar if item.date==monday)
+    assert context.post_race_recovery and not context.post_race_hard_recovery
+    result=assign_window_placement(state,WindowPlacement("mon-easy",monday,"dedicated_ut2","easy",30))
+    assert result.provisional_placements[0].role=="dedicated_ut2"

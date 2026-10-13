@@ -414,7 +414,15 @@ def generate_rowing_dose_targets(profile: dict, season_phases: list[dict]|None=N
     for phase in phases:
         left=max(start,date.fromisoformat(phase["start_date"])); right=min(end,date.fromisoformat(phase["end_date"])); days=(right-left).days+1
         for category,count,minutes,quality,recovery in patterns.get(phase["phase_type"],[("dedicated_ut2",3,120,"aerobic",0),("long_aerobic",1,60,"aerobic",0),("ut1_aerobic_strength",1,45,"aerobic",1)]):
-            scaled=max(0,round(count*min(days,14)/14)); result.append(TrainingDoseTarget(phase["phase_id"],category,left,right,min(14,days),scaled,max(0,scaled-1),round(minutes*min(days,14)/14),max(0,round(minutes*min(days,14)/14)-30),quality,"strong",recovery,"season_phase",f"{phase['phase_type']} rolling {category} dose.",phase["phase_type"]))
+            # A two-or-more-day post-race recovery phase needs one low-cost
+            # exposure after its first protected day.  Generic proportional
+            # rounding used to turn this 40-minute recovery dose into zero,
+            # leaving the athlete OFF until the next unrelated demand.
+            if phase["phase_type"]=="post_race_recovery" and category=="dedicated_ut2" and days>=2:
+                scaled,target_minutes=1,minutes
+            else:
+                scaled=max(0,round(count*min(days,14)/14)); target_minutes=round(minutes*min(days,14)/14)
+            result.append(TrainingDoseTarget(phase["phase_id"],category,left,right,min(14,days),scaled,max(0,scaled-1),target_minutes,max(0,target_minutes-30),quality,"strong",recovery,"season_phase",f"{phase['phase_type']} rolling {category} dose.",phase["phase_type"]))
     return result
 
 def generate_v2_demand_plan(profile: dict, season_phases: list[dict]|None=None, races: list[dict]|None=None, recurring_activities: list[dict]|None=None) -> V2DemandPlan:
@@ -433,15 +441,25 @@ def build_v2_season_calendar(profile: dict, season_phases: list[dict]|None=None,
         # actual competition days add one protected calendar day after the
         # normal priority-based recovery span.  Practice rows are intentionally
         # excluded: familiarization is a fixed technical/easy fact, not a race.
-        post_race_recovery=False
+        post_race_recovery=False; post_race_hard_recovery=False; post_race_return_to_training=False
         for event in races:
             event_days=race_dates(event)
             if not event_days:
                 continue
-            recovery_days=RECOVERY.get(event.get("priority", "B"), RECOVERY["B"]) + int(len(event_days) > 1)
+            priority=event.get("priority", "B")
+            recovery_days=RECOVERY.get(priority, RECOVERY["B"]) + int(len(event_days) > 1)
+            # Priority scales the *soft* recovery span.  The first day is
+            # always a hard no-heavy-training day; an A priority event or a
+            # multi-race weekend may retain one additional hard day.  This
+            # prevents a B/A recovery phase from becoming several forced OFF
+            # days while retaining stronger protection for genuinely larger
+            # race loads.
+            hard_recovery_days=min(recovery_days,1 + int(priority=="A") + int(len(event_days) > 1))
             last_race=max(event_days)
             if last_race < current <= last_race + timedelta(days=recovery_days):
                 post_race_recovery=True
+                post_race_hard_recovery=(current-last_race).days<=hard_recovery_days
+                post_race_return_to_training=(current-last_race).days==hard_recovery_days+1
                 break
         for activity in activities:
             if activity.get("scheduling_status")=="fixed" and weekday in activity.get("fixed_days",[]): commitments.append({"type":activity.get("activity_type"),"minutes":min(50,max_minutes),"fixed":True})
@@ -453,7 +471,7 @@ def build_v2_season_calendar(profile: dict, season_phases: list[dict]|None=None,
         if current.isoformat() in history:
             commitments.append({"type":"historical_preserved","minutes":max_minutes,"fixed":True})
             unavailable=True; used=max_minutes; permitted=(); reasons=tuple(sorted(set(reasons+("historical_preserved",))))
-        result.append(DateContext(current,weekday,phase["phase_id"],not unavailable,max_minutes,used,max(0,max_minutes-used),unavailable,race,bool(practice),phase["phase_type"] in {"taper","post_race_recovery"},tuple(commitments),tuple(item for item in locks if item.get("date")==current.isoformat()),permitted,reasons,(),post_race_recovery)); current+=timedelta(days=1)
+        result.append(DateContext(current,weekday,phase["phase_id"],not unavailable,max_minutes,used,max(0,max_minutes-used),unavailable,race,bool(practice),phase["phase_type"] in {"taper","post_race_recovery"},tuple(commitments),tuple(item for item in locks if item.get("date")==current.isoformat()),permitted,reasons,(),post_race_recovery,post_race_hard_recovery,post_race_return_to_training)); current+=timedelta(days=1)
     return tuple(result)
 
 def candidate_dates_for_demand(demand, calendar: tuple[DateContext,...], required_minutes: int|None=None) -> CandidateDateResult:
@@ -528,8 +546,9 @@ def reconcile_demand_satisfaction(state: ActiveWindowState, demands: tuple[Train
     for demand in demands:
         if demand.eligibility=="edge_exception": records[demand.demand_id]=DemandSatisfaction(demand.demand_id,demand.canonical_week_start,demand.canonical_week_end,"edge_exception","edge_exception"); continue
         frozen=next((item for item in state.frozen_placements if item.source_id==demand.demand_id),None); provisional=next((item for item in state.provisional_placements if item.source_id==demand.demand_id),None)
-        item,status=(frozen,"frozen_satisfied") if frozen else (provisional,"provisional_satisfied") if provisional else (None,"missed" if demand.canonical_week_end<current else "open")
-        records[demand.demand_id]=DemandSatisfaction(demand.demand_id,demand.canonical_week_start,demand.canonical_week_end,"required",status,item.placement_id if item else None,item.date if item else None,"placement" if item else "derived")
+        recovery_day=next((context.date for context in state.fixed_context.values() if demand.type=="rest" and demand.canonical_week_start<=context.date<=demand.canonical_week_end and context.post_race_hard_recovery),None)
+        item,status=(frozen,"frozen_satisfied") if frozen else (provisional,"provisional_satisfied") if provisional else (None,"calendar_recovery_satisfied") if recovery_day else (None,"missed" if demand.canonical_week_end<current else "open")
+        records[demand.demand_id]=DemandSatisfaction(demand.demand_id,demand.canonical_week_start,demand.canonical_week_end,"required",status,item.placement_id if item else None,item.date if item else recovery_day,"placement" if item else "race_recovery_calendar" if recovery_day else "derived")
     return replace(state,demand_satisfaction=records)
 
 def assign_window_placement(state: ActiveWindowState, placement: WindowPlacement) -> ActiveWindowState:
@@ -537,11 +556,10 @@ def assign_window_placement(state: ActiveWindowState, placement: WindowPlacement
     context=state.fixed_context.get(placement.date)
     if not context or context.unavailable or context.race or context.race_practice: raise ValueError("hard_calendar_conflict")
     # A race is a high-stress event for recovery purposes even though it is a
-    # fixed calendar fact rather than a flexible solver placement.  The
-    # recovery calendar permits rest (and the phase's low-dose UT2 intent),
-    # but never lets rolling strength or generic quality refill the protected
-    # post-race days.
-    if context.post_race_recovery and (placement.role in {"strength", "long_aerobic", "ut1_aerobic_strength"} or _is_quality(placement.role)):
+    # fixed calendar fact rather than a flexible solver placement.  Only the
+    # short hard portion of the priority-scaled recovery span forbids normal
+    # strength/quality work; later soft-recovery days can carry easy UT2.
+    if context.post_race_hard_recovery and (placement.role in {"strength", "long_aerobic", "ut1_aerobic_strength"} or _is_quality(placement.role)):
         raise ValueError("post_race_recovery")
     if role_family(placement.role) in context.prohibited_role_families: raise ValueError("activity_prohibited")
     if state.remaining_minutes_by_date.get(placement.date,0)<placement.minutes: raise ValueError("insufficient_minutes")
@@ -676,8 +694,27 @@ def _solver_score(state, demands, active, target, start, end, strength_preferenc
     """The explicit lexicographic objective used for every retained beam node."""
     reconciled=reconcile_demand_satisfaction(state,demands,end)
     satisfaction=reconciled.demand_satisfaction
-    coached_misses=sum(satisfaction[item.demand_id].status not in {"frozen_satisfied","provisional_satisfied"} for item in active if item.type=="coached_training")
-    rest_misses=sum(satisfaction[item.demand_id].status not in {"frozen_satisfied","provisional_satisfied"} for item in active if item.type=="rest")
+    satisfied={"frozen_satisfied","provisional_satisfied","calendar_recovery_satisfied"}
+    coached_misses=sum(satisfaction[item.demand_id].status not in satisfied for item in active if item.type=="coached_training")
+    rest_misses=sum(satisfaction[item.demand_id].status not in satisfied for item in active if item.type=="rest")
+    # A post-race recovery day is a legitimate rest day.  When the following
+    # Monday starts a new canonical week, avoid spending it on another
+    # designated rest if an equivalent later day exists; keep it available for
+    # the low-cost return-to-training exposure.
+    adjacent_recovery_rest=sum(
+        int(item.role=="rest" and bool(state.fixed_context.get(item.date-timedelta(days=1))) and state.fixed_context[item.date-timedelta(days=1)].post_race_hard_recovery)
+        for item in _all_placements(state)
+    )
+    hard_recovery_training=sum(
+        int(item.role!="rest" and state.fixed_context.get(item.date) is not None and state.fixed_context[item.date].post_race_hard_recovery)
+        for item in _all_placements(state)
+    )
+    return_days={context.date for context in state.fixed_context.values() if context.post_race_return_to_training}
+    return_training_misses=sum(
+        any(target.category=="dedicated_ut2" and target.window_start<=day<=target.window_end for target in rowing_targets)
+        and not any(item.date==day and item.role=="dedicated_ut2" for item in _all_placements(state))
+        for day in return_days
+    )
     strength_horizon_start=end-timedelta(days=(target.window_days-1)) if target else start
     strength=_strength_target_summary(state,target,strength_horizon_start,end) if target else {"target":0,"minimum":0,"achieved":0,"status":"target_met","dates":()}
     strength_below=int(strength["achieved"]<strength["minimum"])
@@ -699,7 +736,7 @@ def _solver_score(state, demands, active, target, start, end, strength_preferenc
     # Long aerobic is part of the protected aerobic base: when otherwise tied
     # at the required-dose level, retain its coverage before discretionary
     # quality target excess.
-    vector=(0,coached_misses,rest_misses,ut2_deficit,strength_below,0,long_deficit,other_below,rowing_deficit,ut1_deficit,deficit,coached_preference,0,strength_preference,tie)
+    vector=(0,coached_misses,rest_misses,adjacent_recovery_rest,hard_recovery_training,return_training_misses,ut2_deficit,strength_below,0,long_deficit,other_below,rowing_deficit,ut1_deficit,deficit,coached_preference,0,strength_preference,tie)
     return vector,strength,reconciled
 
 def _weekday_name(day):
@@ -763,7 +800,7 @@ def solve_v2_rolling_non_rowing(profile: dict, demand_plan: V2DemandPlan|None=No
             expanded=[]
             for node in states:
                 current=reconcile_demand_satisfaction(node,demands,start).demand_satisfaction[demand.demand_id]
-                if current.status in {"frozen_satisfied","provisional_satisfied"}: expanded.append(node); continue
+                if current.status in {"frozen_satisfied","provisional_satisfied","calendar_recovery_satisfied"}: expanded.append(node); continue
                 # Keep an unsatisfied branch: diagnostics must distinguish a
                 # required miss from an impossible edge exception.
                 expanded.append(node)
