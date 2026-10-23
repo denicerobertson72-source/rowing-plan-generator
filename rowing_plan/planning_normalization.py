@@ -104,7 +104,7 @@ class NormalizedPlanningContext:
     historical_facts: tuple[HistoricalFact, ...]
     authoritative_commitments: tuple[AuthoritativeCommitment, ...]
     provisional_prior_placement_ids: tuple[str, ...]
-    race_context: tuple[tuple[str, str], ...]
+    race_context: tuple[tuple[str, str, str, str | None], ...]
     authority_precedence: tuple[AuthorityType, ...]
     diagnostics: NormalizationDiagnostics
 
@@ -287,14 +287,18 @@ def _future_locked_commitment(item: Mapping[str, Any], planning_date: date) -> A
     )
 
 
-def _race_context(profile: Mapping[str, Any], planning_date: date) -> tuple[tuple[str, str], ...]:
+def _race_context(profile: Mapping[str, Any], planning_date: date) -> tuple[tuple[str, str, str, str | None], ...]:
     records = []
     for race in profile.get("races", ()):
         if not isinstance(race, Mapping):
             continue
         for day in race_dates(dict(race)):
             if day >= planning_date:
-                records.append((day.isoformat(), str(race.get("priority", "B"))))
+                records.append((
+                    day.isoformat(), str(race.get("priority", "B")),
+                    str(race.get("event_name", "race")),
+                    str(race.get("race_type")) if race.get("race_type") else None,
+                ))
     return tuple(sorted(records))
 
 

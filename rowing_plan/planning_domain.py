@@ -231,6 +231,11 @@ class PhysiologicalState:
     completed_aerobic_exposure: PhysiologicalCredit = field(default_factory=PhysiologicalCredit)
     completed_quality_exposure: PhysiologicalCredit = field(default_factory=PhysiologicalCredit)
     completed_strength_exposure: PhysiologicalCredit = field(default_factory=PhysiologicalCredit)
+    completed_aerobic_by_classification: Mapping[str, PhysiologicalCredit] = field(default_factory=dict)
+    completed_quality_by_classification: Mapping[str, PhysiologicalCredit] = field(default_factory=dict)
+    completed_race_exposure: PhysiologicalCredit = field(default_factory=PhysiologicalCredit)
+    completed_duration_minutes_by_fact: Mapping[str, int] = field(default_factory=dict)
+    completed_classification_by_fact: Mapping[str, str] = field(default_factory=dict)
     recent_race_load: tuple[HistoricalFact, ...] = ()
     recovery_constraints: tuple["RecoveryConstraint", ...] = ()
     next_race_context: Mapping[str, Any] = field(default_factory=dict)
@@ -238,6 +243,16 @@ class PhysiologicalState:
     progression_context: Mapping[str, Any] = field(default_factory=dict)
     athlete_response_inputs: Mapping[str, Any] = field(default_factory=dict)
     completed_fact_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "completed_aerobic_by_classification", _freeze(self.completed_aerobic_by_classification))
+        object.__setattr__(self, "completed_quality_by_classification", _freeze(self.completed_quality_by_classification))
+        object.__setattr__(self, "completed_duration_minutes_by_fact", _freeze(self.completed_duration_minutes_by_fact))
+        object.__setattr__(self, "completed_classification_by_fact", _freeze(self.completed_classification_by_fact))
+        object.__setattr__(self, "next_race_context", _freeze(self.next_race_context))
+        object.__setattr__(self, "phase_context", _freeze(self.phase_context))
+        object.__setattr__(self, "progression_context", _freeze(self.progression_context))
+        object.__setattr__(self, "athlete_response_inputs", _freeze(self.athlete_response_inputs))
 
 
 @dataclass(frozen=True)
