@@ -133,11 +133,15 @@ DEFAULT_TRAINING_POLICY = TrainingPolicy(
         _rule("uncompleted_prescription_has_no_completed_credit", True, RuleClass.RESEARCH_CONSTRAINED, ("S018",), "A planned but uncompleted prescription remains audit history and does not become completed physiological load.", "not_applicable"),
         _rule("low_intensity_emphasis", "predominant_not_fixed_percentage", RuleClass.EVIDENCE_INFORMED_HEURISTIC, ("S010", "S011"), "Rowing intensity distribution varies; maintain ordinary low-intensity emphasis without a universal ratio.", "coach_override"),
         _rule("mode_specific_accounting", True, RuleClass.RESEARCH_CONSTRAINED, ("S018",), "Cardiovascular and rowing-specific work remain distinct accounting concepts.", "not_applicable"),
+        _rule("dedicated_ut2_target_credit_minutes", 90, RuleClass.EVIDENCE_INFORMED_HEURISTIC, (), "Replacement-planner starting dose for a rolling aerobic need; athlete capacity may reduce it.", "coach_override"),
+        _rule("long_aerobic_target_credit_minutes", 75, RuleClass.EVIDENCE_INFORMED_HEURISTIC, (), "Replacement-planner starting dose for a long-aerobic exposure; athlete capacity may reduce it.", "coach_override"),
+        _rule("ordinary_need_horizon_days", 14, RuleClass.EVIDENCE_INFORMED_HEURISTIC, (), "A continuous planning horizon, not a display-week obligation.", "coach_override"),
     ),
     quality_policy=(
         _rule("quality_categories_are_bounded_not_protocols", ("AT", "TR", "AN", "PP"), RuleClass.EVIDENCE_INFORMED_HEURISTIC, ("S014", "S015", "S016", "S020"), "Evidence supports categories, not copied universal protocols or exposure counts.", "coach_override"),
         _rule("quality_dose_requires_phase_and_athlete_context", True, RuleClass.EVIDENCE_INFORMED_HEURISTIC, ("S010", "S020"), "Exposure and minute ranges require phase, completed work, and athlete response; no universal number is asserted.", "coach_override"),
         _rule("ordinary_race_specific_work_is_tr_unless_explicitly_anaerobic_or_power", True, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "Preserve the current generic-band interpretation and avoid inventing AN or PP.", "coach_override"),
+        _rule("quality_target_credit_minutes", 35, RuleClass.EVIDENCE_INFORMED_HEURISTIC, (), "A single bounded quality exposure is a starting need magnitude, subject to phase and athlete response.", "coach_override"),
     ),
     strength_policy=(
         _rule("concurrent_strength_endurance_is_individualized", True, RuleClass.RESEARCH_CONSTRAINED, ("S017",), "Concurrent training can be useful, while interference and recovery remain individual.", "coach_override"),
@@ -151,6 +155,7 @@ DEFAULT_TRAINING_POLICY = TrainingPolicy(
     taper_policy=(
         _rule("taper_reduce_volume_retain_useful_intensity_frequency", True, RuleClass.RESEARCH_CONSTRAINED, ("S009",), "Taper policy reduces volume while retaining useful intensity/frequency as appropriate.", "coach_override"),
         _rule("taper_days_by_priority", {"A": 10, "B": 5, "C": 2}, RuleClass.EVIDENCE_INFORMED_HEURISTIC, (), "Existing app taper windows are configurable scheduling heuristics, not universal prescriptions.", "coach_override"),
+        _rule("taper_volume_multiplier", 0.6, RuleClass.EVIDENCE_INFORMED_HEURISTIC, (), "Replacement-planner starting volume reduction; the research principle does not establish one universal percentage.", "coach_override"),
     ),
     race_policy=(
         _rule("race_is_completed_stress_once", True, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "A normalized completed race produces one stress record even when legacy sources repeat it.", "not_applicable"),

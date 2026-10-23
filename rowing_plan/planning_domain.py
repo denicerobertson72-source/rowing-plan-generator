@@ -59,6 +59,14 @@ class TrainingRole(_TextEnum):
     PRIVATE_COACHING = "private_coaching"
     RACE = "race"
     COURSE_PRACTICE = "course_practice"
+    THRESHOLD_AT = "threshold_at"
+    RACE_SPECIFIC_TR = "race_specific_tr"
+    ANAEROBIC_AN = "anaerobic_an"
+    POWER_PP = "power_pp"
+    TECHNICAL_REENTRY = "technical_reentry"
+    RECOVERY_AEROBIC = "recovery_aerobic"
+    TAPER_MAINTENANCE = "taper_maintenance"
+    RACE_PREPARATION = "race_preparation"
 
 
 class RuleClass(_TextEnum):
@@ -267,10 +275,15 @@ class TrainingNeed:
     source_policy: str
     race_relevance: str | None = None
     progression_relation: str | None = None
+    provenance: tuple[str, ...] = ()
+    state: str = "active"
+    state_reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.earliest_date > self.latest_date:
             raise ValueError("training_need_window_is_reversed")
+        if self.state not in {"active", "partially_satisfied", "deferred", "superseded", "reduced", "missed"}:
+            raise ValueError("training_need_state_is_invalid")
 
 
 @dataclass(frozen=True)
