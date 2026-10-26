@@ -202,8 +202,9 @@ def _availability(
             placement_id=placement_id, training_need_id=f"authority:{commitment.id}", date=commitment.date,
             reservation_minutes=commitment.reservation_minutes, target_credit=credit,
             provenance=commitment.provenance, authority_status=PlacementAuthorityStatus.AUTHORITATIVE,
+            role=role,
             policy_rule_ids=(), selection_reason="authoritative_commitment_preserved",
-            served_need_ids=(),
+            served_need_ids=(), authority_type=commitment.type,
         ))
         projected = projected.with_item(ProjectedSequenceItem(
             placement_id, commitment.date, role, credit, authoritative=True, source=source,
@@ -385,6 +386,7 @@ def place_continuous_training_needs(
                     placement_id=placement_id, training_need_id=need.id, date=day.date,
                     reservation_minutes=reservation, target_credit=decision.recommended_credit_adjustment or need.target_credit,
                     provenance=_placement_provenance(need, policy), authority_status=PlacementAuthorityStatus.PROVISIONAL,
+                    role=need.role,
                     applied_constraint_decisions=decision.diagnostic_codes, constraint_decision=decision,
                     policy_rule_ids=decision.policy_rule_ids, preference_effect="date_preferred" if day.preferred else None,
                     stability_effect="prior_provisional_date_preserved" if stable else None,

@@ -379,6 +379,8 @@ class Placement:
     stability_effect: str | None = None
     selection_reason: str = ""
     served_need_ids: tuple[str, ...] = ()
+    role: TrainingRole | None = None
+    authority_type: AuthorityType | None = None
 
     def __post_init__(self) -> None:
         if self.reservation_minutes < 0:
