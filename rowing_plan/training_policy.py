@@ -150,6 +150,8 @@ DEFAULT_TRAINING_POLICY = TrainingPolicy(
     recovery_policy=(
         _rule("race_hard_recovery_exclusions", ("quality", "strength"), RuleClass.EVIDENCE_INFORMED_HEURISTIC, ("S009", "S019"), "Post-race recovery protects hard work while leaving low-load eligibility context-specific.", "coach_override"),
         _rule("race_recovery_days_by_priority", {"A": 3, "B": 2, "C": 1}, RuleClass.EVIDENCE_INFORMED_HEURISTIC, (), "Existing app priority-scaled recovery durations are useful heuristics, not biological laws.", "coach_override"),
+        _rule("race_soft_recovery_days_by_priority", {"A": 5, "B": 3, "C": 2}, RuleClass.EVIDENCE_INFORMED_HEURISTIC, (), "A short lower-load transition after hard race recovery is an app heuristic, not a biological law.", "coach_override"),
+        _rule("soft_recovery_credit_multiplier", 0.5, RuleClass.EVIDENCE_INFORMED_HEURISTIC, (), "Suggested reduced credit during a soft-recovery transition; later coaching may override it.", "coach_override"),
         _rule("multiple_race_load_additional_recovery_day", 1, RuleClass.EVIDENCE_INFORMED_HEURISTIC, (), "Existing app adjustment for a multi-race event; retain as an explicit heuristic.", "coach_override"),
     ),
     taper_policy=(

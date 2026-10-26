@@ -76,6 +76,14 @@ class RuleClass(_TextEnum):
     SOFTWARE_IMPLEMENTATION_CHOICE = "software_implementation_choice"
 
 
+class SequenceEligibility(_TextEnum):
+    ELIGIBLE = "eligible"
+    ELIGIBLE_REDUCED = "eligible_reduced"
+    ELIGIBLE_LOW_COST_ONLY = "eligible_low_cost_only"
+    DISCOURAGED = "discouraged"
+    PROHIBITED = "prohibited"
+
+
 class PlacementAuthorityStatus(_TextEnum):
     PROVISIONAL = "provisional"
     AUTHORITATIVE = "authoritative"
@@ -282,8 +290,59 @@ class TrainingNeed:
     def __post_init__(self) -> None:
         if self.earliest_date > self.latest_date:
             raise ValueError("training_need_window_is_reversed")
-        if self.state not in {"active", "partially_satisfied", "deferred", "superseded", "reduced", "missed"}:
+        if self.state not in {"active", "satisfied", "partially_satisfied", "deferred", "superseded", "reduced", "missed"}:
             raise ValueError("training_need_state_is_invalid")
+
+
+@dataclass(frozen=True)
+class ProjectedSequenceItem:
+    """An immutable future event used only for local physiological context."""
+
+    id: str
+    date: date
+    role: TrainingRole
+    target_credit: PhysiologicalCredit = field(default_factory=PhysiologicalCredit)
+    authoritative: bool = False
+    source: str = "projected"
+
+
+@dataclass(frozen=True)
+class ProjectedSequenceState:
+    """Future sequence context; never mutates completed PhysiologicalState."""
+
+    items: tuple[ProjectedSequenceItem, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "items", tuple(sorted(self.items, key=lambda item: (item.date, item.id, item.role.value))))
+
+    def with_item(self, item: ProjectedSequenceItem) -> "ProjectedSequenceState":
+        return ProjectedSequenceState((*self.items, item))
+
+
+@dataclass(frozen=True)
+class SequenceConstraintDecision:
+    training_need_id: str
+    candidate_date: date
+    eligibility: SequenceEligibility
+    hard_rejection_reasons: tuple[str, ...] = ()
+    soft_constraints: tuple[str, ...] = ()
+    load_ceiling: str | None = None
+    recommended_credit_adjustment: PhysiologicalCredit | None = None
+    recovery_status: str = "ordinary"
+    spacing_status: str = "clear"
+    race_taper_status: str = "ordinary"
+    policy_rule_ids: tuple[str, ...] = ()
+    rationale: tuple[str, ...] = ()
+    diagnostic_codes: tuple[str, ...] = ()
+    authority_conflicts: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "hard_rejection_reasons", tuple(sorted(set(self.hard_rejection_reasons))))
+        object.__setattr__(self, "soft_constraints", tuple(sorted(set(self.soft_constraints))))
+        object.__setattr__(self, "policy_rule_ids", tuple(sorted(set(self.policy_rule_ids))))
+        object.__setattr__(self, "rationale", tuple(sorted(set(self.rationale))))
+        object.__setattr__(self, "diagnostic_codes", tuple(sorted(set(self.diagnostic_codes))))
+        object.__setattr__(self, "authority_conflicts", tuple(sorted(set(self.authority_conflicts))))
 
 
 @dataclass(frozen=True)

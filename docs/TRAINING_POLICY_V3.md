@@ -23,6 +23,8 @@ research citation.
 | rolling 14-day strength target | evidence-informed heuristic | target 4, minimum 3 | S017; existing app policy | explicit app default, not a biological law | coach | strength dose validation |
 | race excludes new hard work | evidence-informed heuristic | quality/strength protected after a race | S009, S019 | recovery protects against automatic hard additions | coach | recovery constraints |
 | race-priority recovery span | evidence-informed heuristic | A/B/C spans are configurable | existing app policy | numerical spans are not universal prescriptions | coach | recovery constraints |
+| soft race-recovery transition | evidence-informed heuristic | A/B/C configurable spans; 0.5 reduced-credit suggestion | existing app policy | lower-load transition remains distinct from hard exclusion | coach | sequence constraints |
+| multiple-race additional recovery | evidence-informed heuristic | one additional day | existing app policy | repeated race load can extend the recovery consequence | coach | sequence constraints |
 | reduce volume; retain useful intensity/frequency | research constrained | taper principle | S009 | taper does not mean stopping training | coach | taper need generation |
 | exact taper windows | evidence-informed heuristic | A/B/C configurable windows | existing app policy | exact timing remains context-specific | coach | taper configuration |
 | taper volume multiplier | evidence-informed heuristic | 0.6 starting multiplier | existing app policy | no universal percentage is claimed | coach | undated taper needs |
