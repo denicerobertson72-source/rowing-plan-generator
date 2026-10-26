@@ -128,6 +128,43 @@ def _multiple_race_extension(
     return candidate_date <= last_race.date + timedelta(days=hard_days + extra)
 
 
+def _projected_race_recovery(
+    projected: ProjectedSequenceState,
+    candidate_date: date,
+    role: TrainingRole,
+    rules: Mapping[str, TrainingPolicyRule],
+) -> tuple[tuple[str, ...], tuple[str, ...], bool]:
+    """Apply the same policy spans to already-seeded future race context."""
+    hard: list[str] = []
+    soft: list[str] = []
+    low_cost_only = False
+    hard_spans = rules["race_recovery_days_by_priority"].value
+    soft_spans = rules["race_soft_recovery_days_by_priority"].value
+    recent_races = []
+    for item in projected.items:
+        if item.role is not TrainingRole.RACE:
+            continue
+        priority = item.source.rsplit(":", 1)[-1] if item.source.startswith("race:") else "B"
+        hard_days = int(hard_spans.get(priority, hard_spans["B"]))
+        soft_days = int(soft_spans.get(priority, soft_spans["B"]))
+        elapsed = (candidate_date - item.date).days
+        if 0 <= elapsed <= 7:
+            recent_races.append((item, hard_days))
+        if 0 < elapsed <= hard_days:
+            if role is TrainingRole.STRENGTH or _is_quality(role):
+                hard.append(f"projected_race_hard_recovery:{item.id}")
+            elif role in _LOW_COST_ROLES:
+                low_cost_only = True
+        elif hard_days < elapsed <= soft_days:
+            soft.append(f"projected_race_soft_recovery:{item.id}")
+    if len(recent_races) >= 2 and (role is TrainingRole.STRENGTH or _is_quality(role)):
+        last_race, hard_days = max(recent_races, key=lambda value: value[0].date)
+        extension = int(rules["multiple_race_load_additional_recovery_day"].value)
+        if candidate_date <= last_race.date + timedelta(days=hard_days + extension):
+            hard.append(f"projected_multiple_race_recovery_extension:{last_race.id}")
+    return tuple(sorted(hard)), tuple(sorted(soft)), low_cost_only
+
+
 def evaluate_sequence_constraint(
     context: NormalizedPlanningContext,
     state: PhysiologicalState,
@@ -205,6 +242,24 @@ def evaluate_sequence_constraint(
         recovery_status = "hard_recovery"
         policy_ids.add("multiple_race_load_additional_recovery_day")
         rationale.append("Multiple recent races retain a short additional hard-recovery consequence.")
+
+    projected_race_hard, projected_race_soft, projected_race_low = _projected_race_recovery(
+        projected, candidate_date, need.role, rules,
+    )
+    if projected_race_hard:
+        hard.extend(projected_race_hard)
+        diagnostics.append("projected_race_hard_prohibited")
+        recovery_status = "hard_recovery"
+        policy_ids.add("race_recovery_days_by_priority")
+    if projected_race_low:
+        diagnostics.append("projected_race_low_cost_allowed")
+        recovery_status = "hard_recovery"
+        policy_ids.add("race_recovery_days_by_priority")
+        load_ceiling = "recovery_only"
+    if projected_race_soft:
+        soft.extend(projected_race_soft)
+        recovery_status = "soft_recovery" if recovery_status != "hard_recovery" else recovery_status
+        policy_ids.add("race_soft_recovery_days_by_priority")
 
     quality_days = int(rules["quality_minimum_spacing_days"].value)
     strength_days = int(rules["strength_minimum_spacing_days"].value)

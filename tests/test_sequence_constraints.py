@@ -93,6 +93,39 @@ def test_race_hard_recovery_blocks_hard_work_but_allows_low_cost_reentry():
     assert low.recovery_status == "hard_recovery"
 
 
+def test_seeded_future_race_has_the_same_recovery_consequence_in_projected_sequence():
+    race_day = AS_OF + timedelta(days=2)
+    context = _context(as_of=AS_OF)
+    state = _state(context)
+    projected = ProjectedSequenceState((
+        ProjectedSequenceItem("future-race", race_day, TrainingRole.RACE, authoritative=True, source="race:B"),
+    ))
+
+    strength = evaluate_sequence_constraint(context, state, _need(TrainingRole.STRENGTH), race_day + timedelta(days=1), projected=projected)
+    ut2 = evaluate_sequence_constraint(context, state, _need(TrainingRole.DEDICATED_UT2), race_day + timedelta(days=1), projected=projected)
+
+    assert strength.eligibility is SequenceEligibility.PROHIBITED
+    assert "projected_race_hard_recovery:future-race" in strength.hard_rejection_reasons
+    assert ut2.eligibility is SequenceEligibility.ELIGIBLE_LOW_COST_ONLY
+    assert "projected_race_low_cost_allowed" in ut2.diagnostic_codes
+
+
+def test_two_seeded_future_races_extend_projected_hard_recovery():
+    first = AS_OF + timedelta(days=1)
+    second = AS_OF + timedelta(days=3)
+    context = _context(as_of=AS_OF)
+    state = _state(context)
+    projected = ProjectedSequenceState((
+        ProjectedSequenceItem("race-one", first, TrainingRole.RACE, authoritative=True, source="race:B"),
+        ProjectedSequenceItem("race-two", second, TrainingRole.RACE, authoritative=True, source="race:B"),
+    ))
+
+    decision = evaluate_sequence_constraint(context, state, _need(TrainingRole.STRENGTH), second + timedelta(days=3), projected=projected)
+
+    assert decision.eligibility is SequenceEligibility.PROHIBITED
+    assert "projected_multiple_race_recovery_extension:race-two" in decision.hard_rejection_reasons
+
+
 def test_soft_recovery_allows_low_cost_but_reduces_long_aerobic():
     # C race: one hard day; the following date is a soft-recovery transition.
     as_of = AS_OF

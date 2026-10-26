@@ -373,7 +373,16 @@ class Placement:
     provenance: Provenance
     authority_status: PlacementAuthorityStatus
     applied_constraint_decisions: tuple[str, ...] = ()
+    constraint_decision: SequenceConstraintDecision | None = None
+    policy_rule_ids: tuple[str, ...] = ()
+    preference_effect: str | None = None
+    stability_effect: str | None = None
+    selection_reason: str = ""
+    served_need_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.reservation_minutes < 0:
             raise ValueError("placement_minutes_must_be_nonnegative")
+        object.__setattr__(self, "applied_constraint_decisions", tuple(sorted(set(self.applied_constraint_decisions))))
+        object.__setattr__(self, "policy_rule_ids", tuple(sorted(set(self.policy_rule_ids))))
+        object.__setattr__(self, "served_need_ids", tuple(sorted(set(self.served_need_ids))))
