@@ -6,8 +6,9 @@ existing V2 materialization and PlanVersion-shaped interfaces for shadow use.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
+from time import perf_counter
 from typing import Any, Mapping
 
 from .continuous_placement import (
@@ -60,6 +61,7 @@ class ReplacementPlanCandidate:
     placement_diagnostics: ContinuousPlacementDiagnostics
     materialization_diagnostics: tuple[MaterializationDiagnostic, ...] = ()
     failure_reason: str | None = None
+    stage_timings_ms: tuple[tuple[str, float], ...] = field(default=(), compare=False)
 
 
 _ROW_ROLE_MAP = {
@@ -239,18 +241,29 @@ def generate_plan_sequence_v3_candidate(
 ) -> ReplacementPlanCandidate:
     """Generate an in-memory replacement candidate only; never persist or route."""
     del config
+    timings: list[tuple[str, float]] = []
+    started = perf_counter()
     context = normalize_planning_inputs(
         profile, planning_date=planning_date, prior_plan=prior_plan,
         history_actuals=history_actuals, locked_sessions=locked_sessions,
         future_placements=future_placements,
     )
+    timings.append(("normalization", round((perf_counter() - started) * 1000, 3)))
+    started = perf_counter()
     state = reduce_physiological_state(context, profile=profile)
+    timings.append(("physiological_reduction", round((perf_counter() - started) * 1000, 3)))
+    started = perf_counter()
     need_plan = generate_training_need_plan(context, state, policy, profile=profile)
     effective_needs = tuple(needs) if needs is not None else need_plan.needs
+    timings.append(("need_generation", round((perf_counter() - started) * 1000, 3)))
+    started = perf_counter()
     placed = place_continuous_training_needs(
         context, state, effective_needs, policy, profile=profile, config=placement_config,
     )
+    timings.append(("sequence_placement", round((perf_counter() - started) * 1000, 3)))
+    started = perf_counter()
     materialized = adapt_placements_to_materialization_requests(placed.placements, profile=profile)
+    timings.append(("materialization", round((perf_counter() - started) * 1000, 3)))
     serialized_locks = tuple(
         dict(item) for item in locked_sessions
         if isinstance(item, Mapping) and {"date", "day", "session_id", "mode", "title", "band", "total_cardio_minutes", "phase", "structure"} <= set(item)
@@ -263,7 +276,7 @@ def generate_plan_sequence_v3_candidate(
     )
     all_materialization_diagnostics = (*materialized.diagnostics, *authority_diagnostics)
     if all_materialization_diagnostics:
-        return ReplacementPlanCandidate(False, None, context, state, effective_needs, placed.placements, placed.diagnostics, all_materialization_diagnostics, all_materialization_diagnostics[0].code)
+        return ReplacementPlanCandidate(False, None, context, state, effective_needs, placed.placements, placed.diagnostics, all_materialization_diagnostics, all_materialization_diagnostics[0].code, tuple(timings))
     calendar = _calendar_from_placement_result(placed, profile)
     historical_calendar = {
         item["date"]: dict(item) for item in (prior_plan or {}).get("calendar_days", ())
@@ -293,6 +306,7 @@ def generate_plan_sequence_v3_candidate(
         },
         "replacement_placements": tuple({"placement_id": item.placement_id, "date": item.date, "role": item.role.value if item.role else None, "reservation_minutes": item.reservation_minutes, "target_credit": item.target_credit, "served_need_ids": item.served_need_ids} for item in placed.placements),
     }
+    started = perf_counter()
     assembled = build_plan_version_from_v2(
         profile=dict(profile), bands=bands, power=dict(power), calendar=calendar,
         requests=materialized.requests, rest_dates=materialized.rest_dates,
@@ -302,6 +316,7 @@ def generate_plan_sequence_v3_candidate(
         authoritative_sessions=serialized_locks, historical_calendar_days={},
         v2_diagnostics=diagnostics,
     )
+    timings.append(("plan_assembly", round((perf_counter() - started) * 1000, 3)))
     if not assembled.success:
         failure = dict(assembled.failure_diagnostics)
         diagnostic = MaterializationDiagnostic(
@@ -309,7 +324,7 @@ def generate_plan_sequence_v3_candidate(
             failure.get("placement_id"), date.fromisoformat(failure["date"]) if failure.get("date") else None,
             failure.get("role"), assembled.failure_reason,
         )
-        return ReplacementPlanCandidate(False, None, context, state, effective_needs, placed.placements, placed.diagnostics, (diagnostic,), assembled.failure_reason)
+        return ReplacementPlanCandidate(False, None, context, state, effective_needs, placed.placements, placed.diagnostics, (diagnostic,), assembled.failure_reason, tuple(timings))
     plan = dict(assembled.plan)
     active_dates = {item["date"] for item in plan["calendar_days"]}
     active_session_keys = {(item["date"], item["session_id"], item["mode"]) for item in plan["sessions"]}
@@ -324,8 +339,10 @@ def generate_plan_sequence_v3_candidate(
         key=lambda item: item["date"],
     )
     from .planner_v2 import validate_v2_plan_contract_details
+    started = perf_counter()
     contract_error = validate_v2_plan_contract_details(plan, authoritative_sessions=historical_sessions)
+    timings.append(("validation", round((perf_counter() - started) * 1000, 3)))
     if contract_error:
         diagnostic = MaterializationDiagnostic("planversion_contract_failure", detail=str(contract_error.get("reason_code")))
-        return ReplacementPlanCandidate(False, None, context, state, effective_needs, placed.placements, placed.diagnostics, (diagnostic,), diagnostic.detail)
-    return ReplacementPlanCandidate(True, plan, context, state, effective_needs, placed.placements, placed.diagnostics)
+        return ReplacementPlanCandidate(False, None, context, state, effective_needs, placed.placements, placed.diagnostics, (diagnostic,), diagnostic.detail, tuple(timings))
+    return ReplacementPlanCandidate(True, plan, context, state, effective_needs, placed.placements, placed.diagnostics, (), None, tuple(timings))

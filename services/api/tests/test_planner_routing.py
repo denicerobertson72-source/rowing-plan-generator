@@ -437,6 +437,52 @@ def test_explicit_v2_does_not_create_a_second_shadow_copy(monkeypatch):
     assert calls == [main.PlannerChoice.V2] and plan["v2_diagnostics"]["scheduler_version"] == "v2"
 
 
+def test_replacement_shadow_is_default_off_and_never_changes_authoritative_v2(monkeypatch):
+    monkeypatch.setenv("REPLACEMENT_PLANNER_SHADOW_ENABLED", "false")
+    monkeypatch.setattr(main, "run_replacement_shadow", lambda **_: (_ for _ in ()).throw(AssertionError("replacement shadow must be off")))
+    plan = main.build_plan(
+        PlanGenerationRequest(athlete_profile=synthetic_profile()),
+        internal_planner_choice=main.PlannerChoice.V2, planning_date=date.today(),
+    )
+    assert plan["v2_diagnostics"]["scheduler_version"] == "v2"
+
+
+def test_replacement_shadow_failure_is_isolated_from_live_v2(monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger=main.__name__)
+    monkeypatch.setenv("REPLACEMENT_PLANNER_SHADOW_ENABLED", "true")
+    result = main.ReplacementShadowResult(True, False, None, "unexpected", "fixture_failure")
+    monkeypatch.setattr(main, "run_replacement_shadow", lambda **_: result)
+    plan = main.build_plan(
+        PlanGenerationRequest(athlete_profile=synthetic_profile()),
+        internal_planner_choice=main.PlannerChoice.V2, planning_date=date.today(),
+    )
+    assert plan["v2_diagnostics"]["scheduler_version"] == "v2"
+    assert "fixture_failure" in caplog.text
+    assert "Synthetic Step 6B Rower" not in caplog.text
+
+
+def test_enabled_replacement_shadow_never_persists_a_second_plan(monkeypatch):
+    monkeypatch.setenv("REPLACEMENT_PLANNER_SHADOW_ENABLED", "true")
+    calls = []
+    monkeypatch.setattr(
+        main, "run_replacement_shadow",
+        lambda **kwargs: (calls.append(kwargs), main.ReplacementShadowResult(True, True))[1],
+    )
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "replacement-shadow.sqlite3")
+        save_calls = []
+        original_save = repository.save_plan
+        monkeypatch.setattr(repository, "save_plan", lambda athlete_id, plan: (save_calls.append(athlete_id), original_save(athlete_id, plan))[1])
+        try:
+            athlete_id = repository.create(synthetic_profile(), "development-user")
+            response = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+        finally:
+            REPOSITORIES._instance = previous
+    assert response.status_code == 200
+    assert len(calls) == 1 and calls[0]["v2_plan"]["v2_diagnostics"]["scheduler_version"] == "v2"
+    assert len(save_calls) == 1
+
+
 @pytest.mark.parametrize("enabled, athlete_ids", [("false", ""), ("true", "not-an-athlete-id")])
 def test_legacy_live_optin_environment_is_ignored(monkeypatch, enabled, athlete_ids):
     monkeypatch.setenv("V2_PLANNER_LIVE_OPTIN_ENABLED", enabled)

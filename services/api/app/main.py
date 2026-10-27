@@ -27,6 +27,8 @@ from rowing_plan.power_profile import build_power_profile
 from rowing_plan.scheduler import PlanningConflict, generate_plan
 from rowing_plan.validators import hard_constraint_errors, validate_profile
 from rowing_plan.workbook import build_workbook
+from rowing_plan.replacement_plan_v3 import generate_plan_sequence_v3_candidate
+from rowing_plan.replacement_shadow import PlannerShadowComparison, compare_v2_with_v3
 from .repositories import REPOSITORIES, profile_revision, public_profile, with_profile_revision
 from .auth import current_user_id
 from rowing_plan.training_load import load_summary, session_load_au
@@ -84,6 +86,12 @@ def v2_planner_shadow_enabled() -> bool:
     return os.getenv("V2_PLANNER_SHADOW_ENABLED", "").strip().lower() in _TRUE_ENV_VALUES
 
 
+def replacement_planner_shadow_enabled() -> bool:
+    """Enable V3 comparison only; it never affects routing or persistence."""
+
+    return os.getenv("REPLACEMENT_PLANNER_SHADOW_ENABLED", "").strip().lower() in _TRUE_ENV_VALUES
+
+
 def v2_emergency_v1_rollback_enabled() -> bool:
     """Server-side emergency rollback; V2 is otherwise the production default."""
 
@@ -108,6 +116,16 @@ class ShadowPlannerResult:
     failure_reason_code: str | None = None
     invariants: tuple[tuple[str, bool], ...] = ()
     target_statuses: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class ReplacementShadowResult:
+    attempted: bool
+    success: bool
+    comparison: PlannerShadowComparison | None = None
+    failure_category: str | None = None
+    failure_reason_code: str | None = None
+    timings_ms: tuple[tuple[str, float], ...] = ()
 
 
 def compare_planner_invariants(v1_plan: dict, v2_plan: dict, *, locked_sessions=()) -> tuple[tuple[str, bool], ...]:
@@ -166,6 +184,51 @@ def run_v2_shadow(*, profile: dict, bands: list[dict], power: dict, locked_sessi
         return ShadowPlannerResult(True, False, category, error.reason_code)
     except Exception:
         return ShadowPlannerResult(True, False, "unexpected", "unexpected_v2_exception")
+
+
+def run_replacement_shadow(*, profile: dict, bands: list[dict], power: dict, locked_sessions: list[dict],
+                           v2_plan: dict, prior_plan: dict | None, history_actuals: dict[str, dict] | None,
+                           planning_date: date) -> ReplacementShadowResult:
+    """Run V3 beside authoritative V2 with identical normalized input facts.
+
+    This function is deliberately exception-contained: callers must never lose
+    a successful V2 response because a shadow candidate cannot be generated.
+    """
+    try:
+        candidate = generate_plan_sequence_v3_candidate(
+            profile, CONFIG, bands, power, planning_date=planning_date,
+            prior_plan=prior_plan, history_actuals=history_actuals,
+            locked_sessions=locked_sessions,
+        )
+        comparison_started = perf_counter()
+        comparison = compare_v2_with_v3(v2_plan=v2_plan, candidate=candidate, planning_date=planning_date)
+        timings = (*candidate.stage_timings_ms, ("comparison", round((perf_counter() - comparison_started) * 1000, 3)))
+        return ReplacementShadowResult(True, candidate.success, comparison,
+                                       None if candidate.success else "candidate_failure",
+                                       candidate.failure_reason, timings)
+    except Exception as error:  # shadow diagnostics must not change the live result
+        logger.warning("planner_shadow v3_status=failed failure_category=unexpected failure_code=%s", type(error).__name__)
+        return ReplacementShadowResult(True, False, None, "unexpected", type(error).__name__)
+
+
+def log_replacement_shadow(result: ReplacementShadowResult) -> None:
+    """Log only aggregate shadow facts; no profile or session payloads."""
+
+    comparison = result.comparison
+    logger.info(
+        "planner_shadow v2_status=success v3_status=%s classification=%s promotion_blockers=%s "
+        "needs_generated=%s needs_placed=%s needs_unplaced=%s materialization_failures=%s "
+        "research_contract_failures=%s timings_ms=%s failure_category=%s failure_code=%s",
+        "success" if result.success else "failed",
+        comparison.classification if comparison else "unresolved",
+        comparison.promotion_blockers if comparison else (),
+        comparison.needs_generated if comparison else 0,
+        comparison.needs_placed if comparison else 0,
+        comparison.needs_unplaced if comparison else 0,
+        comparison.materialization_failures if comparison else (),
+        tuple(item.contract for item in comparison.research_contracts if item.status == "fail") if comparison else (),
+        result.timings_ms, result.failure_category, result.failure_reason_code,
+    )
 
 
 def log_planner_generation(*, authoritative_planner: str, shadow: ShadowPlannerResult | None = None, fallback_used: bool = False, fallback_reason_code: str | None = None, failure_diagnostics: dict | None = None, mode: str | None = None, regeneration_skipped: bool = False) -> None:
@@ -430,6 +493,18 @@ def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: Plann
     hard_errors = hard_constraint_errors(plan, profile)
     if hard_errors:
         raise HTTPException(status_code=422, detail={"error_code":"hard_constraint","constraint_errors":hard_errors,"planning_conflicts":hard_errors,"diagnostic":{"conflict_type":"hard_constraint","reason":hard_errors[0],"validation_rule":"hard_constraint_errors"}})
+    # V3 is deliberately shadow-only.  It receives the same normalized profile,
+    # bands/power anchors, locks, prior plan, completed history, and explicit
+    # planning-date boundary as V2.  Public fresh generation has no explicit
+    # historical boundary in V2 today, so it is skipped rather than compared
+    # against materially different inputs.
+    if choice is PlannerChoice.V2 and replacement_planner_shadow_enabled() and planning_date is not None:
+        log_replacement_shadow(run_replacement_shadow(
+            profile=profile, bands=bands, power=power,
+            locked_sessions=request.locked_sessions, v2_plan=plan,
+            prior_plan=prior_plan, history_actuals=history_actuals,
+            planning_date=planning_date,
+        ))
     if fallback_reason_code:
         fallback_mode = f"{routing_mode or 'v2_default'}_fallback"
         log_planner_generation(authoritative_planner="v1", fallback_used=True, fallback_reason_code=fallback_reason_code, failure_diagnostics=fallback_diagnostics, mode=fallback_mode)
