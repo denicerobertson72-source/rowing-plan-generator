@@ -535,15 +535,36 @@ def safe_generation_metadata(profile: dict) -> dict:
         "season_dates_present":bool(profile.get("season",{}).get("start_date") and profile.get("season",{}).get("end_date")),
     }
 
+
+def safe_planner_failure_diagnostics(error: Exception) -> dict:
+    """Keep contract failures actionable without emitting plan/profile payloads."""
+
+    if not isinstance(error, PlannerRoutingError):
+        return {}
+    source = error.diagnostics if isinstance(error.diagnostics, dict) else {}
+    allowed = {
+        "reason_code", "failure_stage", "failure_origin", "placement_id", "date",
+        "role", "quality_type", "authority_type", "source_date", "expected_date",
+        "preservation_status", "changed_fields", "missing_fields",
+    }
+    result = {key: source[key] for key in sorted(allowed & set(source))}
+    identity = source.get("session_identity") or source.get("source_session_identity")
+    if isinstance(identity, dict):
+        result["session_identity"] = {
+            key: identity[key] for key in ("date", "session_id", "mode") if key in identity
+        }
+    return result
+
 def unexpected_generation_error(error: Exception, profile: dict, athlete_id: str | None, stage: str, planversion_creation_started: bool) -> HTTPException:
     error_id=f"pg_{token_urlsafe(6).replace('-', '').replace('_', '')}"
     trace=extract_tb(error.__traceback__)
     source=f"{trace[-1].filename}:{trace[-1].lineno}" if trace else "unknown"
     metadata=safe_generation_metadata(profile)
+    planner_diagnostics=safe_planner_failure_diagnostics(error)
     logger.exception(
-        "plan_generation_failed error_id=%s exception_class=%s exception_message=%s source=%s stage=%s athlete_id_present=%s planversion_creation_started=%s recurring_activities_present=%s recurring_activity_count=%s race_count=%s performance_test_count=%s season_dates_present=%s",
+        "plan_generation_failed error_id=%s exception_class=%s exception_message=%s source=%s stage=%s athlete_id_present=%s planversion_creation_started=%s recurring_activities_present=%s recurring_activity_count=%s race_count=%s performance_test_count=%s season_dates_present=%s planner_diagnostics=%s",
         error_id, type(error).__name__, str(error), source, stage, bool(athlete_id), planversion_creation_started,
-        metadata["recurring_activities_present"], metadata["recurring_activity_count"], metadata["race_count"], metadata["performance_test_count"], metadata["season_dates_present"],
+        metadata["recurring_activities_present"], metadata["recurring_activity_count"], metadata["race_count"], metadata["performance_test_count"], metadata["season_dates_present"], planner_diagnostics,
     )
     return HTTPException(500, detail={"error_code":"plan_generation_failed","error_id":error_id})
 

@@ -50,6 +50,20 @@ def test_internal_v2_choice_reaches_the_real_v2_branch():
     assert plan["v2_diagnostics"]["scheduler_version"] == "v2"
 
 
+def test_v2_contract_failure_logging_keeps_structured_safe_diagnostics():
+    error = main.PlannerRoutingError("v2_plan_contract_failed", {
+        "reason_code":"rest_session_conflict", "failure_stage":"plan_assembly",
+        "failure_origin":"contract", "date":"2026-10-18", "role":"strength",
+        "session_identity":{"date":"2026-10-18", "session_id":"LIFT", "mode":"strength", "source_id":"do-not-log"},
+        "profile_payload":"do-not-log",
+    })
+    assert main.safe_planner_failure_diagnostics(error) == {
+        "date":"2026-10-18", "failure_origin":"contract", "failure_stage":"plan_assembly",
+        "reason_code":"rest_session_conflict", "role":"strength",
+        "session_identity":{"date":"2026-10-18", "session_id":"LIFT", "mode":"strength"},
+    }
+
+
 def test_invalid_profile_fails_before_any_planner_is_selected(monkeypatch):
     called = False
 

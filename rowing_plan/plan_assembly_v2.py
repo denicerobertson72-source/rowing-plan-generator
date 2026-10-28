@@ -55,17 +55,42 @@ def build_plan_version_from_v2(*, profile: dict, bands, power: dict, calendar: t
         if not result.success:
             return V2PlanAssemblyResult(False,failure_reason=result.failure_reason,failure_diagnostics={"failure_stage":"plan_assembly","failure_origin":"materialization","placement_id":request.placement_id or None,"date":request.date.isoformat(),"role":request.role,"quality_type":getattr(request.concrete_quality,"quality_type",None),"reason_code":result.failure_reason})
         if result.calendar_only: continue
-        if not _REQUIRED <= set(result.session): return V2PlanAssemblyResult(False,failure_reason="incomplete_session_shape")
+        if not _REQUIRED <= set(result.session):
+            return V2PlanAssemblyResult(False, failure_reason="incomplete_session_shape", failure_diagnostics={
+                "failure_stage":"plan_assembly", "failure_origin":"contract",
+                "placement_id":request.placement_id or None, "date":request.date.isoformat(),
+                "role":request.role, "reason_code":"incomplete_session_shape",
+                "missing_fields":tuple(sorted(_REQUIRED-set(result.session))),
+            })
         materialized.append(dict(result.session))
-    if any(session["date"] in {day.isoformat() for day in rest_dates} for session in materialized): return V2PlanAssemblyResult(False,failure_reason="rest_session_conflict")
+    rest_conflict=next((session for session in materialized if session["date"] in {day.isoformat() for day in rest_dates}),None)
+    if rest_conflict:
+        return V2PlanAssemblyResult(False, failure_reason="rest_session_conflict", failure_diagnostics={
+            "failure_stage":"plan_assembly", "failure_origin":"contract",
+            "date":rest_conflict["date"], "role":rest_conflict.get("session_role"),
+            "reason_code":"rest_session_conflict",
+            "session_identity":{"session_id":rest_conflict.get("session_id"),"mode":rest_conflict.get("mode")},
+        })
     # Match V1 lock restoration: an authoritative date replaces newly planned
     # work on that date and retains its serialized dictionary byte-for-byte.
     carried=[dict(item) for item in authoritative_sessions]
-    if any(item.get("date") not in {day.isoformat() for day in valid_dates} for item in carried): return V2PlanAssemblyResult(False,failure_reason="authoritative_date_outside_calendar")
+    outside=next((item for item in carried if item.get("date") not in {day.isoformat() for day in valid_dates}),None)
+    if outside:
+        return V2PlanAssemblyResult(False, failure_reason="authoritative_date_outside_calendar", failure_diagnostics={
+            "failure_stage":"plan_assembly", "failure_origin":"contract", "date":outside.get("date"),
+            "reason_code":"authoritative_date_outside_calendar",
+            "session_identity":{"session_id":outside.get("session_id"),"mode":outside.get("mode")},
+        })
     carried_dates={item["date"] for item in carried}
     sessions=[item for item in materialized if item["date"] not in carried_dates]+carried
     keys=[(item["date"],item["session_id"],item["mode"]) for item in sessions]
-    if len(keys)!=len(set(keys)): return V2PlanAssemblyResult(False,failure_reason="duplicate_external_session_key")
+    duplicate=next((key for key in keys if keys.count(key)>1),None)
+    if duplicate:
+        return V2PlanAssemblyResult(False, failure_reason="duplicate_external_session_key", failure_diagnostics={
+            "failure_stage":"plan_assembly", "failure_origin":"contract", "date":duplicate[0],
+            "reason_code":"duplicate_external_session_key",
+            "session_identity":{"session_id":duplicate[1],"mode":duplicate[2]},
+        })
     sessions=sorted(sessions,key=_sort_key)
     generated_calendar=_calendar_days(calendar,rest_dates)
     historical=dict(historical_calendar_days or {})

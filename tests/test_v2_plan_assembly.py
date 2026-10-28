@@ -48,6 +48,16 @@ def test_v27b_rejects_rest_conflicts_and_duplicate_external_keys():
     assert not rest.success and rest.failure_reason=="rest_session_conflict"
     duplicate=build_plan_version_from_v2(profile=profile,bands=bands,power=power,calendar=days,requests=(req("strength",date(2026,9,9),45),req("strength",date(2026,9,9),45)))
     assert not duplicate.success and duplicate.failure_reason=="duplicate_external_session_key"
+    assert rest.failure_diagnostics == {
+        "failure_stage":"plan_assembly", "failure_origin":"contract", "date":"2026-09-09",
+        "role":None, "reason_code":"rest_session_conflict",
+        "session_identity":{"session_id":"LIFT","mode":"strength"},
+    }
+    assert duplicate.failure_diagnostics == {
+        "failure_stage":"plan_assembly", "failure_origin":"contract", "date":"2026-09-09",
+        "reason_code":"duplicate_external_session_key",
+        "session_identity":{"session_id":"LIFT","mode":"strength"},
+    }
 
 def test_v27b_complete_shape_totals_and_diagnostics_use_serialized_sessions():
     profile,bands,power=inputs(); days=calendar(); completed={"date":"2026-09-08","day":"Tuesday","phase":"authoritative","fixed":True,"mode":"erg","session_id":"old-row","title":"Completed","band":"UT2","total_cardio_minutes":44,"rowing_minutes":44,"quality_minutes":0,"structure":"Original."}
