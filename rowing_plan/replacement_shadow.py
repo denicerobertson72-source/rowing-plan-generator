@@ -46,6 +46,7 @@ class PlannerShadowComparison:
     promotion_blockers: tuple[str, ...]
     classification: str
     diagnostics: tuple[tuple[str, str], ...] = ()
+    v2_failure_reason: str | None = None
 
 
 _QUALITY = frozenset({
@@ -128,19 +129,21 @@ def evaluate_research_contracts(candidate: ReplacementPlanCandidate) -> tuple[Re
     return tuple(violations)
 
 
-def compare_v2_with_v3(*, v2_plan: Mapping[str, Any], candidate: ReplacementPlanCandidate, planning_date: date) -> PlannerShadowComparison:
+def compare_v2_with_v3(*, v2_plan: Mapping[str, Any] | None, candidate: ReplacementPlanCandidate,
+                       planning_date: date, v2_failure_reason: str | None = None) -> PlannerShadowComparison:
     """Compare intent and contracts, never exact flexible weekday placement."""
-    v2_roles, v3_roles = _v2_roles(v2_plan), _v3_roles(candidate)
+    v2_roles, v3_roles = _v2_roles(v2_plan or {}), _v3_roles(candidate)
     contracts = evaluate_research_contracts(candidate)
     failures = tuple(sorted(item.contract for item in contracts if item.status == "fail"))
     materialization = tuple(sorted(item.code for item in candidate.materialization_diagnostics))
-    historical = "equivalent" if candidate.success else "v3_failure"
-    authority = "equivalent" if candidate.success else "v3_failure"
+    v2_unavailable = v2_plan is None
+    historical = "v2_unavailable" if v2_unavailable else "equivalent" if candidate.success else "v3_failure"
+    authority = "v2_unavailable" if v2_unavailable else "equivalent" if candidate.success else "v3_failure"
     race = "equivalent" if v3_roles["race"] else "v3_missing_race"
     recovery = "equivalent" if "recovery_protection" not in failures else "v3_recovery_regression"
     low = "equivalent" if "low_intensity_emphasis" not in failures else "v3_low_intensity_regression"
-    quality = "preference_difference" if v2_roles["quality"] != sum(v3_roles[item.value] for item in _QUALITY) else "equivalent"
-    strength = "preference_difference" if v2_roles["strength"] != v3_roles["strength"] else "equivalent"
+    quality = "v2_unavailable" if v2_unavailable else "preference_difference" if v2_roles["quality"] != sum(v3_roles[item.value] for item in _QUALITY) else "equivalent"
+    strength = "v2_unavailable" if v2_unavailable else "preference_difference" if v2_roles["strength"] != v3_roles["strength"] else "equivalent"
     flexible_dates = ("flexible_dates_not_compared_as_failures",) if candidate.success else ()
     blockers: list[str] = []
     if not candidate.success: blockers.append("materialization_contract_failure" if materialization else "v3_candidate_failure")
@@ -150,13 +153,19 @@ def compare_v2_with_v3(*, v2_plan: Mapping[str, Any], candidate: ReplacementPlan
     if "race_counts_once_as_stress" in failures or race == "v3_missing_race": blockers.append("race_taper_regression")
     if any(item in failures for item in {"completed_actuals_not_prescriptions", "target_credit_not_materialization_duration"}): blockers.append("duplicate_physiological_credit")
     if failures: blockers.append("research_contract_violation")
-    classification = "equivalent" if not blockers and quality == strength == "equivalent" else "research_contract_regression" if blockers else "preference_difference"
+    classification = (
+        "v3_resolves_v2_failure" if v2_unavailable and candidate.success and not blockers
+        else "v3_failure_after_v2_failure" if v2_unavailable
+        else "equivalent" if not blockers and quality == strength == "equivalent"
+        else "research_contract_regression" if blockers else "preference_difference"
+    )
     return PlannerShadowComparison(
-        planning_date, True, candidate.success,
+        planning_date, not v2_unavailable, candidate.success,
         tuple(sorted(v2_roles.items())), tuple(sorted(v3_roles.items())), historical, authority,
         race, recovery, low, quality, strength, len(candidate.needs),
         len({item.training_need_id for item in candidate.placements if item.authority_status is PlacementAuthorityStatus.PROVISIONAL}),
         len(candidate.placement_diagnostics.unplaced_needs), materialization, contracts,
         flexible_dates, tuple(sorted((("quality", quality), ("strength", strength)))), tuple(sorted(set(blockers))), classification,
-        tuple(sorted((("v3_failure_reason", candidate.failure_reason or ""),))),
+        tuple(sorted((("v3_failure_reason", candidate.failure_reason or ""), ("v2_failure_reason", v2_failure_reason or "")))),
+        v2_failure_reason,
     )

@@ -10,6 +10,7 @@ import pytest
 from rowing_plan.continuous_placement import PlacementSearchConfig
 from rowing_plan.intensity import build_intensity_profile
 from rowing_plan.power_profile import build_power_profile
+from rowing_plan.planner_v2 import V2PlanningError, generate_plan_v2
 from rowing_plan.replacement_plan_v3 import MaterializationDiagnostic, generate_plan_sequence_v3_candidate
 from rowing_plan.replacement_shadow import compare_v2_with_v3, evaluate_research_contracts
 from services.api.tests.disposable_browser_fixture import synthetic_profile
@@ -111,3 +112,37 @@ def test_shadow_promotes_history_authority_race_and_recovery_contract_failures_t
     authority_comparison = compare_v2_with_v3(v2_plan=v2, candidate=authority, planning_date=DAY)
     assert "authority_regression" in authority_comparison.promotion_blockers
     assert "race_taper_regression" in authority_comparison.promotion_blockers
+
+
+def test_v3_shadow_candidate_resolves_the_real_v2_rest_conflict_without_changing_v2():
+    """A fixed Wednesday coached session follows a Tuesday race recovery day.
+
+    V2 deliberately retains its current contradictory rest designation here so
+    this is evidence for V3, not a V2 repair regression.
+    """
+    profile = synthetic_profile()
+    profile["season"] = {**profile["season"], "start_date": "2026-11-01", "end_date": "2026-11-20"}
+    profile["races"] = [{
+        "event_name": "Production-shaped Tuesday race", "start_date": "2026-11-10",
+        "end_date": "2026-11-10", "race_dates": ["2026-11-10"],
+        "priority": "B", "race_type": "head_5k",
+    }]
+    bands, power = build_intensity_profile(profile, CONFIG), build_power_profile(profile, CONFIG)
+    with pytest.raises(V2PlanningError) as failed:
+        generate_plan_v2(profile, CONFIG, bands, power, (), planning_date=date(2026, 11, 1))
+    assert failed.value.reason_code == "v2_plan_contract_failed"
+    assert failed.value.diagnostics["reason_code"] == "rest_session_conflict"
+    assert failed.value.diagnostics["date"] == "2026-11-11"
+
+    candidate = generate_plan_sequence_v3_candidate(profile, CONFIG, bands, power, planning_date=date(2026, 11, 1))
+    comparison = compare_v2_with_v3(
+        v2_plan=None, candidate=candidate, planning_date=date(2026, 11, 1),
+        v2_failure_reason="v2_plan_contract_failed",
+    )
+    november_eleventh = [item for item in candidate.placements if item.date == date(2026, 11, 11)]
+    assert candidate.success
+    assert [(item.role.value, item.authority_status.value) for item in november_eleventh] == [("private_coaching", "authoritative")]
+    assert all(item.role.value != "rest" for item in november_eleventh)
+    assert comparison.v2_success is False and comparison.v3_success is True
+    assert comparison.classification == "v3_resolves_v2_failure"
+    assert not comparison.promotion_blockers

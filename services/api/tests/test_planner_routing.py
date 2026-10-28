@@ -475,6 +475,30 @@ def test_replacement_shadow_failure_is_isolated_from_live_v2(monkeypatch, caplog
     assert "Synthetic Step 6B Rower" not in caplog.text
 
 
+@pytest.mark.parametrize("v3_success", [True, False])
+def test_replacement_shadow_runs_independently_when_authoritative_v2_fails(monkeypatch, caplog, v3_success):
+    """A V3 diagnostic candidate never changes the current V2 failure path."""
+    caplog.set_level(logging.INFO, logger=main.__name__)
+    monkeypatch.setenv("REPLACEMENT_PLANNER_SHADOW_ENABLED", "true")
+    calls = []
+    result = main.ReplacementShadowResult(True, v3_success, None, None if v3_success else "candidate_failure", None if v3_success else "fixture_v3_failure")
+
+    def v2_failure(**kwargs):
+        assert kwargs["choice"] is main.PlannerChoice.V2
+        raise main.PlannerRoutingError("v2_plan_contract_failed", {"reason_code": "rest_session_conflict"})
+
+    monkeypatch.setattr(main, "execute_selected_planner", v2_failure)
+    monkeypatch.setattr(main, "run_replacement_shadow", lambda **kwargs: (calls.append(kwargs), result)[1])
+    with pytest.raises(main.PlannerRoutingError, match="v2_plan_contract_failed"):
+        main.build_plan(
+            PlanGenerationRequest(athlete_profile=synthetic_profile()),
+            internal_planner_choice=main.PlannerChoice.V2, planning_date=date.today(),
+        )
+    assert len(calls) == 1
+    assert calls[0]["v2_plan"] is None and calls[0]["v2_failure_reason"] == "rest_session_conflict"
+    assert "v2_status=failed" in caplog.text
+
+
 def test_enabled_replacement_shadow_never_persists_a_second_plan(monkeypatch):
     monkeypatch.setenv("REPLACEMENT_PLANNER_SHADOW_ENABLED", "true")
     calls = []
