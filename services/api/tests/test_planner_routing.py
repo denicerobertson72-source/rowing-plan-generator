@@ -30,6 +30,17 @@ def _v2_ready_profile():
     return profile
 
 
+def _v3_rest_conflict_profile():
+    profile = synthetic_profile()
+    profile["season"].update({"start_date": "2026-11-01", "end_date": "2026-11-20"})
+    profile["races"] = [{
+        "event_name": "Production-shaped Tuesday race", "start_date": "2026-11-10",
+        "end_date": "2026-11-10", "race_dates": ["2026-11-10"],
+        "priority": "B", "race_type": "head_5k",
+    }]
+    return profile
+
+
 @pytest.mark.parametrize(("value", "expected"), [(None, False), ("", False), ("false", False), ("0", False), ("no", False), ("true", True), ("1", True), ("yes", True), ("on", True)])
 def test_emergency_rollback_flag_is_the_only_default_routing_switch(monkeypatch, value, expected):
     if value is None:
@@ -697,3 +708,58 @@ def test_emergency_rollback_changes_only_the_next_authoritative_plan(monkeypatch
     assert "v2_diagnostics" not in final_v1.json()["plan"]
     assert latest and latest["version_number"] == 2
     assert any(item.get("date") == completed["date"] and item.get("session_id") == completed["session_id"] and item.get("mode") == completed["mode"] for item in final_v1.json()["plan"]["sessions"])
+
+
+def test_replacement_live_routing_is_allowlisted_and_emergency_rollback_forces_v2(monkeypatch):
+    athlete_id = "v3-athlete"
+    monkeypatch.setenv("REPLACEMENT_PLANNER_LIVE_ENABLED", "true")
+    monkeypatch.setenv("REPLACEMENT_PLANNER_LIVE_ATHLETE_IDS", athlete_id)
+    assert main.resolve_authenticated_athlete_planner(athlete_id=athlete_id) is main.PlannerChoice.V3
+    assert main.resolve_authenticated_athlete_planner(athlete_id="other-athlete") is main.PlannerChoice.V2
+    monkeypatch.setenv("REPLACEMENT_PLANNER_EMERGENCY_V2_ROLLBACK", "true")
+    assert main.resolve_authenticated_athlete_planner(athlete_id=athlete_id) is main.PlannerChoice.V2
+
+
+def test_live_v3_resolves_rest_conflict_saves_once_and_then_noops(monkeypatch):
+    monkeypatch.setenv("REPLACEMENT_PLANNER_LIVE_ENABLED", "true")
+    monkeypatch.setattr(main, "current_planning_date", lambda: date(2026, 11, 1))
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "live-v3-rest.sqlite3")
+        save_calls = []
+        original_save = repository.save_plan
+        monkeypatch.setattr(repository, "save_plan", lambda athlete_id, plan: (save_calls.append(plan), original_save(athlete_id, plan))[1])
+        try:
+            athlete_id = repository.create(_v3_rest_conflict_profile(), "development-user")
+            monkeypatch.setenv("REPLACEMENT_PLANNER_LIVE_ATHLETE_IDS", athlete_id)
+            first = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            second = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+        finally:
+            REPOSITORIES._instance = previous
+    assert first.status_code == second.status_code == 200
+    plan = first.json()["plan"]
+    assert plan["v2_diagnostics"]["scheduler_version"] == "replacement-v3"
+    assert not any(item["date"] == "2026-11-11" and item.get("designated_rest") for item in plan["calendar_days"])
+    assert any(item["date"] == "2026-11-11" and item["session_id"] == "COACHED" for item in plan["sessions"])
+    assert len(save_calls) == 1 and second.json()["plan_id"] == first.json()["plan_id"]
+
+
+def test_live_v3_failure_never_runs_v2_or_saves(monkeypatch):
+    monkeypatch.setenv("REPLACEMENT_PLANNER_LIVE_ENABLED", "true")
+    calls = []
+
+    def v3_failure(**kwargs):
+        calls.append(kwargs["choice"])
+        raise main.PlannerRoutingError("v3_plan_contract_failed", {"reason_code": "fixture"})
+
+    monkeypatch.setattr(main, "execute_selected_planner", v3_failure)
+    with TemporaryDirectory() as directory:
+        client, repository, previous = _client_for_database(Path(directory) / "live-v3-failure.sqlite3")
+        try:
+            athlete_id = repository.create(_v2_ready_profile(), "development-user")
+            monkeypatch.setenv("REPLACEMENT_PLANNER_LIVE_ATHLETE_IDS", athlete_id)
+            response = client.post(f"/api/v1/athletes/{athlete_id}/plans/generate", json={})
+            latest = repository.latest_plan_for_athlete(athlete_id)
+        finally:
+            REPOSITORIES._instance = previous
+    assert response.status_code == 500
+    assert calls == [main.PlannerChoice.V3] and latest is None

@@ -47,6 +47,7 @@ class PlannerChoice(str, Enum):
 
     V1 = "v1"
     V2 = "v2"
+    V3 = "replacement_v3"
 
 
 class PlannerRoutingError(RuntimeError):
@@ -77,6 +78,13 @@ _PLANNER_SOURCE_FILES = {
         "plan_assembly_v2.py", "session_archetypes.py", "session_selection.py",
         "session_selector.py",
     ),
+    PlannerChoice.V3: (
+        "replacement_plan_v3.py", "replacement_shadow.py", "planning_domain.py",
+        "planning_normalization.py", "physiological_state.py", "training_needs.py",
+        "training_policy.py", "sequence_constraints.py", "continuous_placement.py",
+        "materialization_v2.py", "plan_assembly_v2.py", "session_archetypes.py",
+        "session_selection.py", "session_selector.py",
+    ),
 }
 
 
@@ -92,6 +100,25 @@ def replacement_planner_shadow_enabled() -> bool:
     return os.getenv("REPLACEMENT_PLANNER_SHADOW_ENABLED", "").strip().lower() in _TRUE_ENV_VALUES
 
 
+def replacement_planner_live_enabled() -> bool:
+    """Allow explicitly selected athletes to use V3; default routing remains V2."""
+
+    return os.getenv("REPLACEMENT_PLANNER_LIVE_ENABLED", "").strip().lower() in _TRUE_ENV_VALUES
+
+
+def replacement_planner_live_athlete_ids() -> frozenset[str]:
+    return frozenset(
+        item.strip() for item in os.getenv("REPLACEMENT_PLANNER_LIVE_ATHLETE_IDS", "").split(",")
+        if item.strip()
+    )
+
+
+def replacement_planner_emergency_v2_rollback_enabled() -> bool:
+    """Operator-only override for the explicitly opted-in V3 cohort."""
+
+    return os.getenv("REPLACEMENT_PLANNER_EMERGENCY_V2_ROLLBACK", "").strip().lower() in _TRUE_ENV_VALUES
+
+
 def v2_emergency_v1_rollback_enabled() -> bool:
     """Server-side emergency rollback; V2 is otherwise the production default."""
 
@@ -102,10 +129,17 @@ def default_planner_choice() -> PlannerChoice:
     return PlannerChoice.V1 if v2_emergency_v1_rollback_enabled() else PlannerChoice.V2
 
 
-def resolve_authenticated_athlete_planner(*, internal_planner_choice: PlannerChoice | None = None) -> PlannerChoice:
-    """Authenticated generation is V2-by-default and never cohort-gated."""
+def resolve_authenticated_athlete_planner(*, athlete_id: str | None = None,
+                                         internal_planner_choice: PlannerChoice | None = None) -> PlannerChoice:
+    """Authenticated routing: V3 is a deliberate, allowlisted opt-in only."""
 
-    return internal_planner_choice or default_planner_choice()
+    if internal_planner_choice is not None:
+        return internal_planner_choice
+    if replacement_planner_emergency_v2_rollback_enabled():
+        return PlannerChoice.V2
+    if athlete_id and replacement_planner_live_enabled() and athlete_id in replacement_planner_live_athlete_ids():
+        return PlannerChoice.V3
+    return default_planner_choice()
 
 
 @dataclass(frozen=True)
@@ -331,6 +365,8 @@ def _authoritative_choice_for_plan(plan: dict, requested: PlannerChoice) -> Plan
         return PlannerChoice.V1
     if isinstance(plan.get("v2_diagnostics"), dict) and plan["v2_diagnostics"].get("scheduler_version") == "v2":
         return PlannerChoice.V2
+    if isinstance(plan.get("v2_diagnostics"), dict) and plan["v2_diagnostics"].get("scheduler_version") == "replacement-v3":
+        return PlannerChoice.V3
     return requested
 
 
@@ -422,6 +458,52 @@ def execute_selected_planner(*, choice: PlannerChoice, profile: dict, bands: lis
             }
             raise PlannerRoutingError("v2_plan_contract_failed", contract_error) from ValueError(contract_error["reason_code"])
         return plan
+    if choice is PlannerChoice.V3:
+        if planning_date is None:
+            raise PlannerRoutingError("v3_planning_date_required")
+        from rowing_plan.replacement_plan_v3 import generate_plan_sequence_v3_candidate
+        from rowing_plan.replacement_shadow import compare_v2_with_v3
+
+        candidate = generate_plan_sequence_v3_candidate(
+            profile, CONFIG, bands, power, planning_date=planning_date,
+            prior_plan=prior_plan, history_actuals=history_actuals,
+            locked_sessions=locked_sessions,
+        )
+        comparison = compare_v2_with_v3(
+            v2_plan=None, candidate=candidate, planning_date=planning_date,
+            v2_failure_reason="v2_not_executed_for_live_v3",
+        )
+        if not candidate.success or comparison.promotion_blockers:
+            raise PlannerRoutingError("v3_plan_contract_failed", {
+                "failure_stage": "replacement_v3_validation",
+                "reason_code": candidate.failure_reason or "v3_research_contract_failed",
+                "materialization_failures": comparison.materialization_failures,
+                "research_contract_failures": tuple(
+                    item.contract for item in comparison.research_contracts if item.status == "fail"
+                ),
+                "promotion_blockers": comparison.promotion_blockers,
+                "needs_generated": comparison.needs_generated,
+                "needs_placed": comparison.needs_placed,
+                "needs_unplaced": comparison.needs_unplaced,
+            })
+        plan = dict(candidate.plan or {})
+        diagnostics = dict(plan.get("v2_diagnostics", {}))
+        diagnostics["scheduler_version"] = "replacement-v3"
+        diagnostics["replacement_live"] = {
+            "candidate_valid": True,
+            "research_contract_failures": (),
+            "materialization_failures": (),
+            "needs_generated": comparison.needs_generated,
+            "needs_placed": comparison.needs_placed,
+            "needs_unplaced": comparison.needs_unplaced,
+            "timings_ms": candidate.stage_timings_ms,
+        }
+        plan["v2_diagnostics"] = diagnostics
+        for stage, _duration in candidate.stage_timings_ms:
+            # Individual duration logging remains aggregate-only and contains
+            # no athlete/session payload.
+            logger.info("planner_generation_timing planner=replacement_v3 stage=%s", stage)
+        return plan
     raise PlannerRoutingError("unknown_planner_choice")
 
 
@@ -481,6 +563,8 @@ def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: Plann
     choice = server_authorized_planner_choice or resolve_planner_choice(internal_planner_choice)
     if choice is PlannerChoice.V2:
         _log_generation_timing(planner="v2", stage="api_input_orchestration", started=input_started)
+    elif choice is PlannerChoice.V3:
+        _log_generation_timing(planner="replacement_v3", stage="api_input_orchestration", started=input_started)
     fallback_reason_code = None
     fallback_diagnostics: dict = {}
     replacement_shadow = choice is PlannerChoice.V2 and replacement_planner_shadow_enabled() and planning_date is not None
@@ -531,6 +615,16 @@ def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: Plann
         log_planner_generation(authoritative_planner="v1", shadow=shadow)
     elif choice is PlannerChoice.V2:
         log_planner_generation(authoritative_planner="v2", mode=routing_mode or "v2_default")
+    elif choice is PlannerChoice.V3:
+        live = plan.get("v2_diagnostics", {}).get("replacement_live", {})
+        logger.info(
+            "planner_generation mode=%s authoritative_planner=replacement_v3 athlete_allowlisted=true "
+            "candidate_valid=true research_contract_failures=%s materialization_failures=%s "
+            "needs_generated=%s needs_placed=%s needs_unplaced=%s",
+            routing_mode or "v3_live_optin", live.get("research_contract_failures", ()),
+            live.get("materialization_failures", ()), live.get("needs_generated", 0),
+            live.get("needs_placed", 0), live.get("needs_unplaced", 0),
+        )
     elif routing_mode:
         log_planner_generation(authoritative_planner="v1", mode=routing_mode)
     return plan
@@ -859,7 +953,7 @@ def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: s
         locked=list(request.locked_sessions)
         inherited_locked, effective_actuals, actual_plan_ids = _generation_history(previous)
         locked.extend(inherited_locked)
-        choice=resolve_authenticated_athlete_planner()
+        choice=resolve_authenticated_athlete_planner(athlete_id=athlete_id)
         prior_plan=previous["plan"] if previous else None
         fingerprint=generation_input_fingerprint(
             profile=profile,
@@ -881,7 +975,9 @@ def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: s
             PlanGenerationRequest(athlete_profile=profile, locked_sessions=locked),
             server_authorized_planner_choice=choice,
             prior_plan=prior_plan,
-            routing_mode="v2_default" if choice is PlannerChoice.V2 else "v1_emergency_rollback",
+            routing_mode=("v3_live_optin" if choice is PlannerChoice.V3 else
+                          "v2_emergency_rollback" if replacement_planner_emergency_v2_rollback_enabled() else
+                          "v2_default" if choice is PlannerChoice.V2 else "v1_emergency_rollback"),
             history_actuals=effective_actuals,
             planning_date=current_planning_date(),
         )

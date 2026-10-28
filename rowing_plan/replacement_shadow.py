@@ -139,7 +139,8 @@ def compare_v2_with_v3(*, v2_plan: Mapping[str, Any] | None, candidate: Replacem
     v2_unavailable = v2_plan is None
     historical = "v2_unavailable" if v2_unavailable else "equivalent" if candidate.success else "v3_failure"
     authority = "v2_unavailable" if v2_unavailable else "equivalent" if candidate.success else "v3_failure"
-    race = "equivalent" if v3_roles["race"] else "v3_missing_race"
+    expected_races = sum(item.type is AuthorityType.RACE for item in candidate.context.authoritative_commitments)
+    race = "equivalent" if v3_roles["race"] or expected_races == 0 else "v3_missing_race"
     recovery = "equivalent" if "recovery_protection" not in failures else "v3_recovery_regression"
     low = "equivalent" if "low_intensity_emphasis" not in failures else "v3_low_intensity_regression"
     quality = "v2_unavailable" if v2_unavailable else "preference_difference" if v2_roles["quality"] != sum(v3_roles[item.value] for item in _QUALITY) else "equivalent"
