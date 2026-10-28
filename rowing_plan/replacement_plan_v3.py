@@ -68,11 +68,8 @@ _ROW_ROLE_MAP = {
     TrainingRole.DEDICATED_UT2: "dedicated_ut2",
     TrainingRole.LONG_AEROBIC: "long_aerobic",
     TrainingRole.UT1_AEROBIC_STRENGTH: "ut1_aerobic_strength",
-    # The existing selector has no separate recovery/technical catalog.  Both
-    # safely reuse its low-intensity UT2 path; role/provenance remain explicit.
-    TrainingRole.TECHNICAL_REENTRY: "dedicated_ut2",
-    TrainingRole.RECOVERY_AEROBIC: "dedicated_ut2",
-    TrainingRole.TAPER_MAINTENANCE: "dedicated_ut2",
+    TrainingRole.TECHNICAL_REENTRY: "technical_reentry",
+    TrainingRole.RECOVERY_AEROBIC: "recovery_aerobic",
 }
 _EXPLICIT_QUALITY = {
     TrainingRole.THRESHOLD_AT: "AT",
@@ -80,6 +77,7 @@ _EXPLICIT_QUALITY = {
     TrainingRole.ANAEROBIC_AN: "AN",
     TrainingRole.POWER_PP: "PP",
     TrainingRole.RACE_PREPARATION: "TR",
+    TrainingRole.TAPER_MAINTENANCE: "TR",
 }
 
 

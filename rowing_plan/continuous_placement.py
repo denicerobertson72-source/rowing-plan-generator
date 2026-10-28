@@ -28,6 +28,7 @@ from .planning_domain import (
     TrainingRole,
 )
 from .planning_normalization import NormalizedPlanningContext
+from .materialization_capabilities import minimum_materializable_reservation
 from .sequence_constraints import evaluate_sequence_constraint
 from .training_policy import DEFAULT_TRAINING_POLICY, POLICY_VERSION, TrainingPolicy
 
@@ -221,13 +222,19 @@ def _availability(
     return dates, tuple(sorted(seed, key=lambda item: (item.date, item.placement_id))), projected, tuple(sorted(authority_conflicts))
 
 
-def _reservation_minutes(need: TrainingNeed, decision: SequenceConstraintDecision, config: PlacementSearchConfig) -> int:
+def _reservation_minutes(need: TrainingNeed, decision: SequenceConstraintDecision, config: PlacementSearchConfig,
+                         *, profile: Mapping[str, Any] | None, day: date) -> int | None:
     credit = decision.recommended_credit_adjustment or need.target_credit
+    minimum, _selector_role = minimum_materializable_reservation(
+        role=need.role.value, profile=profile or {}, day=day,
+    )
+    if minimum is None:
+        return None
     if credit.minutes:
-        return credit.minutes
+        return max(credit.minutes, minimum)
     if need.role is TrainingRole.STRENGTH:
-        return config.default_strength_reservation_minutes
-    return config.default_noncredit_reservation_minutes
+        return max(config.default_strength_reservation_minutes, minimum)
+    return max(config.default_noncredit_reservation_minutes, minimum)
 
 
 def _placement_score(need: TrainingNeed, decision: SequenceConstraintDecision, day: AvailableDate, stable: bool) -> tuple[int, int, int, int]:
@@ -297,6 +304,7 @@ def _unplaced(
     final: _SearchState,
     policy: TrainingPolicy,
     config: PlacementSearchConfig,
+    profile: Mapping[str, Any] | None,
 ) -> tuple[UnplacedNeedDiagnostic, ...]:
     result = []
     placed = set(final.placed_need_ids)
@@ -315,7 +323,11 @@ def _unplaced(
                 day.multiple_sessions_allowed, day.prohibited_role_families,
                 day.preferred, day.authoritative_placement_ids,
             )
-            reason = _can_use_date(final_day, need, _reservation_minutes(need, decision, config), final.placements)
+            reservation = _reservation_minutes(need, decision, config, profile=profile, day=day.date)
+            if reservation is None:
+                reasons.append("no_materializable_catalog_envelope")
+                continue
+            reason = _can_use_date(final_day, need, reservation, final.placements)
             if reason:
                 reasons.append(reason)
         if need.latest_date < context.planning_date:
@@ -375,7 +387,9 @@ def place_continuous_training_needs(
                 decision = evaluate_sequence_constraint(context, state, need, day.date, policy, projected=current.projected)
                 if decision.eligibility is SequenceEligibility.PROHIBITED:
                     continue
-                reservation = _reservation_minutes(need, decision, config)
+                reservation = _reservation_minutes(need, decision, config, profile=profile, day=day.date)
+                if reservation is None:
+                    continue
                 unavailable_reason = _can_use_date(day, need, reservation, current.placements)
                 if unavailable_reason:
                     continue
@@ -417,7 +431,7 @@ def place_continuous_training_needs(
                       item.prohibited_role_families, item.preferred, item.authoritative_placement_ids)
         for item in sorted(dates.values(), key=lambda item: item.date)
     )
-    unplaced = _unplaced(context, state, all_needs, dates, final, policy, config)
+    unplaced = _unplaced(context, state, all_needs, dates, final, policy, config, profile)
     return ContinuousPlacementResult(
         placements=final.placements, projected_sequence=final.projected, available_dates=available_dates,
         diagnostics=ContinuousPlacementDiagnostics(

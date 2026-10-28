@@ -474,9 +474,35 @@ def execute_selected_planner(*, choice: PlannerChoice, profile: dict, bands: lis
             v2_failure_reason="v2_not_executed_for_live_v3",
         )
         if not candidate.success or comparison.promotion_blockers:
+            failed = candidate.materialization_diagnostics[0] if candidate.materialization_diagnostics else None
+            placement = next((item for item in candidate.placements if failed and item.placement_id == failed.placement_id), None)
+            need = next((item for item in candidate.needs if placement and item.id == placement.training_need_id), None)
+            minimum_catalog_envelope = None
+            candidate_count = None
+            if placement:
+                from rowing_plan.materialization_capabilities import (
+                    materialization_candidate_count, minimum_materializable_reservation,
+                )
+                minimum_catalog_envelope, _ = minimum_materializable_reservation(
+                    role=placement.role.value if placement.role else "", profile=profile, day=placement.date,
+                )
+                candidate_count = materialization_candidate_count(
+                    role=placement.role.value if placement.role else "", profile=profile,
+                    day=placement.date, reservation_minutes=placement.reservation_minutes,
+                )
             raise PlannerRoutingError("v3_plan_contract_failed", {
                 "failure_stage": "replacement_v3_validation",
                 "reason_code": candidate.failure_reason or "v3_research_contract_failed",
+                "placement_id": placement.placement_id if placement else None,
+                "training_need_id": need.id if need else None,
+                "date": placement.date.isoformat() if placement else None,
+                "role": placement.role.value if placement and placement.role else (failed.role if failed else None),
+                "target_credit": placement.target_credit.minutes if placement else None,
+                "reservation_minutes": placement.reservation_minutes if placement else None,
+                "materialization_role": failed.role if failed else None,
+                "minimum_catalog_envelope": minimum_catalog_envelope,
+                "candidate_count": candidate_count,
+                "selector_rejection_reason": failed.detail if failed else None,
                 "materialization_failures": comparison.materialization_failures,
                 "research_contract_failures": tuple(
                     item.contract for item in comparison.research_contracts if item.status == "fail"
@@ -658,6 +684,8 @@ def safe_planner_failure_diagnostics(error: Exception) -> dict:
         "reason_code", "failure_stage", "failure_origin", "placement_id", "date",
         "role", "quality_type", "authority_type", "source_date", "expected_date",
         "preservation_status", "changed_fields", "missing_fields",
+        "training_need_id", "target_credit", "reservation_minutes", "materialization_role",
+        "minimum_catalog_envelope", "candidate_count", "selector_rejection_reason",
     }
     result = {key: source[key] for key in sorted(allowed & set(source))}
     identity = source.get("session_identity") or source.get("source_session_identity")

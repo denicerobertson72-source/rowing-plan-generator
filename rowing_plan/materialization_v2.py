@@ -6,7 +6,11 @@ from .models import V2SessionMaterializationRequest, V2SessionMaterializationRes
 from .power_profile import target_for_band
 from .session_selection import select_and_instantiate
 
-_SELECTOR_ROLES={"dedicated_ut2":"AEROBIC_BASE","long_aerobic":"LONG_AEROBIC","ut1_aerobic_strength":"AEROBIC_STRENGTH"}
+_SELECTOR_ROLES={
+    "dedicated_ut2":"AEROBIC_BASE", "long_aerobic":"LONG_AEROBIC",
+    "ut1_aerobic_strength":"AEROBIC_STRENGTH", "recovery_aerobic":"RECOVERY",
+    "technical_reentry":"TECHNIQUE_EASY",
+}
 
 def _mode(profile: dict, day, requested: str|None) -> str:
     if requested: return requested
