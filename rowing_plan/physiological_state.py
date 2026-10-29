@@ -15,6 +15,7 @@ from .planning_domain import (
     HistoricalFactType,
     PhysiologicalCredit,
     PhysiologicalState,
+    RecentLoad,
     RecoveryConstraint,
     RuleClass,
     TrainingRole,
@@ -30,6 +31,8 @@ _AEROBIC_ROLES = frozenset({
 })
 _QUALITY_BANDS = frozenset({"AT", "TR", "AN", "PP"})
 _AEROBIC_BANDS = frozenset({"UT3", "UT2", "UT1"})
+_LOW_INTENSITY_BANDS = frozenset({"UT3", "UT2"})
+_ROWING_ROLES = _AEROBIC_ROLES | {TrainingRole.QUALITY, TrainingRole.RACE}
 
 
 def _rules_by_key(policy: Iterable[TrainingPolicyRule]) -> dict[str, TrainingPolicyRule]:
@@ -102,6 +105,46 @@ def _completed_facts(context: NormalizedPlanningContext) -> tuple[HistoricalFact
         if fact.type is HistoricalFactType.RACE_FACT or fact.physiological_credit.eligible:
             result.append(fact)
     return tuple(sorted(result, key=lambda item: (item.date, item.id)))
+
+
+def _recent_load(completed: tuple[HistoricalFact, ...], *, as_of: date, window_days: int,
+                 duplicate_facts_excluded: int = 0) -> RecentLoad:
+    """Reduce completed facts over ``[as_of - days, as_of)`` exactly once."""
+    start = as_of - timedelta(days=window_days)
+    in_window = tuple(item for item in completed if start <= item.date < as_of)
+    excluded = tuple(item.id for item in completed if item.date < start)
+    rowing_minutes = 0
+    low_intensity_minutes = 0
+    quality_exposures = 0
+    strength_exposures = 0
+    race_exposures = 0
+    optional_minutes = 0
+    for fact in in_window:
+        role = fact.physiological_credit.role
+        duration = _actual_duration(fact)
+        classification = _classification(fact)
+        is_race = fact.type is HistoricalFactType.RACE_FACT
+        if is_race or role in _ROWING_ROLES:
+            rowing_minutes += duration
+        if classification in _LOW_INTENSITY_BANDS:
+            low_intensity_minutes += duration
+        if classification in _QUALITY_BANDS | {"uncertain_quality"}:
+            quality_exposures += fact.physiological_credit.exposures
+        if classification == "strength":
+            strength_exposures += fact.physiological_credit.exposures
+        if is_race:
+            race_exposures += 1
+        if fact.type is HistoricalFactType.OPTIONAL_ACTIVITY and fact.physiological_credit.eligible:
+            optional_minutes += duration
+    return RecentLoad(
+        window_days=window_days, window_start=start, as_of_date=as_of,
+        rowing_minutes=rowing_minutes, low_intensity_rowing_minutes=low_intensity_minutes,
+        quality_exposures=quality_exposures, strength_exposures=strength_exposures,
+        race_exposures=race_exposures, optional_activity_minutes=optional_minutes,
+        counted_fact_ids=tuple(item.id for item in in_window),
+        excluded_outside_window_fact_ids=excluded,
+        duplicate_facts_excluded=duplicate_facts_excluded,
+    )
 
 
 def _race_priority(fact: HistoricalFact) -> str:
@@ -203,14 +246,26 @@ def reduce_physiological_state(
     if missing:
         raise ValueError(f"missing_physiological_policy:{','.join(sorted(missing))}")
     completed = _completed_facts(context)
-    aerobic = tuple(item.physiological_credit for item in completed if item.physiological_credit.eligible and item.physiological_credit.role in _AEROBIC_ROLES)
-    quality = tuple(item.physiological_credit for item in completed if item.physiological_credit.eligible and item.physiological_credit.role is TrainingRole.QUALITY)
-    races = tuple(item for item in completed if item.type is HistoricalFactType.RACE_FACT)
-    strength = tuple(item.physiological_credit for item in completed if item.physiological_credit.eligible and item.physiological_credit.role is TrainingRole.STRENGTH)
-    aerobic_by_band = _classification_credits(completed, set(_AEROBIC_BANDS) | {"uncertain_aerobic"}, TrainingRole.DEDICATED_UT2)
-    quality_by_band = _classification_credits(completed, set(_QUALITY_BANDS) | {"uncertain_quality", "RACE"}, TrainingRole.QUALITY)
-    durations = {item.id: _actual_duration(item) for item in completed}
-    classifications = {item.id: value for item in completed if (value := _classification(item)) is not None}
+    recent_7d = _recent_load(
+        completed, as_of=context.planning_date, window_days=7,
+        duplicate_facts_excluded=context.diagnostics.duplicates_collapsed,
+    )
+    recent_14d = _recent_load(
+        completed, as_of=context.planning_date, window_days=14,
+        duplicate_facts_excluded=context.diagnostics.duplicates_collapsed,
+    )
+    # Need generation is a 14-day continuous policy.  Keep full history in
+    # HistoricalFact for audit, but use only this trailing physiological ledger
+    # to avoid old completed work suppressing present needs indefinitely.
+    recent_completed = tuple(item for item in completed if item.id in set(recent_14d.counted_fact_ids))
+    aerobic = tuple(item.physiological_credit for item in recent_completed if item.physiological_credit.eligible and item.physiological_credit.role in _AEROBIC_ROLES)
+    quality = tuple(item.physiological_credit for item in recent_completed if item.physiological_credit.eligible and item.physiological_credit.role is TrainingRole.QUALITY)
+    races = tuple(item for item in recent_completed if item.type is HistoricalFactType.RACE_FACT)
+    strength = tuple(item.physiological_credit for item in recent_completed if item.physiological_credit.eligible and item.physiological_credit.role is TrainingRole.STRENGTH)
+    aerobic_by_band = _classification_credits(recent_completed, set(_AEROBIC_BANDS) | {"uncertain_aerobic"}, TrainingRole.DEDICATED_UT2)
+    quality_by_band = _classification_credits(recent_completed, set(_QUALITY_BANDS) | {"uncertain_quality", "RACE"}, TrainingRole.QUALITY)
+    durations = {item.id: _actual_duration(item) for item in recent_completed}
+    classifications = {item.id: value for item in recent_completed if (value := _classification(item)) is not None}
     race_credits = tuple(PhysiologicalCredit(TrainingRole.RACE, 1, _actual_duration(item), True) for item in races)
     return PhysiologicalState(
         as_of_date=context.planning_date,
@@ -222,6 +277,8 @@ def reduce_physiological_state(
         completed_race_exposure=_credit_sum(TrainingRole.RACE, race_credits),
         completed_duration_minutes_by_fact=durations,
         completed_classification_by_fact=classifications,
+        recent_7d_load=recent_7d,
+        recent_14d_load=recent_14d,
         recent_race_load=races,
         recovery_constraints=_recovery_constraints(completed, context.planning_date, rules),
         next_race_context=_next_race_context(context),

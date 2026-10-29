@@ -42,9 +42,11 @@ class TrainingNeedDiagnostics:
     needs_blocked_by_recovery: tuple[str, ...] = ()
     race_taper_adjustments: tuple[str, ...] = ()
     source_policy_ids: tuple[str, ...] = ()
+    repeated_needs_generated_by_role: Mapping[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "active_need_count_by_role", MappingProxyType(dict(sorted(self.active_need_count_by_role.items()))))
+        object.__setattr__(self, "repeated_needs_generated_by_role", MappingProxyType(dict(sorted(self.repeated_needs_generated_by_role.items()))))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -55,6 +57,7 @@ class TrainingNeedDiagnostics:
             "needs_blocked_by_recovery": list(self.needs_blocked_by_recovery),
             "race_taper_adjustments": list(self.race_taper_adjustments),
             "source_policy_ids": list(self.source_policy_ids),
+            "repeated_needs_generated_by_role": dict(self.repeated_needs_generated_by_role),
         }
 
 
@@ -151,6 +154,40 @@ def _need(
         race_relevance=race_relevance, progression_relation=progression_relation,
         provenance=tuple(sorted(provenance)), state=state, state_reason=state_reason,
     )
+
+
+def expand_repeated_exposure_needs(needs: list[TrainingNeed] | tuple[TrainingNeed, ...]) -> tuple[TrainingNeed, ...]:
+    """Expand a multi-exposure deficit into independently placeable needs.
+
+    A placement represents one physical exposure.  Keeping three exposures in
+    one ``TrainingNeed`` would let the solver satisfy all three with one date.
+    Minutes, if present, are split deterministically and exactly preserve the
+    parent total.
+    """
+    result: list[TrainingNeed] = []
+    for need in needs:
+        count = need.target_credit.exposures
+        if count <= 1:
+            result.append(need)
+            continue
+        minutes, remainder = divmod(need.target_credit.minutes, count)
+        for index in range(1, count + 1):
+            credit = PhysiologicalCredit(
+                role=need.target_credit.role,
+                exposures=1,
+                minutes=minutes + int(index <= remainder),
+                eligible=need.target_credit.eligible,
+            )
+            result.append(replace(
+                need,
+                id=f"{need.id}:exposure:{index:02d}",
+                target_credit=credit,
+                parent_need_id=need.id,
+                exposure_index=index,
+                exposure_count=count,
+                provenance=tuple(sorted((*need.provenance, "atomic_repeated_exposure"))),
+            ))
+    return tuple(sorted(result, key=lambda item: (item.earliest_date, item.latest_date, item.id)))
 
 
 def _active_recovery_roles(state: PhysiologicalState, planning_date: date) -> set[TrainingRole]:
@@ -295,11 +332,15 @@ def generate_training_need_plan(
     elif strength_gap and TrainingRole.STRENGTH in recovery_blocked:
         blocked.append(TrainingRole.STRENGTH.value)
 
-    ordered = tuple(sorted(needs, key=lambda item: (item.earliest_date, item.latest_date, item.id)))
+    ordered = expand_repeated_exposure_needs(needs)
     active_counts: dict[str, int] = {}
     for need in ordered:
         if need.state in {"active", "reduced"}:
             active_counts[need.role.value] = active_counts.get(need.role.value, 0) + 1
+    repeated_by_role: dict[str, int] = {}
+    for need in ordered:
+        if need.exposure_count > 1:
+            repeated_by_role[need.role.value] = repeated_by_role.get(need.role.value, 0) + 1
     diagnostics = TrainingNeedDiagnostics(
         active_need_count_by_role=active_counts,
         needs_deferred=tuple(item.id for item in ordered if item.state == "deferred"),
@@ -308,6 +349,7 @@ def generate_training_need_plan(
         needs_blocked_by_recovery=tuple(sorted(set(blocked))),
         race_taper_adjustments=tuple(sorted(adjustments)),
         source_policy_ids=tuple(sorted({key for item in ordered for key in item.source_policy.split("|")})),
+        repeated_needs_generated_by_role=repeated_by_role,
     )
     return TrainingNeedGeneration(ordered, diagnostics)
 

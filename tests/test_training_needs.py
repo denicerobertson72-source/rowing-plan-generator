@@ -141,10 +141,11 @@ def test_strength_is_rolling_not_weekday_based_and_no_rest_need_is_created():
     strength_fact = _fact("lift", AS_OF - timedelta(days=2), HistoricalFactType.COMPLETED_PLANNED_SESSION, role=TrainingRole.STRENGTH, minutes=40)
     second = _plan(_context(facts=(strength_fact,)), _profile()).needs
 
-    first_strength = next(item for item in first if item.role is TrainingRole.STRENGTH)
-    second_strength = next(item for item in second if item.role is TrainingRole.STRENGTH)
-    assert first_strength.target_credit.exposures == 3
-    assert second_strength.target_credit.exposures == 2
+    first_strength = [item for item in first if item.role is TrainingRole.STRENGTH]
+    second_strength = [item for item in second if item.role is TrainingRole.STRENGTH]
+    assert len(first_strength) == 3 and all(item.target_credit.exposures == 1 for item in first_strength)
+    assert len(second_strength) == 2 and all(item.target_credit.exposures == 1 for item in second_strength)
+    assert {item.parent_need_id for item in first_strength} == {"need:training-policy-3.0:strength:rolling_14d_strength"}
     assert all(item.role is not TrainingRole.REST for item in (*first, *second))
 
 

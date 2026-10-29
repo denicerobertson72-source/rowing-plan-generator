@@ -284,6 +284,10 @@ def generate_plan_sequence_v3_candidate(
         dict(item) for item in (prior_plan or {}).get("sessions", ())
         if isinstance(item, Mapping) and isinstance(item.get("date"), str) and item["date"] < planning_date.isoformat()
     )
+    repeated_generated: dict[str, int] = {}
+    for need in effective_needs:
+        if need.exposure_count > 1:
+            repeated_generated[need.role.value] = repeated_generated.get(need.role.value, 0) + 1
     diagnostics = {
         "scheduler_version": "replacement-v3-shadow",
         "replacement_comparison": {
@@ -301,6 +305,33 @@ def generate_plan_sequence_v3_candidate(
                 if item.constraint_decision and item.constraint_decision.recovery_status != "ordinary"
             ),
             "materialization_failures": 0,
+        },
+        "recent_completed_load": {
+            "7d": {
+                "rowing_minutes": state.recent_7d_load.rowing_minutes,
+                "low_intensity_rowing_minutes": state.recent_7d_load.low_intensity_rowing_minutes,
+                "quality_exposures": state.recent_7d_load.quality_exposures,
+                "strength_exposures": state.recent_7d_load.strength_exposures,
+                "race_exposures": state.recent_7d_load.race_exposures,
+                "optional_activity_minutes": state.recent_7d_load.optional_activity_minutes,
+                "historical_facts_excluded_outside_horizon": len(state.recent_7d_load.excluded_outside_window_fact_ids),
+                "duplicate_facts_excluded": state.recent_7d_load.duplicate_facts_excluded,
+            },
+            "14d": {
+                "rowing_minutes": state.recent_14d_load.rowing_minutes,
+                "low_intensity_rowing_minutes": state.recent_14d_load.low_intensity_rowing_minutes,
+                "quality_exposures": state.recent_14d_load.quality_exposures,
+                "strength_exposures": state.recent_14d_load.strength_exposures,
+                "race_exposures": state.recent_14d_load.race_exposures,
+                "optional_activity_minutes": state.recent_14d_load.optional_activity_minutes,
+                "historical_facts_excluded_outside_horizon": len(state.recent_14d_load.excluded_outside_window_fact_ids),
+                "duplicate_facts_excluded": state.recent_14d_load.duplicate_facts_excluded,
+            },
+        },
+        "repeated_exposure_needs": {
+            "generated_by_role": repeated_generated,
+            "placed_by_role": dict(placed.diagnostics.repeated_needs_placed_by_role),
+            "unplaced_by_role": dict(placed.diagnostics.repeated_needs_unplaced_by_role),
         },
         "replacement_placements": tuple({"placement_id": item.placement_id, "date": item.date, "role": item.role.value if item.role else None, "reservation_minutes": item.reservation_minutes, "target_credit": item.target_credit, "served_need_ids": item.served_need_ids} for item in placed.placements),
     }

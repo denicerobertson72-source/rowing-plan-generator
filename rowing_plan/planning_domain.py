@@ -242,6 +242,41 @@ class AuthoritativeCommitment:
 
 
 @dataclass(frozen=True)
+class RecentLoad:
+    """Completed physiological load in one trailing chronological window.
+
+    Windows are half-open: ``[window_start, as_of_date)``.  The planning day
+    itself remains mutable, and no Monday--Sunday identity is implied.
+    """
+
+    window_days: int
+    window_start: date
+    as_of_date: date
+    rowing_minutes: int = 0
+    low_intensity_rowing_minutes: int = 0
+    quality_exposures: int = 0
+    strength_exposures: int = 0
+    race_exposures: int = 0
+    optional_activity_minutes: int = 0
+    counted_fact_ids: tuple[str, ...] = ()
+    excluded_outside_window_fact_ids: tuple[str, ...] = ()
+    duplicate_facts_excluded: int = 0
+
+    def __post_init__(self) -> None:
+        if self.window_days < 1 or self.window_start > self.as_of_date or self.duplicate_facts_excluded < 0:
+            raise ValueError("recent_load_window_is_invalid")
+        for value in (
+            self.rowing_minutes, self.low_intensity_rowing_minutes,
+            self.quality_exposures, self.strength_exposures,
+            self.race_exposures, self.optional_activity_minutes,
+        ):
+            if value < 0:
+                raise ValueError("recent_load_values_must_be_nonnegative")
+        object.__setattr__(self, "counted_fact_ids", tuple(sorted(set(self.counted_fact_ids))))
+        object.__setattr__(self, "excluded_outside_window_fact_ids", tuple(sorted(set(self.excluded_outside_window_fact_ids))))
+
+
+@dataclass(frozen=True)
 class PhysiologicalState:
     as_of_date: date
     completed_aerobic_exposure: PhysiologicalCredit = field(default_factory=PhysiologicalCredit)
@@ -252,6 +287,8 @@ class PhysiologicalState:
     completed_race_exposure: PhysiologicalCredit = field(default_factory=PhysiologicalCredit)
     completed_duration_minutes_by_fact: Mapping[str, int] = field(default_factory=dict)
     completed_classification_by_fact: Mapping[str, str] = field(default_factory=dict)
+    recent_7d_load: RecentLoad | None = None
+    recent_14d_load: RecentLoad | None = None
     recent_race_load: tuple[HistoricalFact, ...] = ()
     recovery_constraints: tuple["RecoveryConstraint", ...] = ()
     next_race_context: Mapping[str, Any] = field(default_factory=dict)
@@ -286,12 +323,17 @@ class TrainingNeed:
     provenance: tuple[str, ...] = ()
     state: str = "active"
     state_reason: str | None = None
+    parent_need_id: str | None = None
+    exposure_index: int = 1
+    exposure_count: int = 1
 
     def __post_init__(self) -> None:
         if self.earliest_date > self.latest_date:
             raise ValueError("training_need_window_is_reversed")
         if self.state not in {"active", "satisfied", "partially_satisfied", "deferred", "superseded", "reduced", "missed"}:
             raise ValueError("training_need_state_is_invalid")
+        if self.exposure_count < 1 or not 1 <= self.exposure_index <= self.exposure_count:
+            raise ValueError("training_need_exposure_cardinality_is_invalid")
 
 
 @dataclass(frozen=True)

@@ -74,6 +74,12 @@ class ContinuousPlacementDiagnostics:
     candidate_dates_considered: int
     authority_conflicts: tuple[str, ...] = ()
     unplaced_needs: tuple[UnplacedNeedDiagnostic, ...] = ()
+    repeated_needs_placed_by_role: Mapping[str, int] = field(default_factory=dict)
+    repeated_needs_unplaced_by_role: Mapping[str, int] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "repeated_needs_placed_by_role", MappingProxyType(dict(sorted(self.repeated_needs_placed_by_role.items()))))
+        object.__setattr__(self, "repeated_needs_unplaced_by_role", MappingProxyType(dict(sorted(self.repeated_needs_unplaced_by_role.items()))))
 
 
 @dataclass(frozen=True)
@@ -432,11 +438,24 @@ def place_continuous_training_needs(
         for item in sorted(dates.values(), key=lambda item: item.date)
     )
     unplaced = _unplaced(context, state, all_needs, dates, final, policy, config, profile)
+    need_by_id = {item.id: item for item in all_needs}
+    repeated_placed: dict[str, int] = {}
+    repeated_unplaced: dict[str, int] = {}
+    for need_id in final.placed_need_ids:
+        need = need_by_id[need_id]
+        if need.exposure_count > 1:
+            repeated_placed[need.role.value] = repeated_placed.get(need.role.value, 0) + 1
+    for diagnostic in unplaced:
+        need = need_by_id[diagnostic.training_need_id]
+        if need.exposure_count > 1:
+            repeated_unplaced[need.role.value] = repeated_unplaced.get(need.role.value, 0) + 1
     return ContinuousPlacementResult(
         placements=final.placements, projected_sequence=final.projected, available_dates=available_dates,
         diagnostics=ContinuousPlacementDiagnostics(
             objective_order=_OBJECTIVE_ORDER, search_width=config.beam_width,
             candidate_dates_considered=sum(len(_candidate_days(need, dates)) for need in all_needs),
             authority_conflicts=authority_conflicts, unplaced_needs=unplaced,
+            repeated_needs_placed_by_role=repeated_placed,
+            repeated_needs_unplaced_by_role=repeated_unplaced,
         ),
     )
