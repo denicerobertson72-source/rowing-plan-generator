@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Mapping, Iterable
 
 from .physiological_state import reduce_physiological_state
 from .planning_domain import (
@@ -17,6 +17,7 @@ from .planning_domain import (
     PhysiologicalCredit,
     PhysiologicalState,
     TrainingLoadTarget,
+    TrainingDistributionTarget,
     TrainingNeed,
     TrainingRole,
 )
@@ -67,6 +68,48 @@ class TrainingNeedDiagnostics:
 class TrainingNeedGeneration:
     needs: tuple[TrainingNeed, ...]
     diagnostics: TrainingNeedDiagnostics
+
+
+@dataclass(frozen=True)
+class FrequencyRedistributionDiagnostic:
+    """Audit record for a budget-neutral physical exposure partition.
+
+    This is deliberately about implementation mechanics, not a new
+    physiological target.  Only a residual low-intensity credit with explicit
+    ``load_target_residual`` provenance is eligible for partitioning.
+    """
+
+    distribution_target_exposures: int
+    selected_exposures: int
+    frequency_deficit: int
+    source_need_id: str | None = None
+    original_credit: int = 0
+    partition_credits: tuple[int, ...] = ()
+    redistribution_attempted: bool = False
+    redistribution_reason: str | None = None
+    redistribution_blocked_reason: str | None = None
+    total_credit_conserved: bool = True
+
+
+@dataclass(frozen=True)
+class FrequencyRedistributionResult:
+    needs: tuple[TrainingNeed, ...]
+    diagnostics: tuple[FrequencyRedistributionDiagnostic, ...]
+
+
+def validate_frequency_partitions(needs: Iterable[TrainingNeed]) -> None:
+    """Reject malformed parent/child credit graphs before placement."""
+    grouped: dict[str, list[TrainingNeed]] = {}
+    for item in needs:
+        if item.partition_reason != "taper_frequency_redistribution":
+            continue
+        if not item.parent_need_id or item.original_target_credit_minutes is None:
+            raise ValueError("taper_frequency_partition_metadata_missing")
+        grouped.setdefault(item.parent_need_id, []).append(item)
+    for parent, children in grouped.items():
+        original = {item.original_target_credit_minutes for item in children}
+        if len(original) != 1 or sum(item.target_credit.minutes for item in children) != next(iter(original)):
+            raise ValueError(f"taper_frequency_partition_credit_not_conserved:{parent}")
 
 
 def transition_training_need(need: TrainingNeed, state: str, reason: str) -> TrainingNeed:
@@ -190,6 +233,188 @@ def expand_repeated_exposure_needs(needs: list[TrainingNeed] | tuple[TrainingNee
                 provenance=tuple(sorted((*need.provenance, "atomic_repeated_exposure"))),
             ))
     return tuple(sorted(result, key=lambda item: (item.earliest_date, item.latest_date, item.id)))
+
+
+_LOW_INTENSITY_ROLES = frozenset({
+    TrainingRole.DEDICATED_UT2, TrainingRole.LONG_AEROBIC,
+    TrainingRole.RECOVERY_AEROBIC, TrainingRole.TECHNICAL_REENTRY,
+})
+
+
+def _availability_allows(profile: Mapping[str, Any], day: date) -> bool:
+    for item in profile.get("date_availability", ()):
+        if isinstance(item, Mapping) and str(item.get("date")) == day.isoformat():
+            return bool(item.get("available", True))
+    for item in profile.get("weekly_availability", ()):
+        if isinstance(item, Mapping) and str(item.get("weekday", "")).lower() == day.strftime("%A").lower():
+            return bool(item.get("available", True))
+    return True
+
+
+def _is_fixed_rest(context: NormalizedPlanningContext, day: date) -> bool:
+    return any(item.type is AuthorityType.FIXED_REST and item.date == day for item in context.authoritative_commitments)
+
+
+def _pre_race_movement_dates(context: NormalizedPlanningContext, need: TrainingNeed) -> tuple[date, ...]:
+    race_days = tuple(sorted(date.fromisoformat(item[0]) for item in context.race_context))
+    values = []
+    current = need.earliest_date
+    while current <= need.latest_date:
+        # The frequency preference is deliberately weaker in the final 48h;
+        # do not create a partition solely for that window.
+        if not any(0 <= (race_day - current).days <= 2 for race_day in race_days):
+            values.append(current)
+        current += timedelta(days=1)
+    return tuple(values)
+
+
+def partition_taper_frequency_needs(
+    needs: Iterable[TrainingNeed],
+    distribution_targets: Iterable[TrainingDistributionTarget],
+    *,
+    context: NormalizedPlanningContext,
+    state: PhysiologicalState,
+    profile: Mapping[str, Any],
+    selected_placements=(),
+    load_targets: Iterable[TrainingLoadTarget] = (),
+) -> FrequencyRedistributionResult:
+    """Split eligible *residual* low-intensity credit into two sessions.
+
+    A residual is generic load-top-up credit, unlike a categorical dedicated
+    UT2 requirement.  The retained UT2 child therefore protects that
+    physiological purpose while the technical child can supply low-cost taper
+    movement.  No parent remains once children are emitted.
+    """
+    from .materialization_capabilities import minimum_materializable_reservation
+
+    original = tuple(needs)
+    targets = tuple(item for item in distribution_targets if item.taper_frequency_retention)
+    load_by_horizon = {item.horizon_days: item for item in load_targets}
+    if not targets:
+        return FrequencyRedistributionResult(original, ())
+
+    selected = tuple(selected_placements)
+    diagnostics: list[FrequencyRedistributionDiagnostic] = []
+    result = list(original)
+    already_partitioned = False
+    for target in targets:
+        load_target = load_by_horizon.get(target.horizon_days)
+        if load_target and load_target.completed_rowing_minutes >= load_target.total_rowing_target_minutes:
+            diagnostics.append(FrequencyRedistributionDiagnostic(
+                target.target_rowing_exposures, 0, 0,
+                redistribution_blocked_reason="recent_load_target_satisfied",
+            ))
+            continue
+        in_horizon = tuple(
+            item for item in selected
+            if target.horizon_start <= item.date <= target.horizon_end
+            and item.role in _LOW_INTENSITY_ROLES
+        )
+        rowing_selected = tuple(
+            item for item in selected
+            if target.horizon_start <= item.date <= target.horizon_end
+            and item.role in (_LOW_INTENSITY_ROLES | {
+                TrainingRole.UT1_AEROBIC_STRENGTH, TrainingRole.QUALITY,
+                TrainingRole.THRESHOLD_AT, TrainingRole.RACE_SPECIFIC_TR,
+                TrainingRole.ANAEROBIC_AN, TrainingRole.POWER_PP,
+                TrainingRole.TAPER_MAINTENANCE, TrainingRole.RACE_PREPARATION,
+                TrainingRole.RACE, TrainingRole.COURSE_PRACTICE,
+                TrainingRole.PRIVATE_COACHING, TrainingRole.COACHED_TRAINING,
+            })
+        )
+        # Each source need is one physical exposure before any split.
+        candidates = tuple(
+            item for item in result
+            if item.role is TrainingRole.DEDICATED_UT2
+            and item.target_credit.eligible
+            and item.target_credit.exposures == 1
+            and item.progression_relation and "load_target_residual" in item.progression_relation
+            and target.horizon_start <= item.earliest_date <= target.horizon_end
+        )
+        selected_exposures = len(rowing_selected)
+        deficit = max(
+            0,
+            target.target_rowing_exposures - selected_exposures,
+            target.minimum_low_intensity_exposures - len(in_horizon),
+        )
+        if not deficit:
+            diagnostics.append(FrequencyRedistributionDiagnostic(
+                target.target_rowing_exposures, selected_exposures, 0,
+                redistribution_blocked_reason="frequency_target_satisfied",
+            ))
+            continue
+        if already_partitioned:
+            diagnostics.append(FrequencyRedistributionDiagnostic(
+                target.target_rowing_exposures, selected_exposures, deficit,
+                redistribution_blocked_reason="one_partition_is_sufficient_for_current_pass",
+            ))
+            continue
+        source = next((item for item in candidates if not any(
+            constraint.start_date <= item.latest_date
+            and constraint.end_date >= item.earliest_date
+            and {TrainingRole.DEDICATED_UT2, TrainingRole.TECHNICAL_REENTRY} <= set(constraint.hard_excluded_roles)
+            for constraint in state.recovery_constraints
+        )), None)
+        if source is None:
+            diagnostics.append(FrequencyRedistributionDiagnostic(
+                target.target_rowing_exposures, selected_exposures, deficit,
+                redistribution_blocked_reason="hard_recovery_or_no_redistributable_credit",
+            ))
+            continue
+        viable_days = tuple(
+            item for item in _pre_race_movement_dates(context, source)
+            if _availability_allows(profile, item) and not _is_fixed_rest(context, item)
+        )
+        if not viable_days:
+            diagnostics.append(FrequencyRedistributionDiagnostic(
+                target.target_rowing_exposures, selected_exposures, deficit,
+                source.id, source.target_credit.minutes,
+                redistribution_blocked_reason="race_proximity_or_availability",
+            ))
+            continue
+        dedicated_min, _ = minimum_materializable_reservation(role="dedicated_ut2", profile=profile, day=viable_days[0])
+        technical_min, _ = minimum_materializable_reservation(role="technical_reentry", profile=profile, day=viable_days[0])
+        if dedicated_min is None or technical_min is None or source.target_credit.minutes < dedicated_min + technical_min:
+            diagnostics.append(FrequencyRedistributionDiagnostic(
+                target.target_rowing_exposures, selected_exposures, deficit,
+                source.id, source.target_credit.minutes,
+                redistribution_blocked_reason="insufficient_redistributable_credit_for_catalog_minimum",
+            ))
+            continue
+        technical_credit = min(source.target_credit.minutes - dedicated_min, max(technical_min, source.target_credit.minutes // 2))
+        dedicated_credit = source.target_credit.minutes - technical_credit
+        first = replace(
+            source, id=f"{source.id}:partition:01", target_credit=PhysiologicalCredit(
+                TrainingRole.DEDICATED_UT2, 1, dedicated_credit, True,
+            ), parent_need_id=source.id, exposure_index=1, exposure_count=2,
+            original_target_credit_minutes=source.target_credit.minutes,
+            partition_reason="taper_frequency_redistribution",
+            provenance=tuple(sorted((*source.provenance, "taper_frequency_redistribution"))),
+        )
+        second = replace(
+            source, id=f"{source.id}:partition:02", role=TrainingRole.TECHNICAL_REENTRY,
+            target_credit=PhysiologicalCredit(TrainingRole.TECHNICAL_REENTRY, 1, technical_credit, True),
+            parent_need_id=source.id, exposure_index=2, exposure_count=2,
+            original_target_credit_minutes=source.target_credit.minutes,
+            partition_reason="taper_frequency_redistribution",
+            provenance=tuple(sorted((*source.provenance, "taper_frequency_redistribution"))),
+        )
+        if first.target_credit.minutes + second.target_credit.minutes != source.target_credit.minutes:
+            raise ValueError("taper_frequency_partition_credit_not_conserved")
+        result.remove(source)
+        result.extend((first, second))
+        diagnostics.append(FrequencyRedistributionDiagnostic(
+            target.target_rowing_exposures, selected_exposures, deficit,
+            source.id, source.target_credit.minutes,
+            (first.target_credit.minutes, second.target_credit.minutes), True,
+            redistribution_reason="taper_frequency_redistribution",
+            total_credit_conserved=True,
+        ))
+        already_partitioned = True
+    return FrequencyRedistributionResult(
+        tuple(sorted(result, key=lambda item: (item.earliest_date, item.latest_date, item.id))),
+        tuple(diagnostics),
+    )
 
 
 def generate_residual_aerobic_needs(

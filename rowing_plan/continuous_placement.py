@@ -24,7 +24,7 @@ from .planning_domain import (
     ProvenanceSource,
     SequenceConstraintDecision,
     SequenceEligibility,
-    TrainingLoadTarget, TrainingNeed,
+    TrainingDistributionTarget, TrainingLoadTarget, TrainingNeed,
     TrainingRole,
 )
 from .planning_normalization import NormalizedPlanningContext
@@ -142,6 +142,10 @@ _ROWING_ROLES = frozenset({
     TrainingRole.TAPER_MAINTENANCE, TrainingRole.RACE_PREPARATION,
     TrainingRole.RACE, TrainingRole.COURSE_PRACTICE,
 })
+_LOW_INTENSITY_ROLES = frozenset({
+    TrainingRole.DEDICATED_UT2, TrainingRole.LONG_AEROBIC,
+    TrainingRole.RECOVERY_AEROBIC, TrainingRole.TECHNICAL_REENTRY,
+})
 
 
 def _priority(need: TrainingNeed) -> int:
@@ -249,7 +253,47 @@ def _reservation_minutes(need: TrainingNeed, decision: SequenceConstraintDecisio
     return max(config.default_noncredit_reservation_minutes, minimum)
 
 
-def _placement_score(need: TrainingNeed, decision: SequenceConstraintDecision, day: AvailableDate, stable: bool) -> tuple[int, int, int, int]:
+def _max_aerobic_gap(days: tuple[date, ...], target: TrainingDistributionTarget) -> int:
+    values = tuple(sorted(item for item in days if target.horizon_start <= item <= target.horizon_end))
+    boundaries = (target.horizon_start - timedelta(days=1), *values, target.horizon_end + timedelta(days=1))
+    return max((right - left).days - 1 for left, right in zip(boundaries, boundaries[1:]))
+
+
+def _distribution_gain(
+    need: TrainingNeed,
+    candidate_date: date,
+    placements: tuple[Placement, ...],
+    targets: tuple[TrainingDistributionTarget, ...],
+) -> int:
+    """Soft, dose-neutral preference for useful taper movement continuity."""
+    if need.role not in _ROWING_ROLES:
+        return 0
+    gain = 0
+    for target in targets:
+        if not target.horizon_start <= candidate_date <= target.horizon_end:
+            continue
+        rowing_dates = tuple(item.date for item in placements if item.role in _ROWING_ROLES and target.horizon_start <= item.date <= target.horizon_end)
+        low_dates = tuple(item.date for item in placements if item.role in _LOW_INTENSITY_ROLES and target.horizon_start <= item.date <= target.horizon_end)
+        if len(rowing_dates) < target.minimum_rowing_exposures:
+            gain += 3
+        if need.role in _LOW_INTENSITY_ROLES and len(low_dates) < target.minimum_low_intensity_exposures:
+            gain += 5
+        before = _max_aerobic_gap(low_dates, target)
+        after = _max_aerobic_gap(tuple((*low_dates, candidate_date)), target) if need.role in _LOW_INTENSITY_ROLES else before
+        if before > target.preferred_max_aerobic_gap_days and after < before:
+            gain += 4
+        # A second consecutive empty available day is not prohibited.  During
+        # taper it is simply less attractive when a low-cost physical session
+        # already exists as a credit-conserving candidate.
+        if target.taper_frequency_retention and need.role in _LOW_INTENSITY_ROLES:
+            occupied = {item.date for item in placements}
+            if candidate_date - timedelta(days=1) not in occupied and candidate_date + timedelta(days=1) not in occupied:
+                gain += 2
+    return gain
+
+
+def _placement_score(need: TrainingNeed, decision: SequenceConstraintDecision, day: AvailableDate, stable: bool,
+                     placements: tuple[Placement, ...], distribution_targets: tuple[TrainingDistributionTarget, ...]) -> tuple[int, int, int, int]:
     decision_bonus = {
         SequenceEligibility.ELIGIBLE: 4,
         SequenceEligibility.ELIGIBLE_REDUCED: 3,
@@ -260,7 +304,7 @@ def _placement_score(need: TrainingNeed, decision: SequenceConstraintDecision, d
     # in its genuine window.  Shorter-horizon maxima are enforced separately
     # as a hard feasibility gate; a scoring bonus for post-day-seven dates
     # would silently recreate a two-week calendar partition.
-    return (_priority(need) * 10 + decision_bonus, -len(decision.soft_constraints), int(day.preferred), int(stable))
+    return (_priority(need) * 10 + decision_bonus + _distribution_gain(need, day.date, placements, distribution_targets), -len(decision.soft_constraints), int(day.preferred), int(stable))
 
 
 def _state_key(state: _SearchState) -> tuple[Any, ...]:
@@ -414,6 +458,7 @@ def place_continuous_training_needs(
     prior_provisional_dates: Mapping[str, date] | None = None,
     initial_placements: tuple[Placement, ...] | list[Placement] = (),
     load_targets: tuple[TrainingLoadTarget, ...] = (),
+    distribution_targets: tuple[TrainingDistributionTarget, ...] = (),
 ) -> ContinuousPlacementResult:
     """Place abstract needs with bounded deterministic beam search.
 
@@ -474,7 +519,9 @@ def place_continuous_training_needs(
                         suppressed_residual_pairs[(need.id, target_id)] = (decision.recommended_credit_adjustment or need.target_credit).minutes
                     continue
                 stable = prior.get(need.id) == day.date
-                score, soft, preference, stability = _placement_score(need, decision, day, stable)
+                score, soft, preference, stability = _placement_score(
+                    need, decision, day, stable, current.placements, tuple(distribution_targets),
+                )
                 placement_id = f"placement:{need.id}:{day.date.isoformat()}"
                 placement = Placement(
                     placement_id=placement_id, training_need_id=need.id, date=day.date,
@@ -499,8 +546,8 @@ def place_continuous_training_needs(
                 # same-family aerobic placement; the deterministic tie-break
                 # no longer rewards early clustering by default.
                 adjacent_aerobic = sum(
-                    item.role in {TrainingRole.DEDICATED_UT2, TrainingRole.LONG_AEROBIC, TrainingRole.RECOVERY_AEROBIC}
-                    and need.role in {TrainingRole.DEDICATED_UT2, TrainingRole.LONG_AEROBIC, TrainingRole.RECOVERY_AEROBIC}
+                    item.role in _LOW_INTENSITY_ROLES
+                    and need.role in _LOW_INTENSITY_ROLES
                     and abs((item.date - day.date).days) == 1
                     for item in current.placements
                 )

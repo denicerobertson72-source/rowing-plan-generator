@@ -7,7 +7,7 @@ existing V2 materialization and PlanVersion-shaped interfaces for shadow use.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import date
+from datetime import date, timedelta
 from time import perf_counter
 from typing import Any, Mapping
 
@@ -29,7 +29,12 @@ from .physiological_state import reduce_physiological_state
 from .plan_assembly_v2 import _sort_key, _totals, build_plan_version_from_v2
 from .planning_domain import AuthorityType, Placement, PlacementAuthorityStatus, PhysiologicalState, TrainingNeed, TrainingRole
 from .training_load_targets import derive_training_distribution_targets, derive_training_load_targets, reconcile_training_load_targets
-from .training_needs import generate_residual_aerobic_needs, generate_training_need_plan
+from .training_needs import (
+    generate_residual_aerobic_needs,
+    generate_training_need_plan,
+    partition_taper_frequency_needs,
+    validate_frequency_partitions,
+)
 from .planning_normalization import NormalizedPlanningContext, normalize_planning_inputs
 from .scheduler_v2 import finalize_translated_quality_sequence, translate_quality_role
 from .training_policy import DEFAULT_TRAINING_POLICY, TrainingPolicy
@@ -283,6 +288,47 @@ def _empty_date_rationales(
     return tuple(values)
 
 
+def _distribution_diagnostics(result: ContinuousPlacementResult, targets) -> tuple[dict[str, Any], ...]:
+    """Describe selected physical exposure distribution without creating dose."""
+    low_roles = {
+        TrainingRole.DEDICATED_UT2, TrainingRole.LONG_AEROBIC,
+        TrainingRole.RECOVERY_AEROBIC, TrainingRole.TECHNICAL_REENTRY,
+    }
+    rowing_roles = low_roles | {
+        TrainingRole.UT1_AEROBIC_STRENGTH, TrainingRole.QUALITY,
+        TrainingRole.THRESHOLD_AT, TrainingRole.RACE_SPECIFIC_TR,
+        TrainingRole.ANAEROBIC_AN, TrainingRole.POWER_PP,
+        TrainingRole.TAPER_MAINTENANCE, TrainingRole.RACE_PREPARATION,
+        TrainingRole.RACE, TrainingRole.COURSE_PRACTICE,
+        TrainingRole.PRIVATE_COACHING, TrainingRole.COACHED_TRAINING,
+    }
+    values = []
+    for target in targets:
+        dates = tuple(sorted(item.date for item in result.placements if item.role in rowing_roles and target.horizon_start <= item.date <= target.horizon_end))
+        low_dates = tuple(sorted(item.date for item in result.placements if item.role in low_roles and target.horizon_start <= item.date <= target.horizon_end))
+        bounds = (target.horizon_start - timedelta(days=1), *low_dates, target.horizon_end + timedelta(days=1))
+        actual_gap = max((right - left).days - 1 for left, right in zip(bounds, bounds[1:]))
+        available = {item.date for item in result.available_dates if item.available_minutes > 0}
+        occupied = {item.date for item in result.placements}
+        max_empty = current = 0
+        for day in (target.horizon_start + timedelta(days=offset) for offset in range(target.horizon_days)):
+            if day in available and day not in occupied:
+                current += 1; max_empty = max(max_empty, current)
+            else:
+                current = 0
+        values.append({
+            "horizon_days": target.horizon_days,
+            "distribution_target_exposures": target.target_rowing_exposures,
+            "selected_exposures": len(dates),
+            "selected_low_intensity_exposures": len(low_dates),
+            "frequency_deficit": max(0, target.minimum_rowing_exposures - len(dates)),
+            "preferred_gap": target.preferred_max_aerobic_gap_days,
+            "actual_gap": actual_gap,
+            "consecutive_empty_available_days": max_empty,
+        })
+    return tuple(values)
+
+
 def _selector_history_from_prior(prior_plan: Mapping[str, Any] | None) -> tuple[dict[str, Any], ...]:
     values=[]
     for session in (prior_plan or {}).get("sessions", ()):
@@ -328,21 +374,24 @@ def generate_plan_sequence_v3_candidate(
     started = perf_counter()
     categorical = place_continuous_training_needs(
         context, state, categorical_needs, policy, profile=profile, config=placement_config,
+        distribution_targets=distribution_targets,
     )
     residual_plan = generate_residual_aerobic_needs(
         categorical_needs, load_targets, policy, selected_placements=categorical.placements,
     )
     categorical_ids = {item.id for item in categorical_needs}
     residual_needs = tuple(item for item in residual_plan if item.id not in categorical_ids)
-    placed = place_continuous_training_needs(
-        context, state, residual_needs, policy, profile=profile, config=placement_config,
-        initial_placements=tuple(
-            item for item in categorical.placements
-            if item.authority_status is PlacementAuthorityStatus.PROVISIONAL
-        ),
-        load_targets=load_targets,
+    redistribution = partition_taper_frequency_needs(
+        (*categorical_needs, *residual_needs), distribution_targets, context=context, state=state,
+        profile=profile, selected_placements=categorical.placements, load_targets=load_targets,
     )
-    effective_needs = tuple(sorted((*categorical_needs, *residual_needs), key=lambda item: (item.earliest_date, item.latest_date, item.id)))
+    effective_needs = redistribution.needs
+    validate_frequency_partitions(effective_needs)
+    placed = place_continuous_training_needs(
+        context, state, effective_needs, policy, profile=profile, config=placement_config,
+        load_targets=load_targets,
+        distribution_targets=distribution_targets,
+    )
     need_by_id = {item.id: item for item in effective_needs}
     # Reconciliation is about the selected physical date, not merely the
     # broad candidate window carried by a need.
@@ -351,6 +400,7 @@ def generate_plan_sequence_v3_candidate(
         suppressed_residual_by_target=placed.diagnostics.suppressed_residual_by_target,
     )
     empty_date_rationales = _empty_date_rationales(placed, state, final_load_targets)
+    distribution_diagnostics = _distribution_diagnostics(placed, distribution_targets)
     timings.append(("sequence_placement", round((perf_counter() - started) * 1000, 3)))
     started = perf_counter()
     selector_history = _selector_history_from_prior(prior_plan)
@@ -490,6 +540,19 @@ def generate_plan_sequence_v3_candidate(
             "preferred_max_aerobic_gap_days": item.preferred_max_aerobic_gap_days,
             "taper_frequency_retention": item.taper_frequency_retention,
         } for item in distribution_targets),
+        "training_distribution": distribution_diagnostics,
+        "frequency_redistribution": tuple({
+            "distribution_target_exposures": item.distribution_target_exposures,
+            "selected_exposures": item.selected_exposures,
+            "frequency_deficit": item.frequency_deficit,
+            "redistribution_attempted": item.redistribution_attempted,
+            "source_need_id": item.source_need_id,
+            "original_credit": item.original_credit,
+            "partition_credits": item.partition_credits,
+            "redistribution_reason": item.redistribution_reason,
+            "redistribution_blocked_reason": item.redistribution_blocked_reason,
+            "total_credit_conserved": item.total_credit_conserved,
+        } for item in redistribution.diagnostics),
         "empty_date_rationales": empty_date_rationales,
         "replacement_placements": tuple({"placement_id": item.placement_id, "date": item.date, "role": item.role.value if item.role else None, "reservation_minutes": item.reservation_minutes, "target_credit": item.target_credit, "served_need_ids": item.served_need_ids} for item in placed.placements),
     }

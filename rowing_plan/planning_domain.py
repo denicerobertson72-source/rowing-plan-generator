@@ -438,6 +438,8 @@ class TrainingNeed:
     parent_need_id: str | None = None
     exposure_index: int = 1
     exposure_count: int = 1
+    original_target_credit_minutes: int | None = None
+    partition_reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.earliest_date > self.latest_date:
@@ -446,6 +448,8 @@ class TrainingNeed:
             raise ValueError("training_need_state_is_invalid")
         if self.exposure_count < 1 or not 1 <= self.exposure_index <= self.exposure_count:
             raise ValueError("training_need_exposure_cardinality_is_invalid")
+        if self.original_target_credit_minutes is not None and self.original_target_credit_minutes < self.target_credit.minutes:
+            raise ValueError("training_need_partition_credit_exceeds_original")
 
 
 @dataclass(frozen=True)

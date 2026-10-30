@@ -22,6 +22,10 @@ research citation.
 | residual aerobic split | software implementation choice | 30-minute minimum / 60-minute preferred exposure | internal implementation | converts a meaningful continuous residual into placeable work without a weekly count | coach | residual aerobic generation |
 | baseline fallback | evidence-informed heuristic | experience-specific app defaults only if profile has no baseline | existing app policy | fallback is explicitly not a research-derived universal volume | coach | target derivation |
 | continuous distribution target | software implementation choice | dose-derived exposure/gap preference | internal implementation | distinguishes avoidable clustering from justified recovery without a weekly stencil | coach | continuous placement |
+| taper frequency retention | research constrained | reduce volume while retaining useful frequency where recovery permits | S009 | a taper is not automatically a cessation of movement | coach | V3 taper sequence interpretation |
+| second unexplained taper OFF day | evidence-informed heuristic | strong soft penalty outside final 48h | internal implementation | favors low-cost continuity only when recovery, authority, availability, and dose allow it | coach | V3 continuous placement |
+| taper low-intensity partition | evidence-informed heuristic | partition an approved generic residual into catalog-feasible physical exposures | S009 | preserves movement frequency without increasing the approved dose | coach | V3 taper redistribution |
+| partition search and tie-break | software implementation choice | catalog minima, bounded deterministic search, credit-conservation validation | internal implementation | execution mechanics only; not a physiological prescription | no | V3 taper redistribution |
 | dedicated UT2 / long aerobic starting credit | evidence-informed heuristic | 90 / 75 minutes | existing app policy | athlete capacity may reduce either starting magnitude | coach | aerobic need generation |
 | AT/TR/AN/PP are categories, not protocols | evidence-informed heuristic | bounded categories | S014–S016, S020 | avoids copied universal exposure protocols | coach | quality-need generation |
 | quality starting credit | evidence-informed heuristic | 35 minutes | existing app policy | phase and athlete response may reduce or defer it | coach | quality-need generation |
@@ -64,6 +68,15 @@ research citation.
 - Distribution targets are soft chronological preferences derived from dose and
   practical session capacity. They do not prescribe named weekdays or a fixed
   sessions-per-week template.
+- Taper frequency retention may repartition only residual low-intensity credit
+  whose provenance explicitly identifies it as a load top-up. Categorical
+  dedicated-UT2 credit is not silently converted to UT3. Partitioned children
+  must conserve their parent's total credit and remain inside every applicable
+  rolling load maximum.
+- A second consecutive empty available taper date is a soft sequence signal,
+  not a universal rest-day prohibition. Recovery, fixed rest, authority,
+  unavailability, high load, and the final 48-hour race window may all justify
+  leaving it empty.
 - V3's performance limiter is a versioned app heuristic based only on valid
   within-athlete relationships. It does not predict a 2K, infer lactate
   threshold from 30R20, or apply population/age/sex labels. Missing evidence
