@@ -30,11 +30,11 @@ def translate_quality_role(role: DatedTrainingRole, context: QualityTranslationC
 def translate_quality_roles(roles: tuple[DatedTrainingRole,...], contexts: dict[str,QualityTranslationContext]) -> tuple[TranslatedTrainingRole,...]:
     return tuple(translate_quality_role(item,contexts[item.placement_id]) for item in sorted(roles,key=lambda item:(item.date,item.placement_id)) if item.role=="quality")
 
-def instantiate_translated_quality_role(translated: TranslatedTrainingRole, *, experience: str, race_type: str="general", mode: str="erg", preference: str="varied", history=()) -> ConcreteTrainingRole:
+def instantiate_translated_quality_role(translated: TranslatedTrainingRole, *, experience: str, race_type: str="general", mode: str="erg", preference: str="varied", history=(), selection_context=None) -> ConcreteTrainingRole:
     """Reuse V1 concrete selection for one immutable translated quality role."""
     adapters={"AT":"THRESHOLD","TR":"RACE_PACE","AN":"ANAEROBIC_CAPACITY","PP":"SPRINT_POWER"}
     selector_role=adapters[translated.quality_type]
-    selected=select_and_instantiate(role=selector_role,experience=experience,phase=translated.phase_id,race_type=race_type,mode=mode,minutes=translated.planned_duration_minutes,preference=preference,history=list(history))
+    selected=select_and_instantiate(role=selector_role,experience=experience,phase=translated.phase_id,race_type=race_type,mode=mode,minutes=translated.planned_duration_minutes,preference=preference,history=list(history),selection_context=selection_context)
     if not selected: raise ValueError("no_eligible_quality_archetype")
     if selected["total_minutes"]>translated.planned_duration_minutes: raise ValueError("concrete_duration_exceeds_reserved_capacity")
     archetype=selected["archetype"]
@@ -51,16 +51,16 @@ def instantiate_translated_quality_sequence(roles: tuple[TranslatedTrainingRole,
         output.append(concrete); history.append(dict(concrete.fingerprint))
     return ConcreteQualitySequenceResult(True,roles=tuple(output),selector_history=tuple(history))
 
-def finalize_translated_quality_sequence(roles: tuple[TranslatedTrainingRole,...], *, experience: str, race_types=None, race_priorities=None, mode: str="erg", preference: str="varied", initial_history=()) -> ConcreteQualitySequenceResult:
+def finalize_translated_quality_sequence(roles: tuple[TranslatedTrainingRole,...], *, experience: str, race_types=None, race_priorities=None, mode: str="erg", preference: str="varied", initial_history=(), selection_contexts=None) -> ConcreteQualitySequenceResult:
     """Build final quality roles and feed only final fingerprints forward.
 
     ``initial_history`` represents already athlete-visible concrete work.  It
     is copied before selection, so caller-owned history stays immutable.
     """
-    history=list(initial_history); output=[]; race_types=race_types or {}; race_priorities=race_priorities or {}
+    history=list(initial_history); output=[]; race_types=race_types or {}; race_priorities=race_priorities or {}; selection_contexts=selection_contexts or {}
     for translated in sorted(roles,key=lambda item:(item.date,item.placement_id)):
         try:
-            selected=instantiate_translated_quality_role(translated,experience=experience,race_type=race_types.get(translated.placement_id,"general"),mode=mode,preference=preference,history=history)
+            selected=instantiate_translated_quality_role(translated,experience=experience,race_type=race_types.get(translated.placement_id,"general"),mode=mode,preference=preference,history=history,selection_context=selection_contexts.get(translated.placement_id))
         except ValueError as error:
             return ConcreteQualitySequenceResult(False,roles=tuple(output),final_history=tuple(history),failed_placement_id=translated.placement_id,failed_date=translated.date,failed_quality_type=translated.quality_type,failure_reason=str(error),failure_stage="selection")
         finalized=finalize_concrete_quality_role(selected,phase=translated.phase_id,race_priority=race_priorities.get(translated.placement_id))

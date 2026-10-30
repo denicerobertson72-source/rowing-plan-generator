@@ -274,6 +274,7 @@ class V2SessionMaterializationRequest:
     placement_id: str=""; source_id: str=""; fixed: bool=False; mode: str|None=None
     race_type: str="general"; race_priority: str|None=None; fact: Mapping[str,Any]|None=None
     concrete_quality: ConcreteTrainingRole|None=None; serialized_session: Mapping[str,Any]|None=None
+    selection_context: Mapping[str,Any]|None=None
 
 @dataclass(frozen=True)
 class V2SessionMaterializationResult:

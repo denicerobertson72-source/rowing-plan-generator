@@ -33,6 +33,7 @@ from .training_needs import generate_residual_aerobic_needs, generate_training_n
 from .planning_normalization import NormalizedPlanningContext, normalize_planning_inputs
 from .scheduler_v2 import finalize_translated_quality_sequence, translate_quality_role
 from .training_policy import DEFAULT_TRAINING_POLICY, TrainingPolicy
+from .performance_profile import build_athlete_performance_profile, derive_development_block, derive_performance_limiter, derive_training_focus
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,18 @@ def _practice_fact(profile: Mapping[str, Any], day: date) -> Mapping[str, Any]:
     return {}
 
 
+def _upcoming_race_fact(profile: Mapping[str, Any], day: date) -> Mapping[str, Any]:
+    candidates=[]
+    for race in profile.get("races", ()):
+        dates=tuple(sorted(date.fromisoformat(str(value)) for value in (race.get("race_dates") or [race.get("end_date")]) if value))
+        if dates and dates[-1] >= day:
+            candidates.append((dates[0], race, dates))
+    if not candidates:
+        return {}
+    start, race, dates=min(candidates,key=lambda item:(item[0],str(item[1].get("event_name",""))))
+    return {**race,"race_dates":tuple(item.isoformat() for item in dates),"days_to_race":(start-day).days}
+
+
 def _quality_translation(
     placement: Placement, role: TrainingRole, phase_id: str, phase_type: str,
 ) -> TranslatedTrainingRole:
@@ -135,14 +148,14 @@ def _quality_translation(
 
 
 def adapt_placements_to_materialization_requests(
-    placements: tuple[Placement, ...] | list[Placement], *, profile: Mapping[str, Any],
+    placements: tuple[Placement, ...] | list[Placement], *, profile: Mapping[str, Any], selection_context: Mapping[str, Any] | None = None, selector_history=(),
 ) -> PlacementMaterializationResult:
     """Map placed needs to the existing V2 request/quality pipeline.
 
     This adapter cannot select a date or alter target credit.  Every resulting
     request carries the M7 reservation as its existing downstream capacity.
     """
-    ordered = tuple(sorted(placements, key=lambda item: (item.date, item.placement_id)))
+    ordered = tuple(sorted(placements, key=lambda item: (item.date, item.placement_id))); selection_context=dict(selection_context or {})
     phase = _phase_lookup(profile, tuple(sorted({item.date for item in ordered})))
     diagnostics: list[MaterializationDiagnostic] = []
     requests: list[V2SessionMaterializationRequest] = []
@@ -167,22 +180,24 @@ def adapt_placements_to_materialization_requests(
             # generic workout request.  The candidate merges it through the
             # existing authoritative-session assembly path below.
             continue
+        upcoming=_upcoming_race_fact(profile, placement.date)
+        race_type=str(upcoming.get("race_type", "general")); race_priority=upcoming.get("priority")
         if role in {TrainingRole.RACE, TrainingRole.COURSE_PRACTICE}:
             request_role = "race" if role is TrainingRole.RACE else "course_practice"
             fact = _race_fact(profile, placement.date) if role is TrainingRole.RACE else _practice_fact(profile, placement.date)
-            requests.append(V2SessionMaterializationRequest(request_role, placement.date, placement.reservation_minutes, phase_id, placement_id=placement.placement_id, source_id=placement.training_need_id, fixed=True, fact=fact))
+            requests.append(V2SessionMaterializationRequest(request_role, placement.date, placement.reservation_minutes, phase_id, placement_id=placement.placement_id, source_id=placement.training_need_id, fixed=True, fact=fact, race_type=race_type, race_priority=race_priority, selection_context=selection_context))
             continue
         if role is TrainingRole.PRIVATE_COACHING:
-            requests.append(V2SessionMaterializationRequest("private_coaching", placement.date, placement.reservation_minutes, phase_id, placement_id=placement.placement_id, source_id=placement.training_need_id, fixed=True))
+            requests.append(V2SessionMaterializationRequest("private_coaching", placement.date, placement.reservation_minutes, phase_id, placement_id=placement.placement_id, source_id=placement.training_need_id, fixed=True, race_type=race_type, race_priority=race_priority, selection_context=selection_context))
             continue
         if role is TrainingRole.COACHED_TRAINING:
-            requests.append(V2SessionMaterializationRequest("coached_training", placement.date, placement.reservation_minutes, phase_id, placement_id=placement.placement_id, source_id=placement.training_need_id, fixed=fixed))
+            requests.append(V2SessionMaterializationRequest("coached_training", placement.date, placement.reservation_minutes, phase_id, placement_id=placement.placement_id, source_id=placement.training_need_id, fixed=fixed, race_type=race_type, race_priority=race_priority, selection_context=selection_context))
             continue
         if role is TrainingRole.STRENGTH:
-            requests.append(V2SessionMaterializationRequest("strength", placement.date, placement.reservation_minutes, phase_id, placement_id=placement.placement_id, source_id=placement.training_need_id, fixed=fixed))
+            requests.append(V2SessionMaterializationRequest("strength", placement.date, placement.reservation_minutes, phase_id, placement_id=placement.placement_id, source_id=placement.training_need_id, fixed=fixed, race_type=race_type, race_priority=race_priority, selection_context=selection_context))
             continue
         if role in _ROW_ROLE_MAP:
-            requests.append(V2SessionMaterializationRequest(_ROW_ROLE_MAP[role], placement.date, placement.reservation_minutes, phase_id, placement_id=placement.placement_id, source_id=placement.training_need_id, fixed=fixed))
+            requests.append(V2SessionMaterializationRequest(_ROW_ROLE_MAP[role], placement.date, placement.reservation_minutes, phase_id, placement_id=placement.placement_id, source_id=placement.training_need_id, fixed=fixed, race_type=race_type, race_priority=race_priority, selection_context=selection_context))
             continue
         if role is TrainingRole.QUALITY or role in _EXPLICIT_QUALITY:
             quality.append((placement, role, phase_id, phase_type))
@@ -194,9 +209,11 @@ def adapt_placements_to_materialization_requests(
         finalized = finalize_translated_quality_sequence(
             translated,
             experience=str(profile.get("athlete", {}).get("experience_level", "intermediate")),
-            race_types={item.placement_id: str(_race_fact(profile, item.date).get("race_type", "general")) for item, *_ in quality},
-            race_priorities={item.placement_id: str(_race_fact(profile, item.date).get("priority", "B")) for item, *_ in quality},
+            race_types={item.placement_id: str(_upcoming_race_fact(profile, item.date).get("race_type", "general")) for item, *_ in quality},
+            race_priorities={item.placement_id: str(_upcoming_race_fact(profile, item.date).get("priority", "B")) for item, *_ in quality},
             preference=str(profile.get("preferences", {}).get("workout_structure_preference", "varied")),
+            initial_history=selector_history,
+            selection_contexts={item.placement_id: selection_context for item, *_ in quality},
         )
         if not finalized.success:
             diagnostics.append(MaterializationDiagnostic(
@@ -210,6 +227,8 @@ def adapt_placements_to_materialization_requests(
                     "quality", placement.date, placement.reservation_minutes, phase_id,
                     placement_id=placement.placement_id, source_id=placement.training_need_id,
                     fixed=placement.authority_status is not PlacementAuthorityStatus.PROVISIONAL,
+                    race_type=str(_upcoming_race_fact(profile, placement.date).get("race_type", "general")),
+                    race_priority=_upcoming_race_fact(profile, placement.date).get("priority"), selection_context=selection_context,
                     concrete_quality=concrete[placement.placement_id],
                 ))
     return PlacementMaterializationResult(
@@ -264,6 +283,15 @@ def _empty_date_rationales(
     return tuple(values)
 
 
+def _selector_history_from_prior(prior_plan: Mapping[str, Any] | None) -> tuple[dict[str, Any], ...]:
+    values=[]
+    for session in (prior_plan or {}).get("sessions", ()):
+        if not isinstance(session, Mapping) or not isinstance(session.get("session_fingerprint"), Mapping):
+            continue
+        values.append({**dict(session["session_fingerprint"]), "date": session.get("date"), "completed": bool(session.get("completed") or session.get("actual")), "modified": bool(session.get("modified")), "rpe": session.get("rpe")})
+    return tuple(sorted(values, key=lambda item: (str(item.get("date", "")), str(item.get("archetype_id", "")))))
+
+
 def generate_plan_sequence_v3_candidate(
     profile: Mapping[str, Any], config: Mapping[str, Any], bands, power: Mapping[str, Any], *,
     planning_date: date, prior_plan: Mapping[str, Any] | None = None,
@@ -287,6 +315,12 @@ def generate_plan_sequence_v3_candidate(
     timings.append(("physiological_reduction", round((perf_counter() - started) * 1000, 3)))
     started = perf_counter()
     need_plan = generate_training_need_plan(context, state, policy, profile=profile)
+    performance = build_athlete_performance_profile(profile, as_of=planning_date)
+    limiter = derive_performance_limiter(performance, coach_focus=profile.get("preferences", {}).get("development_focus"))
+    next_race = _upcoming_race_fact(profile, planning_date)
+    focus = derive_training_focus(limiter, phase=str(state.phase_context.get("phase_type") or "general_preparation"), race_type=str(next_race.get("race_type", "general")), days_to_race=next_race.get("days_to_race"), recovery_active=bool(state.recovery_constraints))
+    prior_diagnostics = (prior_plan or {}).get("v2_diagnostics", {}) if isinstance(prior_plan, Mapping) else {}
+    development_block = derive_development_block(focus, planning_date=planning_date, prior_diagnostics=prior_diagnostics)
     load_targets = derive_training_load_targets(context, state, policy, profile=profile, planning_date=planning_date)
     distribution_targets = derive_training_distribution_targets(load_targets, policy)
     categorical_needs = tuple(needs) if needs is not None else need_plan.needs
@@ -319,7 +353,18 @@ def generate_plan_sequence_v3_candidate(
     empty_date_rationales = _empty_date_rationales(placed, state, final_load_targets)
     timings.append(("sequence_placement", round((perf_counter() - started) * 1000, 3)))
     started = perf_counter()
-    materialized = adapt_placements_to_materialization_requests(placed.placements, profile=profile)
+    selector_history = _selector_history_from_prior(prior_plan)
+    selection_context = {
+        "active_training_focus": focus.primary,
+        "performance_limiter_mode": limiter.mode,
+        "performance_limiter_focus": limiter.primary_focus,
+        "test_evidence_used": performance.source_test_ids or ("none",),
+        "race_context_used": {"race_type": focus.race_type, "days_to_race": focus.days_to_race},
+        "development_block_id": development_block.block_id,
+        "progression_reason": "prior_completed_history" if selector_history else "initial_exposure",
+        "recent_history_considered": len(selector_history),
+    }
+    materialized = adapt_placements_to_materialization_requests(placed.placements, profile=profile, selection_context=selection_context, selector_history=selector_history)
     timings.append(("materialization", round((perf_counter() - started) * 1000, 3)))
     serialized_locks = tuple(
         dict(item) for item in locked_sessions
@@ -349,6 +394,18 @@ def generate_plan_sequence_v3_candidate(
             repeated_generated[need.role.value] = repeated_generated.get(need.role.value, 0) + 1
     diagnostics = {
         "scheduler_version": "replacement-v3-shadow",
+        "athlete_performance_profile": {
+            "source_test_ids": performance.source_test_ids, "two_k_seconds": performance.two_k_seconds,
+            "two_k_watts": performance.two_k_watts, "thirty_r20_watts": performance.thirty_r20_watts,
+            "sixty_second_watts": performance.sixty_second_watts, "seven_stroke_watts": performance.seven_stroke_watts,
+            "relationships": dict(performance.relationships), "longitudinal_deltas": dict(performance.longitudinal_deltas),
+            "confidence": performance.confidence, "evidence_completeness": performance.evidence_completeness,
+            "warnings": performance.warnings, "provenance": performance.provenance,
+        },
+        "performance_limiter": {"mode": limiter.mode, "primary_focus": limiter.primary_focus, "secondary_focus": limiter.secondary_focus, "evidence": limiter.evidence, "tests_used": limiter.tests_used, "tests_missing": limiter.tests_missing, "policy_version": limiter.policy_version, "rationale": limiter.rationale},
+        "active_training_focus": {"primary": focus.primary, "secondary": focus.secondary, "source": focus.source, "phase": focus.phase, "race_type": focus.race_type, "days_to_race": focus.days_to_race, "rationale": focus.rationale},
+        "performance_development_block": {"block_id": development_block.block_id, "start_date": development_block.start_date.isoformat(), "end_date": development_block.end_date.isoformat(), "primary_focus": development_block.primary_focus, "secondary_focus": development_block.secondary_focus, "progression_family": development_block.progression_family, "current_progression_step": development_block.current_progression_step, "completed_key_exposures": development_block.completed_key_exposures, "retest_state": development_block.retest_state, "completion_state": development_block.completion_state},
+        "workout_selection_explanations": {"WHY_THIS_ROLE": "placement role is fixed by M11A-D", "WHY_THIS_WORKOUT": "deterministic compatible selector ranking", "ACTIVE_TRAINING_FOCUS": focus.primary, "TEST_EVIDENCE_USED": performance.source_test_ids or ("none",), "RACE_CONTEXT_USED": focus.race_type, "PROGRESSION_REASON": selection_context["progression_reason"], "VARIETY_REASON": "recent final fingerprints penalize exact/equivalent repetition", "REPETITION_REASON": "only explicit/no-alternative reasons", "RECENT_HISTORY_CONSIDERED": len(selector_history)},
         "replacement_comparison": {
             "needs_generated": len(effective_needs), "needs_placed": len({item.training_need_id for item in placed.placements if item.authority_status is PlacementAuthorityStatus.PROVISIONAL}),
             "needs_unplaced": len(placed.diagnostics.unplaced_needs),
@@ -444,7 +501,7 @@ def generate_plan_sequence_v3_candidate(
         # pre-planning history is merged below, rather than pretending it is a
         # new active authoritative session with a date outside that calendar.
         authoritative_sessions=serialized_locks, historical_calendar_days={},
-        v2_diagnostics=diagnostics,
+        v2_diagnostics=diagnostics, selector_history_seed=selector_history, chronological_selector_history=True,
     )
     timings.append(("plan_assembly", round((perf_counter() - started) * 1000, 3)))
     if not assembled.success:

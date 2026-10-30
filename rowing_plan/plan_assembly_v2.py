@@ -40,7 +40,7 @@ def _json(value):
     if isinstance(value,(tuple,list)): return [_json(item) for item in value]
     return value
 
-def build_plan_version_from_v2(*, profile: dict, bands, power: dict, calendar: tuple[DateContext,...], requests: tuple[V2SessionMaterializationRequest,...], rest_dates=(), authoritative_sessions=(), historical_calendar_days=None, selector_histories=None, generated_at=None, v2_diagnostics=None, warnings=(), plan_impacts=()) -> V2PlanAssemblyResult:
+def build_plan_version_from_v2(*, profile: dict, bands, power: dict, calendar: tuple[DateContext,...], requests: tuple[V2SessionMaterializationRequest,...], rest_dates=(), authoritative_sessions=(), historical_calendar_days=None, selector_histories=None, selector_history_seed=(), chronological_selector_history=False, generated_at=None, v2_diagnostics=None, warnings=(), plan_impacts=()) -> V2PlanAssemblyResult:
     """Materialize resolved V2 facts into a PlanVersion-shaped dictionary.
 
     It never invokes placement, translation, finalization, persistence, or API
@@ -48,10 +48,11 @@ def build_plan_version_from_v2(*, profile: dict, bands, power: dict, calendar: t
     """
     rest_dates=frozenset(rest_dates); valid_dates={item.date for item in calendar}
     if any(day not in valid_dates for day in rest_dates): return V2PlanAssemblyResult(False,failure_reason="rest_date_outside_calendar")
-    histories=selector_histories or {}; materialized=[]
-    for request in requests:
+    histories=selector_histories or {}; materialized=[]; chronological_history=[dict(item) for item in selector_history_seed]
+    for request in sorted(requests,key=lambda item:(item.date,item.placement_id)):
         if request.date not in valid_dates: return V2PlanAssemblyResult(False,failure_reason="session_date_outside_calendar",failure_diagnostics={"failure_stage":"plan_assembly","failure_origin":"materialization","placement_id":request.placement_id or None,"date":request.date.isoformat(),"role":request.role,"reason_code":"session_date_outside_calendar"})
-        result=materialize_v2_session(request,profile=profile,bands=bands,power=power,selector_history=histories.get(request.placement_id,()))
+        supplied=histories.get(request.placement_id)
+        result=materialize_v2_session(request,profile=profile,bands=bands,power=power,selector_history=supplied if supplied is not None else chronological_history if chronological_selector_history else ())
         if not result.success:
             return V2PlanAssemblyResult(False,failure_reason=result.failure_reason,failure_diagnostics={"failure_stage":"plan_assembly","failure_origin":"materialization","placement_id":request.placement_id or None,"date":request.date.isoformat(),"role":request.role,"quality_type":getattr(request.concrete_quality,"quality_type",None),"reason_code":result.failure_reason})
         if result.calendar_only: continue
@@ -63,6 +64,8 @@ def build_plan_version_from_v2(*, profile: dict, bands, power: dict, calendar: t
                 "missing_fields":tuple(sorted(_REQUIRED-set(result.session))),
             })
         materialized.append(dict(result.session))
+        fingerprint=result.session.get("session_fingerprint")
+        if chronological_selector_history and isinstance(fingerprint,dict): chronological_history.append({**fingerprint,"date":result.session["date"],"completed":False})
     rest_conflict=next((session for session in materialized if session["date"] in {day.isoformat() for day in rest_dates}),None)
     if rest_conflict:
         return V2PlanAssemblyResult(False, failure_reason="rest_session_conflict", failure_diagnostics={

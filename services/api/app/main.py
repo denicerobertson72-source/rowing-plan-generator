@@ -82,6 +82,7 @@ _PLANNER_SOURCE_FILES = {
         "replacement_plan_v3.py", "replacement_shadow.py", "planning_domain.py",
         "planning_normalization.py", "physiological_state.py", "training_needs.py",
         "training_policy.py", "sequence_constraints.py", "continuous_placement.py",
+        "performance_profile.py", "power_profile.py",
         "materialization_v2.py", "plan_assembly_v2.py", "session_archetypes.py",
         "session_selection.py", "session_selector.py",
     ),

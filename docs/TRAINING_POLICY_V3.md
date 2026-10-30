@@ -39,6 +39,8 @@ research citation.
 | no-next-day quality/strength | software implementation choice | continuous implementation guard | `scheduler_v2:*` | current guard is not a physiological duration claim | coach | candidate validation |
 | 2K is an integrated anchor | research constrained | actual 2K remains primary | S012, S013, S026, S029 | integrated rowing-performance signal | athlete test update | progression inputs |
 | short power is supplemental | research constrained | does not replace 2K | S021–S023, S026–S028 | refines within-athlete profile | athlete test update | progression inputs |
+| athlete-relative development focus | evidence-informed heuristic | valid 2K, 30R20, 60-second and 7-stroke relationships only | S030, S021–S023, S026–S028 | ranks compatible workout form using the athlete's own tests; it is not a universal weakness classifier | coach | V3 selector only |
+| individualized coaching emphasis | coach or athlete preference | explicit focus may override heuristic focus | S030 | documented coaching principle supports individualized emphasis, not proprietary algorithms | coach or athlete | V3 selector only |
 | availability, commitments, bands, and user fixes | coach or athlete preference | athlete-specific | athlete or coach input | authority/preferences are outside physiology | athlete or coach | constraint interpretation |
 | tie breaking, search width, serialization | software implementation choice | deterministic execution | internal implementation | execution property only | no | solver/audit infrastructure |
 
@@ -62,6 +64,10 @@ research citation.
 - Distribution targets are soft chronological preferences derived from dose and
   practical session capacity. They do not prescribe named weekdays or a fixed
   sessions-per-week template.
+- V3's performance limiter is a versioned app heuristic based only on valid
+  within-athlete relationships. It does not predict a 2K, infer lactate
+  threshold from 30R20, or apply population/age/sex labels. Missing evidence
+  yields `unknown`, not an invented limiter.
 
 ## Audit contract
 

@@ -98,14 +98,17 @@ def candidates(*,role,band,experience,phase,race_type,mode,minutes):
         if sustained: result=sustained
     return result
 
-def _score(item,role,phase,race_type,preference,minutes,history, intentional_repeat=False):
+def _score(item,role,phase,race_type,preference,minutes,history, intentional_repeat=False, selection_context=None):
     family=item["structure_family"]; role_fit=FAMILY.get(role,{}).get(family,0); phase_fit=WEIGHTS["phase"] if _phase(phase) in item["phase_fit"] else 4; race_fit=WEIGHTS["race"] if race_type in item["race_fit"] else 0
     preference_effect=item["preference_fit"].get(_pref(preference),"acceptable"); pref=WEIGHTS["preference"]*{"preferred":2,"good":1,"acceptable":0,"poor_fit":-2}.get(preference_effect,0)
     duration=round(WEIGHTS["duration"]*min(1,max(0,(minutes-item["duration_range_min"]["min"])/max(1,item["duration_range_min"]["max"]-item["duration_range_min"]["min"]))))
     recent=history[-8:]; same_id=any(x.get("archetype_id")==item["archetype_id"] and not x.get("benchmark_repeat") for x in recent); family_count=sum(x.get("structure_family")==family for x in recent)
     history_effect=0 if intentional_repeat else (-WEIGHTS["history"] if same_id else -min(WEIGHTS["history"],family_count*3)); duplicate=0 if intentional_repeat else (-WEIGHTS["duplicate"] if any(x.get("structure_family")==family and x.get("primary_band")==item["primary_band"] for x in history[-3:]) else 0)
     comparable=[x for x in history if x.get("session_role")==role]; progression=WEIGHTS["progression"] if comparable and family!=comparable[-1].get("structure_family") else 0
-    components={"role_fit":role_fit,"phase_fit":phase_fit,"race_fit":race_fit,"preference":pref,"duration_fit":duration,"history":history_effect,"duplicate_structure":duplicate,"progression":progression}
+    focus=(selection_context or {}).get("active_training_focus")
+    focus_family={"aerobic_strength":{"long_repeats","rate_controlled","progressive_duration"},"anaerobic_lactic_development":{"race_rate_blocks","mixed_rate","distance_repeats"},"peak_power_development":{"stroke_power","starts","accelerations"},"technical_consolidation":{"technique_aerobic","drill_aerobic","low_rate_rhythm"},"taper_race_readiness":{"race_rate_blocks","mixed_rate","start_settle"}}
+    focus_bonus=6 if family in focus_family.get(focus,set()) else 0
+    components={"role_fit":role_fit,"phase_fit":phase_fit,"race_fit":race_fit,"preference":pref,"duration_fit":duration,"history":history_effect,"duplicate_structure":duplicate,"progression":progression,"training_focus":focus_bonus}
     return sum(components.values()),components,preference_effect
 
 def _instantiate(item,role,experience,minutes,history):
@@ -126,12 +129,12 @@ def _instantiate(item,role,experience,minutes,history):
     constrained=role=="LONG_AEROBIC" and family not in {"continuous","long_repeats","progressive_duration"}
     return piece,count,recovery["min"],total,constrained
 
-def select_and_instantiate(*,role,experience,phase,race_type,mode,minutes,preference,history,exact_repeat_reason=None):
+def select_and_instantiate(*,role,experience,phase,race_type,mode,minutes,preference,history,exact_repeat_reason=None,selection_context=None):
     band=ROLE_BAND[role]; pool=candidates(role=role,band=band,experience=experience,phase=phase,race_type=race_type,mode=mode,minutes=minutes)
     if not pool: return None
     scored=[]
     for item in pool:
-        score,components,effect=_score(item,role,phase,race_type,preference,minutes,history,bool(exact_repeat_reason))
+        score,components,effect=_score(item,role,phase,race_type,preference,minutes,history,bool(exact_repeat_reason),selection_context)
         piece,count,recovery,total,constrained=_instantiate(item,role,experience,minutes,history)
         fingerprint=_fingerprint(item,role,band,piece,count,recovery,race_type)
         concrete_score,concrete_components,_=_concrete_history_components(fingerprint,history,exact_repeat_reason)
@@ -145,5 +148,6 @@ def select_and_instantiate(*,role,experience,phase,race_type,mode,minutes,prefer
     why=f"{role.replace('_',' ').title()} serves this week's intent through {item['structure_family'].replace('_',' ')}."
     if constrained: why+=" Available time constrained the sustained aerobic structure."
     if effect=="poor_fit": why+=" Structure preference is soft; training purpose takes priority."
-    if exact_repeat_reason: fingerprint["intentional_repeat_reason"]=exact_repeat_reason
-    return {"archetype":item,"candidate_scores":[{"archetype_id":candidate["archetype_id"],"score":candidate_score,"components":candidate_components,"fingerprint":candidate_fingerprint} for candidate_score,candidate,candidate_components,_,_,_,_,_,_,candidate_fingerprint in sorted(scored,key=lambda row:(-row[0],row[1]["archetype_id"]))],"work_interval_duration":piece,"repetitions":count,"recovery_duration":recovery,"total_minutes":total,"progression_dimension":progression,"preference_effect":effect,"selection_reason":why,"long_aerobic_constraint":"available_time_or_catalog" if constrained else None,"fingerprint":fingerprint}
+    repetition_reason=exact_repeat_reason or ("no_equivalent_valid_alternative" if all(candidate[1]["archetype_id"]==item["archetype_id"] for candidate in scored) else None)
+    if repetition_reason: fingerprint["intentional_repeat_reason"]=repetition_reason
+    return {"archetype":item,"candidate_scores":[{"archetype_id":candidate["archetype_id"],"score":candidate_score,"components":candidate_components,"fingerprint":candidate_fingerprint} for candidate_score,candidate,candidate_components,_,_,_,_,_,_,candidate_fingerprint in sorted(scored,key=lambda row:(-row[0],row[1]["archetype_id"]))],"work_interval_duration":piece,"repetitions":count,"recovery_duration":recovery,"total_minutes":total,"progression_dimension":progression,"preference_effect":effect,"selection_reason":why,"long_aerobic_constraint":"available_time_or_catalog" if constrained else None,"fingerprint":fingerprint,"selection_context":dict(selection_context or {}),"repetition_reason":repetition_reason}
