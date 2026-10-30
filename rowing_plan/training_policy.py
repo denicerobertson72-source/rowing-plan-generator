@@ -136,6 +136,11 @@ DEFAULT_TRAINING_POLICY = TrainingPolicy(
         _rule("dedicated_ut2_target_credit_minutes", 90, RuleClass.EVIDENCE_INFORMED_HEURISTIC, (), "Replacement-planner starting dose for a rolling aerobic need; athlete capacity may reduce it.", "coach_override"),
         _rule("long_aerobic_target_credit_minutes", 75, RuleClass.EVIDENCE_INFORMED_HEURISTIC, (), "Replacement-planner starting dose for a long-aerobic exposure; athlete capacity may reduce it.", "coach_override"),
         _rule("ordinary_need_horizon_days", 14, RuleClass.EVIDENCE_INFORMED_HEURISTIC, (), "A continuous planning horizon, not a display-week obligation.", "coach_override"),
+        _rule("load_target_range_fractions", {"minimum": 0.80, "maximum": 1.10}, RuleClass.EVIDENCE_INFORMED_HEURISTIC, ("S010",), "Individual baseline volume is represented as a range, not a universal weekly prescription.", "coach_override"),
+        _rule("low_intensity_minimum_fraction", 0.70, RuleClass.EVIDENCE_INFORMED_HEURISTIC, ("S010", "S011"), "Ordinary rowing volume should remain predominantly low intensity without asserting a universal ratio.", "coach_override"),
+        _rule("load_progression_guard", {"maximum_increase": 0.15, "baseline_floor": 0.65}, RuleClass.EVIDENCE_INFORMED_HEURISTIC, ("S010",), "Recent completed load tempers abrupt prescription changes while a single low week does not erase established baseline.", "coach_override"),
+        _rule("residual_aerobic_session_minutes", {"minimum": 30, "preferred": 60}, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "Split a material residual into practical continuous exposures without a session-count stencil.", "coach_override"),
+        _rule("default_weekly_rowing_minutes_by_experience", {"new": 90, "novice": 90, "developing": 120, "intermediate": 150, "experienced": 180, "competitive": 210}, RuleClass.EVIDENCE_INFORMED_HEURISTIC, (), "Fallback only when no athlete baseline is supplied; values are coaching defaults, not research-derived universals.", "coach_override"),
     ),
     quality_policy=(
         _rule("quality_categories_are_bounded_not_protocols", ("AT", "TR", "AN", "PP"), RuleClass.EVIDENCE_INFORMED_HEURISTIC, ("S014", "S015", "S016", "S020"), "Evidence supports categories, not copied universal protocols or exposure counts.", "coach_override"),

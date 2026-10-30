@@ -16,6 +16,11 @@ research citation.
 | completed work drives history | research constrained | only completed work becomes completed load | S018 | separates prescription from actual physiological credit | no | state reduction |
 | low intensity remains predominant | evidence-informed heuristic | no universal intensity ratio | S010, S011 | distribution varies by athlete and context | coach | multi-week dose validation |
 | ordinary need horizon | evidence-informed heuristic | 14 continuous days | existing app policy | horizon is not a display-week duty | coach | undated need windows |
+| load target range | evidence-informed heuristic | 80% minimum / 110% maximum of individualized target | S010 | range avoids a brittle universal minute prescription | coach | continuous 7/14-day load targets |
+| low-intensity minimum | evidence-informed heuristic | 70% of target as an app starting range | S010, S011 | protects predominant low intensity without claiming a universal 80/20 rule | coach | residual aerobic generation |
+| progression guard | evidence-informed heuristic | 15% increase; 65% baseline floor | S010 | recent load tempers abrupt change while one low week does not erase baseline | coach | target derivation |
+| residual aerobic split | software implementation choice | 30-minute minimum / 60-minute preferred exposure | internal implementation | converts a meaningful continuous residual into placeable work without a weekly count | coach | residual aerobic generation |
+| baseline fallback | evidence-informed heuristic | experience-specific app defaults only if profile has no baseline | existing app policy | fallback is explicitly not a research-derived universal volume | coach | target derivation |
 | dedicated UT2 / long aerobic starting credit | evidence-informed heuristic | 90 / 75 minutes | existing app policy | athlete capacity may reduce either starting magnitude | coach | aerobic need generation |
 | AT/TR/AN/PP are categories, not protocols | evidence-informed heuristic | bounded categories | S014–S016, S020 | avoids copied universal exposure protocols | coach | quality-need generation |
 | quality starting credit | evidence-informed heuristic | 35 minutes | existing app policy | phase and athlete response may reduce or defer it | coach | quality-need generation |
@@ -44,8 +49,14 @@ research citation.
   preferences.
 - No sex, menstrual-cycle, contraception, menopause, or age multiplier is
   automatically applied without athlete-specific evidence.
-- The policy has no TrainingNeed generation, placement, solver, routing,
-  PlanVersion, persistence, or UI effect yet.
+- Load targets are continuous decision budgets: each combines a trailing
+  completed window with the following same-length prospective interval. They
+  are not a pure future-only quota and never infer Monday–Sunday identity.
+- Known coaching commitments may count toward total rowing envelope when their
+  duration is known, but do not receive dedicated-UT2 or quality credit unless
+  their actual content supports it.
+- When taper and an active recovery constraint overlap, they modify the same
+  volume budget non-compoundingly: the stronger applicable reduction wins.
 
 ## Audit contract
 

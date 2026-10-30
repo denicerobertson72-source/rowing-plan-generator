@@ -7,7 +7,7 @@ explicit before the replacement solver is introduced.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from enum import Enum
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -274,6 +274,69 @@ class RecentLoad:
                 raise ValueError("recent_load_values_must_be_nonnegative")
         object.__setattr__(self, "counted_fact_ids", tuple(sorted(set(self.counted_fact_ids))))
         object.__setattr__(self, "excluded_outside_window_fact_ids", tuple(sorted(set(self.excluded_outside_window_fact_ids))))
+
+
+@dataclass(frozen=True)
+class TrainingLoadTarget:
+    """A continuous load range, never a Monday--Sunday session stencil.
+
+    ``horizon_*`` names the prospective planning interval.  Its residual is
+    assessed against a combined decision budget: completed trailing load from
+    the same-length RecentLoad window plus known/proposed work in this future
+    interval.  This makes the accounting explicit rather than treating past
+    work as credit against an unrelated purely-future prescription.
+    """
+
+    id: str
+    horizon_start: date
+    horizon_end: date
+    horizon_days: int
+    phase: str
+    total_rowing_target_minutes: int
+    minimum_rowing_minutes: int
+    maximum_rowing_minutes: int
+    low_intensity_minimum_minutes: int
+    quality_allowance_exposures: int
+    strength_target_exposures: int
+    strength_minimum_exposures: int
+    completed_rowing_minutes: int
+    completed_low_intensity_minutes: int
+    completed_quality_exposures: int
+    completed_strength_exposures: int
+    authoritative_future_rowing_minutes: int
+    provisional_planned_rowing_minutes: int
+    planned_low_intensity_minutes: int
+    remaining_rowing_minutes: int
+    remaining_low_intensity_minutes: int
+    remaining_strength_exposures: int
+    taper_modifier: float
+    recovery_modifier: float
+    availability_ceiling_minutes: int
+    source_policy_ids: tuple[str, ...] = ()
+    rationale: tuple[str, ...] = ()
+    provenance: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.horizon_days < 1 or self.horizon_end != self.horizon_start + timedelta(days=self.horizon_days - 1):
+            raise ValueError("training_load_target_horizon_is_invalid")
+        values = (
+            self.total_rowing_target_minutes, self.minimum_rowing_minutes,
+            self.maximum_rowing_minutes, self.low_intensity_minimum_minutes,
+            self.quality_allowance_exposures, self.strength_target_exposures,
+            self.strength_minimum_exposures, self.completed_rowing_minutes,
+            self.completed_low_intensity_minutes, self.completed_quality_exposures,
+            self.completed_strength_exposures, self.authoritative_future_rowing_minutes,
+            self.provisional_planned_rowing_minutes, self.planned_low_intensity_minutes,
+            self.remaining_rowing_minutes, self.remaining_low_intensity_minutes,
+            self.remaining_strength_exposures, self.availability_ceiling_minutes,
+        )
+        if any(item < 0 for item in values) or not self.minimum_rowing_minutes <= self.total_rowing_target_minutes <= self.maximum_rowing_minutes:
+            raise ValueError("training_load_target_values_are_invalid")
+        if self.strength_minimum_exposures > self.strength_target_exposures:
+            raise ValueError("training_load_target_strength_range_is_invalid")
+        object.__setattr__(self, "source_policy_ids", tuple(sorted(set(self.source_policy_ids))))
+        object.__setattr__(self, "rationale", tuple(sorted(set(self.rationale))))
+        object.__setattr__(self, "provenance", tuple(sorted(set(self.provenance))))
 
 
 @dataclass(frozen=True)

@@ -16,10 +16,12 @@ from .planning_domain import (
     AuthorityType,
     PhysiologicalCredit,
     PhysiologicalState,
+    TrainingLoadTarget,
     TrainingNeed,
     TrainingRole,
 )
 from .planning_normalization import NormalizedPlanningContext
+from .training_load_targets import reconcile_training_load_targets
 from .training_policy import DEFAULT_TRAINING_POLICY, TrainingPolicy, TrainingPolicyRule
 
 
@@ -188,6 +190,49 @@ def expand_repeated_exposure_needs(needs: list[TrainingNeed] | tuple[TrainingNee
                 provenance=tuple(sorted((*need.provenance, "atomic_repeated_exposure"))),
             ))
     return tuple(sorted(result, key=lambda item: (item.earliest_date, item.latest_date, item.id)))
+
+
+def generate_residual_aerobic_needs(
+    needs: tuple[TrainingNeed, ...], targets: tuple[TrainingLoadTarget, ...], policy: TrainingPolicy,
+) -> tuple[TrainingNeed, ...]:
+    """Add only low-intensity work required by an unsatisfied load target.
+
+    Categorical needs are reconciled first.  This intentionally cannot create
+    quality work: a total-load deficit is met with aerobic work or remains an
+    explicit unfilled deficit when no meaningful aerobic exposure is needed.
+    """
+    rules = _rules(policy)
+    minimum = int(rules["residual_aerobic_session_minutes"].value["minimum"])
+    preferred = int(rules["residual_aerobic_session_minutes"].value["preferred"])
+    generated = list(needs)
+    # Reconcile shorter windows first.  The 14-day target then sees the
+    # selected 7-day dose, rather than independently issuing a second,
+    # overlapping prescription that can overshoot the short-window maximum.
+    ordered_targets = tuple(sorted(targets, key=lambda item: (item.horizon_days, item.id)))
+    for target_index, target in enumerate(ordered_targets):
+        reconciled = reconcile_training_load_targets((target,), tuple(generated))[0]
+        residual = max(reconciled.remaining_rowing_minutes, reconciled.remaining_low_intensity_minutes)
+        if residual < minimum:
+            continue
+        count = max(1, (residual + preferred - 1) // preferred)
+        minutes, remainder = divmod(residual, count)
+        for index in range(1, count + 1):
+            credit_minutes = minutes + int(index <= remainder)
+            generated.append(_need(
+                policy, TrainingRole.DEDICATED_UT2,
+                PhysiologicalCredit(TrainingRole.DEDICATED_UT2, 1, credit_minutes, True),
+                # A longer-horizon top-up is the dose left *after* the
+                # shorter rolling target is supplied.  Starting it after the
+                # preceding chronological horizon prevents a 14-day residual
+                # from spending the whole 14-day dose in the first seven days
+                # and violating that target's upper range.
+                (max(target.horizon_start, ordered_targets[target_index - 1].horizon_end + timedelta(days=1)) if target_index else target.horizon_start, target.horizon_end), recovery_cost="low",
+                priority="protected_aerobic_base",
+                policy_keys=("low_intensity_minimum_fraction", "residual_aerobic_session_minutes", "load_target_range_fractions"),
+                progression_relation=f"load_target_residual:{target.id}",
+                provenance=("training_load_target", target.id),
+            ))
+    return expand_repeated_exposure_needs(tuple(generated))
 
 
 def _active_recovery_roles(state: PhysiologicalState, planning_date: date) -> set[TrainingRole]:

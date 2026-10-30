@@ -28,9 +28,10 @@ from .periodization import build_season_phases
 from .physiological_state import reduce_physiological_state
 from .plan_assembly_v2 import _sort_key, _totals, build_plan_version_from_v2
 from .planning_domain import AuthorityType, Placement, PlacementAuthorityStatus, PhysiologicalState, TrainingNeed, TrainingRole
+from .training_load_targets import derive_training_load_targets, reconcile_training_load_targets
+from .training_needs import generate_residual_aerobic_needs, generate_training_need_plan
 from .planning_normalization import NormalizedPlanningContext, normalize_planning_inputs
 from .scheduler_v2 import finalize_translated_quality_sequence, translate_quality_role
-from .training_needs import generate_training_need_plan
 from .training_policy import DEFAULT_TRAINING_POLICY, TrainingPolicy
 
 
@@ -229,6 +230,40 @@ def _calendar_from_placement_result(result: ContinuousPlacementResult, profile: 
     )
 
 
+def _empty_date_rationales(
+    result: ContinuousPlacementResult,
+    state: PhysiologicalState,
+    load_targets,
+) -> tuple[dict[str, str], ...]:
+    """Explain empty *available* dates from current facts, not wishful intent."""
+    placed_dates = {item.date for item in result.placements}
+    residual_exists = any(item.remaining_rowing_minutes or item.remaining_low_intensity_minutes for item in load_targets)
+    unplaced_by_date: dict[date, list[str]] = {}
+    for item in result.diagnostics.unplaced_needs:
+        for candidate in item.candidate_dates_considered:
+            unplaced_by_date.setdefault(candidate, []).append(item.primary_blocking_reason)
+    values = []
+    for item in result.available_dates:
+        if item.available_minutes <= 0 or item.date in placed_dates:
+            continue
+        if any(rule.start_date <= item.date <= rule.end_date for rule in state.recovery_constraints):
+            reason = "required_recovery"
+        elif not residual_exists:
+            reason = "taper_or_load_target_satisfied"
+        elif item.date in unplaced_by_date:
+            blockers = unplaced_by_date[item.date]
+            if any("capacity" in blocker for blocker in blockers):
+                reason = "capacity_restriction"
+            elif any("recovery" in blocker or "spacing" in blocker for blocker in blockers):
+                reason = "active_need_but_not_physio_eligible"
+            else:
+                reason = "other_explicit_policy_reason"
+        else:
+            reason = "no_active_need"
+        values.append({"date": item.date.isoformat(), "reason": reason})
+    return tuple(values)
+
+
 def generate_plan_sequence_v3_candidate(
     profile: Mapping[str, Any], config: Mapping[str, Any], bands, power: Mapping[str, Any], *,
     planning_date: date, prior_plan: Mapping[str, Any] | None = None,
@@ -252,12 +287,17 @@ def generate_plan_sequence_v3_candidate(
     timings.append(("physiological_reduction", round((perf_counter() - started) * 1000, 3)))
     started = perf_counter()
     need_plan = generate_training_need_plan(context, state, policy, profile=profile)
-    effective_needs = tuple(needs) if needs is not None else need_plan.needs
+    load_targets = derive_training_load_targets(context, state, policy, profile=profile, planning_date=planning_date)
+    effective_needs = tuple(needs) if needs is not None else generate_residual_aerobic_needs(need_plan.needs, load_targets, policy)
     timings.append(("need_generation", round((perf_counter() - started) * 1000, 3)))
     started = perf_counter()
     placed = place_continuous_training_needs(
         context, state, effective_needs, policy, profile=profile, config=placement_config,
     )
+    need_by_id = {item.id: item for item in effective_needs}
+    placed_needs = tuple(need_by_id[item.training_need_id] for item in placed.placements if item.training_need_id in need_by_id)
+    final_load_targets = reconcile_training_load_targets(load_targets, placed_needs)
+    empty_date_rationales = _empty_date_rationales(placed, state, final_load_targets)
     timings.append(("sequence_placement", round((perf_counter() - started) * 1000, 3)))
     started = perf_counter()
     materialized = adapt_placements_to_materialization_requests(placed.placements, profile=profile)
@@ -333,6 +373,25 @@ def generate_plan_sequence_v3_candidate(
             "placed_by_role": dict(placed.diagnostics.repeated_needs_placed_by_role),
             "unplaced_by_role": dict(placed.diagnostics.repeated_needs_unplaced_by_role),
         },
+        "training_load_targets": tuple({
+            "id": item.id, "horizon_days": item.horizon_days, "phase": item.phase,
+            "minimum_rowing_minutes": item.minimum_rowing_minutes,
+            "target_rowing_minutes": item.total_rowing_target_minutes,
+            "maximum_rowing_minutes": item.maximum_rowing_minutes,
+            "low_intensity_minimum_minutes": item.low_intensity_minimum_minutes,
+            "completed_rowing_minutes": item.completed_rowing_minutes,
+            "authoritative_future_rowing_minutes": item.authoritative_future_rowing_minutes,
+            "planned_rowing_minutes": item.provisional_planned_rowing_minutes,
+            "planned_low_intensity_minutes": item.planned_low_intensity_minutes,
+            "quality_exposures": item.completed_quality_exposures,
+            "strength_exposures": item.completed_strength_exposures,
+            "remaining_rowing_minutes": item.remaining_rowing_minutes,
+            "remaining_low_intensity_minutes": item.remaining_low_intensity_minutes,
+            "availability_ceiling_minutes": item.availability_ceiling_minutes,
+            "taper_modifier": item.taper_modifier, "recovery_modifier": item.recovery_modifier,
+            "unmet_target_reason": "availability_limited" if item.availability_ceiling_minutes < item.minimum_rowing_minutes else "residual_needs_unplaced" if item.remaining_rowing_minutes or item.remaining_low_intensity_minutes else None,
+        } for item in final_load_targets),
+        "empty_date_rationales": empty_date_rationales,
         "replacement_placements": tuple({"placement_id": item.placement_id, "date": item.date, "role": item.role.value if item.role else None, "reservation_minutes": item.reservation_minutes, "target_credit": item.target_credit, "served_need_ids": item.served_need_ids} for item in placed.placements),
     }
     started = perf_counter()
