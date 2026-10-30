@@ -48,6 +48,7 @@ AUTHORITY_PRECEDENCE: tuple[AuthorityType, ...] = (
     AuthorityType.COURSE_PRACTICE,
     AuthorityType.PRIVATE_COACHING,
     AuthorityType.FIXED_COACHING,
+    AuthorityType.FIXED_REST,
     AuthorityType.FIXED_RECURRING_ACTIVITY,
     AuthorityType.EXPLICIT_API_LOCK,
 )

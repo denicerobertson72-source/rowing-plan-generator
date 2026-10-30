@@ -30,6 +30,7 @@ class AuthorityType(_TextEnum):
     PRIVATE_COACHING = "private_coaching"
     FIXED_COACHING = "fixed_coaching"
     FIXED_RECURRING_ACTIVITY = "fixed_recurring_activity"
+    FIXED_REST = "fixed_rest"
     USER_FIXED_PLACEMENT = "user_fixed_placement"
     EXPLICIT_API_LOCK = "explicit_api_lock"
 
@@ -337,6 +338,42 @@ class TrainingLoadTarget:
         object.__setattr__(self, "source_policy_ids", tuple(sorted(set(self.source_policy_ids))))
         object.__setattr__(self, "rationale", tuple(sorted(set(self.rationale))))
         object.__setattr__(self, "provenance", tuple(sorted(set(self.provenance))))
+
+
+@dataclass(frozen=True)
+class TrainingDistributionTarget:
+    """Soft chronological sequence-quality expectation, never a weekly stencil."""
+    horizon_start: date
+    horizon_end: date
+    horizon_days: int
+    minimum_rowing_exposures: int
+    target_rowing_exposures: int
+    minimum_low_intensity_exposures: int
+    preferred_max_aerobic_gap_days: int
+    taper_frequency_retention: bool
+    source_policy_ids: tuple[str, ...] = ()
+    rationale: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.horizon_days < 1 or self.horizon_end != self.horizon_start + timedelta(days=self.horizon_days - 1):
+            raise ValueError("training_distribution_target_horizon_is_invalid")
+        if min(self.minimum_rowing_exposures, self.target_rowing_exposures, self.minimum_low_intensity_exposures, self.preferred_max_aerobic_gap_days) < 0:
+            raise ValueError("training_distribution_target_values_are_invalid")
+        if self.minimum_rowing_exposures > self.target_rowing_exposures:
+            raise ValueError("training_distribution_target_range_is_invalid")
+
+
+@dataclass(frozen=True)
+class StrengthContinuityTarget:
+    horizon_start: date
+    horizon_end: date
+    target_exposures: int
+    minimum_exposures: int
+    taper_target_exposures: int
+    completed_exposures: int
+    deferred_reason: str | None = None
+    earliest_return_date: date | None = None
+    source_policy_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -6,7 +6,7 @@ existing V2 materialization and PlanVersion-shaped interfaces for shadow use.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from time import perf_counter
 from typing import Any, Mapping
@@ -28,7 +28,7 @@ from .periodization import build_season_phases
 from .physiological_state import reduce_physiological_state
 from .plan_assembly_v2 import _sort_key, _totals, build_plan_version_from_v2
 from .planning_domain import AuthorityType, Placement, PlacementAuthorityStatus, PhysiologicalState, TrainingNeed, TrainingRole
-from .training_load_targets import derive_training_load_targets, reconcile_training_load_targets
+from .training_load_targets import derive_training_distribution_targets, derive_training_load_targets, reconcile_training_load_targets
 from .training_needs import generate_residual_aerobic_needs, generate_training_need_plan
 from .planning_normalization import NormalizedPlanningContext, normalize_planning_inputs
 from .scheduler_v2 import finalize_translated_quality_sequence, translate_quality_role
@@ -288,6 +288,7 @@ def generate_plan_sequence_v3_candidate(
     started = perf_counter()
     need_plan = generate_training_need_plan(context, state, policy, profile=profile)
     load_targets = derive_training_load_targets(context, state, policy, profile=profile, planning_date=planning_date)
+    distribution_targets = derive_training_distribution_targets(load_targets, policy)
     effective_needs = tuple(needs) if needs is not None else generate_residual_aerobic_needs(need_plan.needs, load_targets, policy)
     timings.append(("need_generation", round((perf_counter() - started) * 1000, 3)))
     started = perf_counter()
@@ -295,7 +296,12 @@ def generate_plan_sequence_v3_candidate(
         context, state, effective_needs, policy, profile=profile, config=placement_config,
     )
     need_by_id = {item.id: item for item in effective_needs}
-    placed_needs = tuple(need_by_id[item.training_need_id] for item in placed.placements if item.training_need_id in need_by_id)
+    # Reconciliation is about the selected physical date, not merely the
+    # broad candidate window carried by a need.
+    placed_needs = tuple(
+        replace(need_by_id[item.training_need_id], earliest_date=item.date, latest_date=item.date)
+        for item in placed.placements if item.training_need_id in need_by_id
+    )
     final_load_targets = reconcile_training_load_targets(load_targets, placed_needs)
     empty_date_rationales = _empty_date_rationales(placed, state, final_load_targets)
     timings.append(("sequence_placement", round((perf_counter() - started) * 1000, 3)))
@@ -391,6 +397,14 @@ def generate_plan_sequence_v3_candidate(
             "taper_modifier": item.taper_modifier, "recovery_modifier": item.recovery_modifier,
             "unmet_target_reason": "availability_limited" if item.availability_ceiling_minutes < item.minimum_rowing_minutes else "residual_needs_unplaced" if item.remaining_rowing_minutes or item.remaining_low_intensity_minutes else None,
         } for item in final_load_targets),
+        "training_distribution_targets": tuple({
+            "horizon_days": item.horizon_days,
+            "minimum_rowing_exposures": item.minimum_rowing_exposures,
+            "target_rowing_exposures": item.target_rowing_exposures,
+            "minimum_low_intensity_exposures": item.minimum_low_intensity_exposures,
+            "preferred_max_aerobic_gap_days": item.preferred_max_aerobic_gap_days,
+            "taper_frequency_retention": item.taper_frequency_retention,
+        } for item in distribution_targets),
         "empty_date_rationales": empty_date_rationales,
         "replacement_placements": tuple({"placement_id": item.placement_id, "date": item.date, "role": item.role.value if item.role else None, "reservation_minutes": item.reservation_minutes, "target_credit": item.target_credit, "served_need_ids": item.served_need_ids} for item in placed.placements),
     }

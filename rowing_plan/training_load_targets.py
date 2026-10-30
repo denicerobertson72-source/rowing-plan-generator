@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from typing import Any, Iterable, Mapping
 
 from .planning_domain import (
-    AuthorityType, PhysiologicalState, TrainingLoadTarget, TrainingNeed, TrainingRole,
+    AuthorityType, PhysiologicalState, TrainingDistributionTarget, TrainingLoadTarget, TrainingNeed, TrainingRole,
 )
 from .planning_normalization import NormalizedPlanningContext
 from .training_policy import DEFAULT_TRAINING_POLICY, TrainingPolicy, TrainingPolicyRule
@@ -161,6 +161,31 @@ def derive_training_load_targets(
             provenance=("training_policy", "physiological_state", "authoritative_commitments"),
         ))
     return tuple(targets)
+
+
+def derive_training_distribution_targets(
+    targets: Iterable[TrainingLoadTarget], policy: TrainingPolicy = DEFAULT_TRAINING_POLICY,
+) -> tuple[TrainingDistributionTarget, ...]:
+    """Turn continuous dose into soft exposure/gap expectations.
+
+    The practical-session magnitude is an implementation choice; this is a
+    sequence preference, not a sessions-per-week rule or feasibility gate.
+    """
+    rules = _rules(policy)
+    practical = int(rules["residual_aerobic_session_minutes"].value["preferred"])
+    values = []
+    for item in targets:
+        minimum = max(0, (item.minimum_rowing_minutes + practical - 1) // practical)
+        target = max(minimum, (item.total_rowing_target_minutes + practical - 1) // practical)
+        low = max(0, (item.low_intensity_minimum_minutes + practical - 1) // practical)
+        values.append(TrainingDistributionTarget(
+            item.horizon_start, item.horizon_end, item.horizon_days, minimum, target, low,
+            max(1, (item.horizon_days + max(1, minimum) - 1) // max(1, minimum)),
+            item.taper_modifier < 1.0,
+            ("residual_aerobic_session_minutes", "load_target_range_fractions", "taper_volume_multiplier"),
+            ("dose_derived_continuous_exposure_expectation", "soft_gap_and_clustering_preference"),
+        ))
+    return tuple(values)
 
 
 def reconcile_training_load_targets(targets: Iterable[TrainingLoadTarget], needs: Iterable[TrainingNeed]) -> tuple[TrainingLoadTarget, ...]:

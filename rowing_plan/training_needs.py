@@ -205,9 +205,9 @@ def generate_residual_aerobic_needs(
     minimum = int(rules["residual_aerobic_session_minutes"].value["minimum"])
     preferred = int(rules["residual_aerobic_session_minutes"].value["preferred"])
     generated = list(needs)
-    # Reconcile shorter windows first.  The 14-day target then sees the
-    # selected 7-day dose, rather than independently issuing a second,
-    # overlapping prescription that can overshoot the short-window maximum.
+    # Reconcile shorter windows first, but keep overlapping horizons in the
+    # same chronological candidate sequence.  Placement distribution—not a
+    # hard 7/14-day date partition—decides where later residual work belongs.
     ordered_targets = tuple(sorted(targets, key=lambda item: (item.horizon_days, item.id)))
     for target_index, target in enumerate(ordered_targets):
         reconciled = reconcile_training_load_targets((target,), tuple(generated))[0]
@@ -221,13 +221,8 @@ def generate_residual_aerobic_needs(
             generated.append(_need(
                 policy, TrainingRole.DEDICATED_UT2,
                 PhysiologicalCredit(TrainingRole.DEDICATED_UT2, 1, credit_minutes, True),
-                # A longer-horizon top-up is the dose left *after* the
-                # shorter rolling target is supplied.  Starting it after the
-                # preceding chronological horizon prevents a 14-day residual
-                # from spending the whole 14-day dose in the first seven days
-                # and violating that target's upper range.
-                (max(target.horizon_start, ordered_targets[target_index - 1].horizon_end + timedelta(days=1)) if target_index else target.horizon_start, target.horizon_end), recovery_cost="low",
-                priority="protected_aerobic_base",
+                (target.horizon_start, target.horizon_end), recovery_cost="low",
+                priority="aerobic_target_topup",
                 policy_keys=("low_intensity_minimum_fraction", "residual_aerobic_session_minutes", "load_target_range_fractions"),
                 progression_relation=f"load_target_residual:{target.id}",
                 provenance=("training_load_target", target.id),
@@ -365,14 +360,17 @@ def generate_training_need_plan(
         ))
 
     strength = rules["rolling_strength_target_14d"].value
-    strength_gap = max(0, _integer(strength["minimum"]) - state.completed_strength_exposure.exposures)
-    if strength_gap and TrainingRole.STRENGTH not in recovery_blocked and not taper:
+    taper_strength = rules["taper_strength_continuity"].value
+    required_strength = _integer(taper_strength["target"]) if taper else _integer(strength["minimum"])
+    strength_gap = max(0, required_strength - state.completed_strength_exposure.exposures)
+    if strength_gap and TrainingRole.STRENGTH not in recovery_blocked:
         needs.append(_need(
             policy, TrainingRole.STRENGTH,
             PhysiologicalCredit(TrainingRole.STRENGTH, strength_gap, 0, True), ordinary_window,
-            recovery_cost="hard", priority="strength_maintenance",
-            policy_keys=("rolling_strength_target_14d", "concurrent_strength_endurance_is_individualized"),
-            progression_relation="rolling_14d_strength",
+            recovery_cost="hard", priority="strength_taper_maintenance" if taper else "required_strength_minimum",
+            policy_keys=(("taper_strength_continuity", "concurrent_strength_endurance_is_individualized") if taper else ("rolling_strength_target_14d", "concurrent_strength_endurance_is_individualized")),
+            progression_relation="taper_strength_continuity" if taper else "rolling_14d_strength",
+            state="reduced" if taper else "active", state_reason="taper_strength_continuity" if taper else None,
         ))
     elif strength_gap and TrainingRole.STRENGTH in recovery_blocked:
         blocked.append(TrainingRole.STRENGTH.value)

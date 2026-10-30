@@ -227,8 +227,10 @@ def _iter_weekdays(start: date, end: date, fixed_days: Iterable[str]) -> Iterabl
 def _activity_authority(activity_type: str) -> AuthorityType:
     if activity_type == "private_coaching":
         return AuthorityType.PRIVATE_COACHING
-    if activity_type in {"coached", "coached_training"}:
+    if activity_type in {"coached", "coached_training", "coached_row"}:
         return AuthorityType.FIXED_COACHING
+    if activity_type in {"rest", "off", "designated_rest"}:
+        return AuthorityType.FIXED_REST
     return AuthorityType.FIXED_RECURRING_ACTIVITY
 
 

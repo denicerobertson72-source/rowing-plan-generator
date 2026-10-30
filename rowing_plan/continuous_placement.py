@@ -124,6 +124,9 @@ _PRIORITY_WEIGHT = {
     "race_specific": 85,
     "quality_development": 80,
     "protected_aerobic_base": 70,
+    "aerobic_target_topup": 55,
+    "required_strength_minimum": 75,
+    "strength_taper_maintenance": 64,
     "strength_maintenance": 65,
     "aerobic_base": 60,
     "recovery": 55,
@@ -200,6 +203,7 @@ def _availability(
             AuthorityType.PRIVATE_COACHING: TrainingRole.PRIVATE_COACHING,
             AuthorityType.FIXED_COACHING: TrainingRole.COACHED_TRAINING,
             AuthorityType.FIXED_RECURRING_ACTIVITY: TrainingRole.COACHED_TRAINING,
+            AuthorityType.FIXED_REST: TrainingRole.REST,
         }.get(commitment.type, TrainingRole.COACHED_TRAINING)
         credit = PhysiologicalCredit(TrainingRole.RACE, 1, commitment.reservation_minutes, True) if role is TrainingRole.RACE else PhysiologicalCredit()
         priority = priorities.get(commitment.date.isoformat(), "B")
@@ -250,7 +254,11 @@ def _placement_score(need: TrainingNeed, decision: SequenceConstraintDecision, d
         SequenceEligibility.ELIGIBLE_LOW_COST_ONLY: 2,
         SequenceEligibility.DISCOURAGED: 1,
     }[decision.eligibility]
-    return (_priority(need) * 10 + decision_bonus, -len(decision.soft_constraints), int(day.preferred), int(stable))
+    later_horizon_distribution = int(
+        bool(need.progression_relation and "load_target_residual" in need.progression_relation and ":14d" in need.progression_relation)
+        and day.date >= need.earliest_date + timedelta(days=7)
+    )
+    return (_priority(need) * 10 + decision_bonus, -len(decision.soft_constraints), int(day.preferred) + later_horizon_distribution, int(stable))
 
 
 def _state_key(state: _SearchState) -> tuple[Any, ...]:
@@ -293,6 +301,10 @@ def _can_use_date(day: AvailableDate, need: TrainingNeed, reservation: int, exis
     if reservation > day.remaining_minutes:
         return "insufficient_capacity"
     date_placements = [item for item in existing if item.date == day.date]
+    if any(item.role is TrainingRole.REST for item in date_placements):
+        return "designated_rest"
+    if any(_role_family(item.role) == _role_family(need.role) for item in date_placements if item.role is not None):
+        return "same_role_family_already_placed"
     if date_placements and not day.multiple_sessions_allowed:
         return "multiple_sessions_not_allowed"
     return None
@@ -419,6 +431,17 @@ def place_continuous_training_needs(
                     placement_id, day.date, need.role, placement.target_credit, source="provisional",
                 )
                 density = sum(item.date == day.date for item in current.placements)
+                # Soft continuity only: do not override recovery, authority,
+                # availability, or hard sequence decisions.  A legal aerobic
+                # choice is less attractive when it needlessly neighbours a
+                # same-family aerobic placement; the deterministic tie-break
+                # no longer rewards early clustering by default.
+                adjacent_aerobic = sum(
+                    item.role in {TrainingRole.DEDICATED_UT2, TrainingRole.LONG_AEROBIC, TrainingRole.RECOVERY_AEROBIC}
+                    and need.role in {TrainingRole.DEDICATED_UT2, TrainingRole.LONG_AEROBIC, TrainingRole.RECOVERY_AEROBIC}
+                    and abs((item.date - day.date).days) == 1
+                    for item in current.placements
+                )
                 branches.append(_SearchState(
                     placements=tuple(sorted((*current.placements, placement), key=lambda item: (item.date, item.placement_id))),
                     projected=current.projected.with_item(projected_item), remaining=remaining,
@@ -427,7 +450,7 @@ def place_continuous_training_needs(
                     soft_penalty=current.soft_penalty + soft,
                     preference_gain=current.preference_gain + preference,
                     stability_gain=current.stability_gain + stability,
-                    density_penalty=current.density_penalty + density,
+                    density_penalty=current.density_penalty + density + adjacent_aerobic,
                 ))
         states = tuple(sorted(branches, key=_state_key, reverse=True)[:config.beam_width])
 

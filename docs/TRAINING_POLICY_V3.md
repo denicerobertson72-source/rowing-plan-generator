@@ -21,11 +21,13 @@ research citation.
 | progression guard | evidence-informed heuristic | 15% increase; 65% baseline floor | S010 | recent load tempers abrupt change while one low week does not erase baseline | coach | target derivation |
 | residual aerobic split | software implementation choice | 30-minute minimum / 60-minute preferred exposure | internal implementation | converts a meaningful continuous residual into placeable work without a weekly count | coach | residual aerobic generation |
 | baseline fallback | evidence-informed heuristic | experience-specific app defaults only if profile has no baseline | existing app policy | fallback is explicitly not a research-derived universal volume | coach | target derivation |
+| continuous distribution target | software implementation choice | dose-derived exposure/gap preference | internal implementation | distinguishes avoidable clustering from justified recovery without a weekly stencil | coach | continuous placement |
 | dedicated UT2 / long aerobic starting credit | evidence-informed heuristic | 90 / 75 minutes | existing app policy | athlete capacity may reduce either starting magnitude | coach | aerobic need generation |
 | AT/TR/AN/PP are categories, not protocols | evidence-informed heuristic | bounded categories | S014–S016, S020 | avoids copied universal exposure protocols | coach | quality-need generation |
 | quality starting credit | evidence-informed heuristic | 35 minutes | existing app policy | phase and athlete response may reduce or defer it | coach | quality-need generation |
 | concurrent work is individualized | research constrained | account for recovery/interference | S017 | strength/endurance interaction is contextual | coach | strength need generation |
 | rolling 14-day strength target | evidence-informed heuristic | target 4, minimum 3 | S017; existing app policy | explicit app default, not a biological law | coach | strength dose validation |
+| taper strength continuity | evidence-informed heuristic | target 1, minimum 0 | S017 | taper may retain reduced strength exposure; exact count is not universal | coach | strength need generation |
 | race excludes new hard work | evidence-informed heuristic | quality/strength protected after a race | S009, S019 | recovery protects against automatic hard additions | coach | recovery constraints |
 | race-priority recovery span | evidence-informed heuristic | A/B/C spans are configurable | existing app policy | numerical spans are not universal prescriptions | coach | recovery constraints |
 | soft race-recovery transition | evidence-informed heuristic | A/B/C configurable spans; 0.5 reduced-credit suggestion | existing app policy | lower-load transition remains distinct from hard exclusion | coach | sequence constraints |
@@ -57,6 +59,9 @@ research citation.
   their actual content supports it.
 - When taper and an active recovery constraint overlap, they modify the same
   volume budget non-compoundingly: the stronger applicable reduction wins.
+- Distribution targets are soft chronological preferences derived from dose and
+  practical session capacity. They do not prescribe named weekdays or a fixed
+  sessions-per-week template.
 
 ## Audit contract
 

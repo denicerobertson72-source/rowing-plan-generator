@@ -151,6 +151,7 @@ DEFAULT_TRAINING_POLICY = TrainingPolicy(
     strength_policy=(
         _rule("concurrent_strength_endurance_is_individualized", True, RuleClass.RESEARCH_CONSTRAINED, ("S017",), "Concurrent training can be useful, while interference and recovery remain individual.", "coach_override"),
         _rule("rolling_strength_target_14d", {"target": 4, "minimum": 3, "window_days": 14}, RuleClass.EVIDENCE_INFORMED_HEURISTIC, ("S017",), "Current app coaching target; evidence does not establish this exact count.", "coach_override"),
+        _rule("taper_strength_continuity", {"target": 1, "minimum": 0}, RuleClass.EVIDENCE_INFORMED_HEURISTIC, ("S017",), "Taper may retain a reduced strength-maintenance exposure; exact frequency remains a coaching heuristic.", "coach_override"),
     ),
     recovery_policy=(
         _rule("race_hard_recovery_exclusions", ("quality", "strength"), RuleClass.EVIDENCE_INFORMED_HEURISTIC, ("S009", "S019"), "Post-race recovery protects hard work while leaving low-load eligibility context-specific.", "coach_override"),

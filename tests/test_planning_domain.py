@@ -87,7 +87,7 @@ def test_course_practice_and_fixed_recurring_activities_become_commitments():
     assert any(item.type is AuthorityType.COURSE_PRACTICE and item.date == date(2026, 10, 19) for item in commitments)
     assert any(item.type is AuthorityType.PRIVATE_COACHING for item in commitments)
     assert any(item.type is AuthorityType.FIXED_COACHING for item in commitments)
-    assert any(item.type is AuthorityType.FIXED_RECURRING_ACTIVITY and item.reservation_minutes == 0 for item in commitments)
+    assert any(item.type is AuthorityType.FIXED_REST and item.reservation_minutes == 0 for item in commitments)
 
 
 def test_user_fixed_future_placement_is_authoritative_and_provisional_is_not():
