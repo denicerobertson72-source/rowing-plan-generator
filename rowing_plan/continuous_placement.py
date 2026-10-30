@@ -24,7 +24,7 @@ from .planning_domain import (
     ProvenanceSource,
     SequenceConstraintDecision,
     SequenceEligibility,
-    TrainingNeed,
+    TrainingLoadTarget, TrainingNeed,
     TrainingRole,
 )
 from .planning_normalization import NormalizedPlanningContext
@@ -76,10 +76,12 @@ class ContinuousPlacementDiagnostics:
     unplaced_needs: tuple[UnplacedNeedDiagnostic, ...] = ()
     repeated_needs_placed_by_role: Mapping[str, int] = field(default_factory=dict)
     repeated_needs_unplaced_by_role: Mapping[str, int] = field(default_factory=dict)
+    suppressed_residual_by_target: Mapping[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "repeated_needs_placed_by_role", MappingProxyType(dict(sorted(self.repeated_needs_placed_by_role.items()))))
         object.__setattr__(self, "repeated_needs_unplaced_by_role", MappingProxyType(dict(sorted(self.repeated_needs_unplaced_by_role.items()))))
+        object.__setattr__(self, "suppressed_residual_by_target", MappingProxyType(dict(sorted(self.suppressed_residual_by_target.items()))))
 
 
 @dataclass(frozen=True)
@@ -254,11 +256,11 @@ def _placement_score(need: TrainingNeed, decision: SequenceConstraintDecision, d
         SequenceEligibility.ELIGIBLE_LOW_COST_ONLY: 2,
         SequenceEligibility.DISCOURAGED: 1,
     }[decision.eligibility]
-    later_horizon_distribution = int(
-        bool(need.progression_relation and "load_target_residual" in need.progression_relation and ":14d" in need.progression_relation)
-        and day.date >= need.earliest_date + timedelta(days=7)
-    )
-    return (_priority(need) * 10 + decision_bonus, -len(decision.soft_constraints), int(day.preferred) + later_horizon_distribution, int(stable))
+    # A need generated from the 14-day horizon remains eligible on every date
+    # in its genuine window.  Shorter-horizon maxima are enforced separately
+    # as a hard feasibility gate; a scoring bonus for post-day-seven dates
+    # would silently recreate a two-week calendar partition.
+    return (_priority(need) * 10 + decision_bonus, -len(decision.soft_constraints), int(day.preferred), int(stable))
 
 
 def _state_key(state: _SearchState) -> tuple[Any, ...]:
@@ -314,6 +316,33 @@ def _candidate_days(need: TrainingNeed, dates: Mapping[date, AvailableDate]) -> 
     return tuple(item for day, item in sorted(dates.items()) if need.earliest_date <= day <= need.latest_date)
 
 
+def _residual_maximum_blockers(
+    need: TrainingNeed,
+    candidate_date: date,
+    candidate_credit: PhysiologicalCredit,
+    placements: tuple[Placement, ...],
+    targets: tuple[TrainingLoadTarget, ...],
+) -> tuple[str, ...]:
+    """Return rolling-horizon maxima a discretionary residual would exceed."""
+    if not (need.progression_relation and "load_target_residual" in need.progression_relation):
+        return ()
+    blocked = []
+    for target in targets:
+        if not target.horizon_start <= candidate_date <= target.horizon_end:
+            continue
+        selected = sum(
+            item.target_credit.minutes
+            for item in placements
+            if item.authority_status is not PlacementAuthorityStatus.AUTHORITATIVE
+            and item.role in _ROWING_ROLES
+            and target.horizon_start <= item.date <= target.horizon_end
+        )
+        total = target.completed_rowing_minutes + target.authoritative_future_rowing_minutes + selected
+        if total + candidate_credit.minutes > target.maximum_rowing_minutes:
+            blocked.append(target.id)
+    return tuple(sorted(blocked))
+
+
 def _unplaced(
     context: NormalizedPlanningContext,
     state: PhysiologicalState,
@@ -323,6 +352,7 @@ def _unplaced(
     policy: TrainingPolicy,
     config: PlacementSearchConfig,
     profile: Mapping[str, Any] | None,
+    load_targets: tuple[TrainingLoadTarget, ...],
 ) -> tuple[UnplacedNeedDiagnostic, ...]:
     result = []
     placed = set(final.placed_need_ids)
@@ -348,10 +378,19 @@ def _unplaced(
             reason = _can_use_date(final_day, need, reservation, final.placements)
             if reason:
                 reasons.append(reason)
+                continue
+            blockers = _residual_maximum_blockers(
+                need, day.date, decision.recommended_credit_adjustment or need.target_credit,
+                final.placements, load_targets,
+            )
+            if blockers:
+                reasons.append("short_horizon_maximum")
         if need.latest_date < context.planning_date:
             status, primary = "missed", "window_elapsed"
         elif not candidates:
             status, primary = "deferred", "outside_search_horizon"
+        elif "short_horizon_maximum" in reasons:
+            status, primary = "deferred", "short_horizon_maximum"
         elif reasons and all("recovery" in item or "spacing" in item for item in reasons):
             status, primary = "blocked_by_recovery", sorted(reasons)[0]
         elif "insufficient_capacity" in reasons or "multiple_sessions_not_allowed" in reasons:
@@ -373,6 +412,8 @@ def place_continuous_training_needs(
     profile: Mapping[str, Any] | None = None,
     config: PlacementSearchConfig = PlacementSearchConfig(),
     prior_provisional_dates: Mapping[str, date] | None = None,
+    initial_placements: tuple[Placement, ...] | list[Placement] = (),
+    load_targets: tuple[TrainingLoadTarget, ...] = (),
 ) -> ContinuousPlacementResult:
     """Place abstract needs with bounded deterministic beam search.
 
@@ -383,14 +424,27 @@ def place_continuous_training_needs(
         raise ValueError("physiological_state_planning_date_mismatch")
     all_needs = tuple(sorted(needs, key=lambda item: (-_priority(item), item.id)))
     dates, seeded, projected, authority_conflicts = _availability(context, profile, config)
+    imported = tuple(sorted(initial_placements, key=lambda item: (item.date, item.placement_id)))
+    remaining = {item.date: item.remaining_minutes for item in dates.values()}
+    for item in imported:
+        if item.date not in remaining:
+            raise ValueError("initial_placement_outside_search_horizon")
+        remaining[item.date] -= item.reservation_minutes
+        if remaining[item.date] < 0:
+            raise ValueError("initial_placement_exceeds_capacity")
+        projected = projected.with_item(ProjectedSequenceItem(
+            item.placement_id, item.date, item.role, item.target_credit, source="provisional",
+        ))
     initial = _SearchState(
-        placements=seeded, projected=projected,
-        remaining={item.date: item.remaining_minutes for item in dates.values()},
+        placements=tuple(sorted((*seeded, *imported), key=lambda item: (item.date, item.placement_id))), projected=projected,
+        remaining=remaining,
         placed_need_ids=(),
     )
     states = (initial,)
     prior = prior_provisional_dates or {}
 
+    suppressed_residual_pairs: dict[tuple[str, str], int] = {}
+    targets = tuple(load_targets)
     for need in all_needs:
         branches: list[_SearchState] = []
         for current in states:
@@ -410,6 +464,14 @@ def place_continuous_training_needs(
                     continue
                 unavailable_reason = _can_use_date(day, need, reservation, current.placements)
                 if unavailable_reason:
+                    continue
+                blockers = _residual_maximum_blockers(
+                    need, day.date, decision.recommended_credit_adjustment or need.target_credit,
+                    current.placements, targets,
+                )
+                if blockers:
+                    for target_id in blockers:
+                        suppressed_residual_pairs[(need.id, target_id)] = (decision.recommended_credit_adjustment or need.target_credit).minutes
                     continue
                 stable = prior.get(need.id) == day.date
                 score, soft, preference, stability = _placement_score(need, decision, day, stable)
@@ -460,7 +522,7 @@ def place_continuous_training_needs(
                       item.prohibited_role_families, item.preferred, item.authoritative_placement_ids)
         for item in sorted(dates.values(), key=lambda item: item.date)
     )
-    unplaced = _unplaced(context, state, all_needs, dates, final, policy, config, profile)
+    unplaced = _unplaced(context, state, all_needs, dates, final, policy, config, profile, targets)
     need_by_id = {item.id: item for item in all_needs}
     repeated_placed: dict[str, int] = {}
     repeated_unplaced: dict[str, int] = {}
@@ -480,5 +542,9 @@ def place_continuous_training_needs(
             authority_conflicts=authority_conflicts, unplaced_needs=unplaced,
             repeated_needs_placed_by_role=repeated_placed,
             repeated_needs_unplaced_by_role=repeated_unplaced,
+            suppressed_residual_by_target={
+                target_id: sum(minutes for (_need_id, key), minutes in suppressed_residual_pairs.items() if key == target_id)
+                for target_id in sorted({key for (_need_id, key) in suppressed_residual_pairs})
+            },
         ),
     )

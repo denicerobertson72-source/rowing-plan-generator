@@ -316,6 +316,14 @@ class TrainingLoadTarget:
     source_policy_ids: tuple[str, ...] = ()
     rationale: tuple[str, ...] = ()
     provenance: tuple[str, ...] = ()
+    selected_categorical_rowing_minutes: int = 0
+    selected_residual_rowing_minutes: int = 0
+    selected_categorical_low_intensity_minutes: int = 0
+    selected_residual_low_intensity_minutes: int = 0
+    overage_minutes: int = 0
+    overage_sources: tuple[str, ...] = ()
+    suppressed_residual_due_to_shorter_horizon_maximum: int = 0
+    low_intensity_conflict_with_maximum: bool = False
 
     def __post_init__(self) -> None:
         if self.horizon_days < 1 or self.horizon_end != self.horizon_start + timedelta(days=self.horizon_days - 1):
@@ -330,6 +338,9 @@ class TrainingLoadTarget:
             self.provisional_planned_rowing_minutes, self.planned_low_intensity_minutes,
             self.remaining_rowing_minutes, self.remaining_low_intensity_minutes,
             self.remaining_strength_exposures, self.availability_ceiling_minutes,
+            self.selected_categorical_rowing_minutes, self.selected_residual_rowing_minutes,
+            self.selected_categorical_low_intensity_minutes, self.selected_residual_low_intensity_minutes,
+            self.overage_minutes, self.suppressed_residual_due_to_shorter_horizon_maximum,
         )
         if any(item < 0 for item in values) or not self.minimum_rowing_minutes <= self.total_rowing_target_minutes <= self.maximum_rowing_minutes:
             raise ValueError("training_load_target_values_are_invalid")
@@ -338,6 +349,7 @@ class TrainingLoadTarget:
         object.__setattr__(self, "source_policy_ids", tuple(sorted(set(self.source_policy_ids))))
         object.__setattr__(self, "rationale", tuple(sorted(set(self.rationale))))
         object.__setattr__(self, "provenance", tuple(sorted(set(self.provenance))))
+        object.__setattr__(self, "overage_sources", tuple(sorted(set(self.overage_sources))))
 
 
 @dataclass(frozen=True)

@@ -194,6 +194,7 @@ def expand_repeated_exposure_needs(needs: list[TrainingNeed] | tuple[TrainingNee
 
 def generate_residual_aerobic_needs(
     needs: tuple[TrainingNeed, ...], targets: tuple[TrainingLoadTarget, ...], policy: TrainingPolicy,
+    *, selected_placements=None,
 ) -> tuple[TrainingNeed, ...]:
     """Add only low-intensity work required by an unsatisfied load target.
 
@@ -205,13 +206,26 @@ def generate_residual_aerobic_needs(
     minimum = int(rules["residual_aerobic_session_minutes"].value["minimum"])
     preferred = int(rules["residual_aerobic_session_minutes"].value["preferred"])
     generated = list(needs)
-    # Reconcile shorter windows first, but keep overlapping horizons in the
-    # same chronological candidate sequence.  Placement distribution—not a
-    # hard 7/14-day date partition—decides where later residual work belongs.
+    need_by_id = {item.id: item for item in needs}
+    reconciled_selected = (
+        reconcile_training_load_targets(targets, needs)
+        if selected_placements is None
+        else reconcile_training_load_targets(targets, placements=selected_placements, need_by_id=need_by_id)
+    )
+    selected_by_id = {item.id: item for item in reconciled_selected}
+    credited_to_later_targets: dict[str, int] = {}
+    # Resolve short target deficits first only for *credit accounting*.  The
+    # later target receives that same physical credit, so it emits only the
+    # additional dose it still needs.  The later residual remains eligible on
+    # all of its real dates; no calendar partition is reintroduced here.
     ordered_targets = tuple(sorted(targets, key=lambda item: (item.horizon_days, item.id)))
-    for target_index, target in enumerate(ordered_targets):
-        reconciled = reconcile_training_load_targets((target,), tuple(generated))[0]
-        residual = max(reconciled.remaining_rowing_minutes, reconciled.remaining_low_intensity_minutes)
+    for target in ordered_targets:
+        reconciled = selected_by_id[target.id]
+        already_credited = credited_to_later_targets.get(target.id, 0)
+        residual = max(
+            max(0, reconciled.remaining_rowing_minutes - already_credited),
+            max(0, reconciled.remaining_low_intensity_minutes - already_credited),
+        )
         if residual < minimum:
             continue
         count = max(1, (residual + preferred - 1) // preferred)
@@ -227,6 +241,15 @@ def generate_residual_aerobic_needs(
                 progression_relation=f"load_target_residual:{target.id}",
                 provenance=("training_load_target", target.id),
             ))
+        # Every earlier-horizon residual is a real candidate inside each
+        # longer horizon that contains its full window.  Record its target
+        # credit once for that later horizon so the next target does not
+        # recreate the same physiological session.
+        for later in ordered_targets:
+            if later.horizon_days <= target.horizon_days:
+                continue
+            if later.horizon_start <= target.horizon_start and target.horizon_end <= later.horizon_end:
+                credited_to_later_targets[later.id] = credited_to_later_targets.get(later.id, 0) + residual
     return expand_repeated_exposure_needs(tuple(generated))
 
 

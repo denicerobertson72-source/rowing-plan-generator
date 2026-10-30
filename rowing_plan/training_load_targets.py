@@ -1,12 +1,12 @@
 """Continuous, policy-owned training-load targets for the replacement planner."""
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from typing import Any, Iterable, Mapping
 
 from .planning_domain import (
-    AuthorityType, PhysiologicalState, TrainingDistributionTarget, TrainingLoadTarget, TrainingNeed, TrainingRole,
+    AuthorityType, PhysiologicalState, Placement, PlacementAuthorityStatus, Provenance, ProvenanceSource, TrainingDistributionTarget, TrainingLoadTarget, TrainingNeed, TrainingRole,
 )
 from .planning_normalization import NormalizedPlanningContext
 from .training_policy import DEFAULT_TRAINING_POLICY, TrainingPolicy, TrainingPolicyRule
@@ -25,6 +25,89 @@ _ROWING_ROLES = _LOW_INTENSITY_ROLES | {
     TrainingRole.RACE_SPECIFIC_TR, TrainingRole.ANAEROBIC_AN, TrainingRole.POWER_PP,
     TrainingRole.TAPER_MAINTENANCE, TrainingRole.RACE_PREPARATION,
 }
+
+
+@dataclass(frozen=True)
+class SelectedDoseLedgerEntry:
+    """One horizon's view of the same selected physical placements.
+
+    The ledger deliberately has no residual-owner field.  A placement is
+    counted by its selected date in every target horizon that contains it.
+    """
+
+    target_id: str
+    authoritative_rowing_minutes: int
+    selected_categorical_rowing_minutes: int
+    selected_residual_rowing_minutes: int
+    selected_categorical_low_intensity_minutes: int
+    selected_residual_low_intensity_minutes: int
+    total_rowing_minutes: int
+    low_intensity_minutes: int
+    overage_minutes: int
+    overage_sources: tuple[str, ...]
+
+
+def _is_residual_need(need: TrainingNeed | None) -> bool:
+    return bool(need and need.progression_relation and "load_target_residual" in need.progression_relation)
+
+
+def _placement_minutes(item: Placement) -> int:
+    return item.target_credit.minutes if item.role in _ROWING_ROLES else 0
+
+
+def selected_dose_ledger(
+    targets: Iterable[TrainingLoadTarget],
+    placements: Iterable[Placement],
+    *,
+    need_by_id: Mapping[str, TrainingNeed] | None = None,
+) -> tuple[SelectedDoseLedgerEntry, ...]:
+    """Reconcile selected physical dose by date across every target horizon.
+
+    Authoritative work is already represented in each target's immutable
+    ``authoritative_future_rowing_minutes``.  It is therefore never added a
+    second time from the seeded placement sequence.
+    """
+    selected = tuple(item for item in placements if item.authority_status is not PlacementAuthorityStatus.AUTHORITATIVE)
+    index = need_by_id or {}
+    values = []
+    for target in targets:
+        categorical_total = categorical_low = residual_total = residual_low = 0
+        for placement in selected:
+            if not target.horizon_start <= placement.date <= target.horizon_end:
+                continue
+            minutes = _placement_minutes(placement)
+            if not minutes:
+                continue
+            need = index.get(placement.training_need_id)
+            residual = _is_residual_need(need)
+            low = placement.role in _LOW_INTENSITY_ROLES
+            if residual:
+                residual_total += minutes
+                residual_low += minutes if low else 0
+            else:
+                categorical_total += minutes
+                categorical_low += minutes if low else 0
+        total = target.completed_rowing_minutes + target.authoritative_future_rowing_minutes + categorical_total + residual_total
+        low_total = target.completed_low_intensity_minutes + categorical_low + residual_low
+        overage = max(0, total - target.maximum_rowing_minutes)
+        sources: list[str] = []
+        if overage:
+            completed = target.completed_rowing_minutes
+            authority = target.authoritative_future_rowing_minutes
+            if completed >= target.maximum_rowing_minutes:
+                sources.append("completed_history")
+            elif completed + authority >= target.maximum_rowing_minutes:
+                sources.append("authority")
+            elif completed + authority + categorical_total > target.maximum_rowing_minutes:
+                sources.append("categorical")
+            else:
+                sources.append("residual")
+        values.append(SelectedDoseLedgerEntry(
+            target.id, target.authoritative_future_rowing_minutes,
+            categorical_total, residual_total, categorical_low, residual_low,
+            total, low_total, overage, tuple(sources),
+        ))
+    return tuple(values)
 
 
 def _rules(policy: TrainingPolicy) -> dict[str, TrainingPolicyRule]:
@@ -188,22 +271,72 @@ def derive_training_distribution_targets(
     return tuple(values)
 
 
-def reconcile_training_load_targets(targets: Iterable[TrainingLoadTarget], needs: Iterable[TrainingNeed]) -> tuple[TrainingLoadTarget, ...]:
-    """Apply proposed needs once to residual targets; planned work is not history."""
+def reconcile_training_load_targets(
+    targets: Iterable[TrainingLoadTarget],
+    needs: Iterable[TrainingNeed] = (),
+    *,
+    placements: Iterable[Placement] | None = None,
+    need_by_id: Mapping[str, TrainingNeed] | None = None,
+    suppressed_residual_by_target: Mapping[str, int] | None = None,
+) -> tuple[TrainingLoadTarget, ...]:
+    """Reconcile selected dose once across overlapping horizons.
+
+    ``needs`` preserves the original prospective helper contract.  V3 passes
+    actual ``placements`` so the ledger uses selected dates rather than a
+    broad candidate window.  This is the only representation suitable for
+    overlapping rolling horizons.
+    """
+    targets = tuple(targets)
     needs = tuple(needs)
+    suppressed = suppressed_residual_by_target or {}
+    if placements is None:
+        pseudo: list[Placement] = []
+        source = dict(need_by_id or {item.id: item for item in needs})
+        for need in needs:
+            pseudo.append(Placement(
+                placement_id=f"reconcile:{need.id}", training_need_id=need.id,
+                date=need.earliest_date, reservation_minutes=need.target_credit.minutes,
+                target_credit=need.target_credit,
+                provenance=Provenance(need.id, ProvenanceSource.LEGACY_V2),
+                authority_status=PlacementAuthorityStatus.PROVISIONAL, role=need.role,
+            ))
+        selected = tuple(pseudo)
+    else:
+        selected = tuple(placements)
+        source = dict(need_by_id or {})
+    ledger = {item.target_id: item for item in selected_dose_ledger(targets, selected, need_by_id=source)}
     result = []
     for target in targets:
-        in_horizon = tuple(item for item in needs if target.horizon_start <= item.earliest_date <= target.horizon_end)
-        planned_total = sum(item.target_credit.minutes for item in in_horizon if item.role in _ROWING_ROLES)
-        planned_low = sum(item.target_credit.minutes for item in in_horizon if item.role in _LOW_INTENSITY_ROLES)
-        planned_strength = sum(item.target_credit.exposures for item in in_horizon if item.role is TrainingRole.STRENGTH)
-        combined_total = target.completed_rowing_minutes + target.authoritative_future_rowing_minutes + planned_total
-        combined_low = target.completed_low_intensity_minutes + planned_low
+        entry = ledger[target.id]
+        planned_total = entry.selected_categorical_rowing_minutes + entry.selected_residual_rowing_minutes
+        planned_low = entry.selected_categorical_low_intensity_minutes + entry.selected_residual_low_intensity_minutes
+        if placements is None:
+            in_horizon = tuple(item for item in needs if target.horizon_start <= item.earliest_date <= target.horizon_end)
+            planned_strength = sum(item.target_credit.exposures for item in in_horizon if item.role is TrainingRole.STRENGTH)
+        else:
+            planned_strength = sum(
+                item.target_credit.exposures for item in selected
+                if item.authority_status is not PlacementAuthorityStatus.AUTHORITATIVE
+                and target.horizon_start <= item.date <= target.horizon_end
+                and item.role is TrainingRole.STRENGTH
+            )
         result.append(replace(
-            target, provisional_planned_rowing_minutes=planned_total,
+            target,
+            provisional_planned_rowing_minutes=planned_total,
             planned_low_intensity_minutes=planned_low,
-            remaining_rowing_minutes=max(0, target.total_rowing_target_minutes - combined_total),
-            remaining_low_intensity_minutes=max(0, target.low_intensity_minimum_minutes - combined_low),
+            remaining_rowing_minutes=max(0, target.total_rowing_target_minutes - entry.total_rowing_minutes),
+            remaining_low_intensity_minutes=max(0, target.low_intensity_minimum_minutes - entry.low_intensity_minutes),
             remaining_strength_exposures=max(0, target.strength_minimum_exposures - target.completed_strength_exposures - planned_strength),
+            selected_categorical_rowing_minutes=entry.selected_categorical_rowing_minutes,
+            selected_residual_rowing_minutes=entry.selected_residual_rowing_minutes,
+            selected_categorical_low_intensity_minutes=entry.selected_categorical_low_intensity_minutes,
+            selected_residual_low_intensity_minutes=entry.selected_residual_low_intensity_minutes,
+            overage_minutes=entry.overage_minutes,
+            overage_sources=entry.overage_sources,
+            suppressed_residual_due_to_shorter_horizon_maximum=int(suppressed.get(target.id, 0)),
+            low_intensity_conflict_with_maximum=(
+                max(0, target.low_intensity_minimum_minutes - entry.low_intensity_minutes) > 0
+                and entry.total_rowing_minutes >= target.maximum_rowing_minutes
+            ),
         ))
     return tuple(result)

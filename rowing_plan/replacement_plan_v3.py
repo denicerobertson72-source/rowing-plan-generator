@@ -289,20 +289,33 @@ def generate_plan_sequence_v3_candidate(
     need_plan = generate_training_need_plan(context, state, policy, profile=profile)
     load_targets = derive_training_load_targets(context, state, policy, profile=profile, planning_date=planning_date)
     distribution_targets = derive_training_distribution_targets(load_targets, policy)
-    effective_needs = tuple(needs) if needs is not None else generate_residual_aerobic_needs(need_plan.needs, load_targets, policy)
+    categorical_needs = tuple(needs) if needs is not None else need_plan.needs
     timings.append(("need_generation", round((perf_counter() - started) * 1000, 3)))
     started = perf_counter()
-    placed = place_continuous_training_needs(
-        context, state, effective_needs, policy, profile=profile, config=placement_config,
+    categorical = place_continuous_training_needs(
+        context, state, categorical_needs, policy, profile=profile, config=placement_config,
     )
+    residual_plan = generate_residual_aerobic_needs(
+        categorical_needs, load_targets, policy, selected_placements=categorical.placements,
+    )
+    categorical_ids = {item.id for item in categorical_needs}
+    residual_needs = tuple(item for item in residual_plan if item.id not in categorical_ids)
+    placed = place_continuous_training_needs(
+        context, state, residual_needs, policy, profile=profile, config=placement_config,
+        initial_placements=tuple(
+            item for item in categorical.placements
+            if item.authority_status is PlacementAuthorityStatus.PROVISIONAL
+        ),
+        load_targets=load_targets,
+    )
+    effective_needs = tuple(sorted((*categorical_needs, *residual_needs), key=lambda item: (item.earliest_date, item.latest_date, item.id)))
     need_by_id = {item.id: item for item in effective_needs}
     # Reconciliation is about the selected physical date, not merely the
     # broad candidate window carried by a need.
-    placed_needs = tuple(
-        replace(need_by_id[item.training_need_id], earliest_date=item.date, latest_date=item.date)
-        for item in placed.placements if item.training_need_id in need_by_id
+    final_load_targets = reconcile_training_load_targets(
+        load_targets, placements=placed.placements, need_by_id=need_by_id,
+        suppressed_residual_by_target=placed.diagnostics.suppressed_residual_by_target,
     )
-    final_load_targets = reconcile_training_load_targets(load_targets, placed_needs)
     empty_date_rationales = _empty_date_rationales(placed, state, final_load_targets)
     timings.append(("sequence_placement", round((perf_counter() - started) * 1000, 3)))
     started = perf_counter()
@@ -387,15 +400,30 @@ def generate_plan_sequence_v3_candidate(
             "low_intensity_minimum_minutes": item.low_intensity_minimum_minutes,
             "completed_rowing_minutes": item.completed_rowing_minutes,
             "authoritative_future_rowing_minutes": item.authoritative_future_rowing_minutes,
+            "selected_categorical_rowing_minutes": item.selected_categorical_rowing_minutes,
+            "selected_residual_rowing_minutes": item.selected_residual_rowing_minutes,
+            "total_selected_rowing_minutes": item.provisional_planned_rowing_minutes,
             "planned_rowing_minutes": item.provisional_planned_rowing_minutes,
+            "selected_categorical_low_intensity_minutes": item.selected_categorical_low_intensity_minutes,
+            "selected_residual_low_intensity_minutes": item.selected_residual_low_intensity_minutes,
+            "total_selected_low_intensity_minutes": item.planned_low_intensity_minutes,
             "planned_low_intensity_minutes": item.planned_low_intensity_minutes,
             "quality_exposures": item.completed_quality_exposures,
             "strength_exposures": item.completed_strength_exposures,
             "remaining_rowing_minutes": item.remaining_rowing_minutes,
             "remaining_low_intensity_minutes": item.remaining_low_intensity_minutes,
             "availability_ceiling_minutes": item.availability_ceiling_minutes,
+            "overage_minutes": item.overage_minutes,
+            "overage_sources": item.overage_sources,
+            "suppressed_residual_due_to_shorter_horizon_maximum": item.suppressed_residual_due_to_shorter_horizon_maximum,
+            "low_intensity_conflict_with_maximum": item.low_intensity_conflict_with_maximum,
             "taper_modifier": item.taper_modifier, "recovery_modifier": item.recovery_modifier,
-            "unmet_target_reason": "availability_limited" if item.availability_ceiling_minutes < item.minimum_rowing_minutes else "residual_needs_unplaced" if item.remaining_rowing_minutes or item.remaining_low_intensity_minutes else None,
+            "unmet_target_reason": (
+                "availability_limited" if item.availability_ceiling_minutes < item.minimum_rowing_minutes
+                else "low_intensity_conflict_with_maximum" if item.low_intensity_conflict_with_maximum
+                else "residual_needs_unplaced" if item.remaining_rowing_minutes or item.remaining_low_intensity_minutes
+                else None
+            ),
         } for item in final_load_targets),
         "training_distribution_targets": tuple({
             "horizon_days": item.horizon_days,
