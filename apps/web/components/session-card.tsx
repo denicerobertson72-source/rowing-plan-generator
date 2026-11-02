@@ -5,6 +5,7 @@ import { useState } from "react";
 import { PlanSession, completeAsPlanned, undoCompleteAsPlanned } from "../lib/api";
 import { actualLogSummary } from "../lib/actual-log";
 import { dailySummary } from "../lib/daily-summary";
+import { localCalendarDate } from "../lib/local-date";
 import { WorkoutLogSheet } from "./workout-log-sheet";
 
 const keyFor=(session:PlanSession)=>`${session.date}:${session.session_id}:${session.mode}`;
@@ -15,7 +16,7 @@ const isModified=(actual:Record<string,unknown>|undefined, session:PlanSession)=
 export function CompletionControl({planId,session,onChanged}:{planId:string;session:PlanSession;onChanged?:()=>void}) {
   const initial=session.actual as Record<string,unknown>|undefined;
   const [actual,setActual]=useState(initial); const [saving,setSaving]=useState(false); const [error,setError]=useState("");
-  const eligible=session.date<=new Date().toISOString().slice(0,10) && session.session_id!=="RACE" && session.mode!=="race";
+  const eligible=session.date<=localCalendarDate() && session.session_id!=="RACE" && session.mode!=="race";
   if(!eligible) return null;
   const complete=async()=>{setSaving(true);setError("");try{await completeAsPlanned(planId,keyFor(session));setActual({provenance:"completed_as_planned"});onChanged?.();}catch{setError("Couldn’t save completion. Try again.");}finally{setSaving(false);}};
   const undo=async()=>{setSaving(true);setError("");try{await undoCompleteAsPlanned(planId,keyFor(session));setActual(undefined);onChanged?.();}catch{setError("Add or edit details to change this recorded actual safely.");}finally{setSaving(false);}};
