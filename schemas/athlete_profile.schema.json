@@ -14,7 +14,7 @@
   ],
   "properties": {
     "profile_version": {
-      "const": "0.2"
+      "enum": ["0.2", "0.3", "0.6"]
     },
     "athlete": {
       "type": "object",
@@ -27,6 +27,9 @@
         "display_name": {
           "type": "string",
           "minLength": 1
+        },
+        "birth_year": {
+          "type": ["integer", "null"]
         },
         "age_band": {
           "enum": [
@@ -79,6 +82,9 @@
           "items": {
             "type": "string"
           }
+        },
+        "training_environment": {
+          "enum": ["mixed", "erg", "on_water"]
         },
         "medical_review_required": {
           "type": "boolean",
@@ -679,6 +685,45 @@
         },
         "include_sources_sheet": {
           "type": "boolean"
+        },
+        "readiness_checkins_enabled": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "training_context": {
+      "type": "object",
+      "properties": {
+        "strength_experience": {
+          "enum": ["none", "beginner", "intermediate", "advanced", null]
+        },
+        "current_strength_sessions_per_week": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 7
+        },
+        "strength_equipment_access": {
+          "type": "array",
+          "items": {
+            "enum": ["full_gym", "barbell_rack", "dumbbells", "machines_cables", "kettlebells", "bands_bodyweight", "home_gym", "other"]
+          },
+          "uniqueItems": true
+        },
+        "strength_priority": {
+          "enum": ["maintenance", "support_rowing", "develop_strength", "not_a_current_priority", null]
+        },
+        "strength_limitations": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "training_restriction_source": {
+          "enum": ["none", "athlete", "coach", "clinician"]
+        },
+        "training_restriction_summary": {
+          "type": "string",
+          "maxLength": 1000
         }
       },
       "additionalProperties": false
