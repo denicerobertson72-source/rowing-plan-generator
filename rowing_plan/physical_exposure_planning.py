@@ -137,7 +137,7 @@ def plan_physical_exposures(
                 f"exposure:{source.id}", (source.id,), source.target_credit.minutes, 0, source.target_credit.minutes,
                 ("generic_low_intensity_residual",), 0, (), source.target_credit.minutes, 0,
                 ("taper_frequency_retention",), "taper", applicable.target_rowing_exposures,
-                False, False, "no_viable_low_intensity_exposure_window", ("physical_exposure_planning",),
+                True, False, "no_viable_low_intensity_exposure_window", ("physical_exposure_planning",),
             ))
             continue
         minimum, capability = minimum_materializable_reservation(role="technical_reentry", profile=profile, day=viable_days[0])
@@ -146,7 +146,7 @@ def plan_physical_exposures(
                 f"exposure:{source.id}", (source.id,), source.target_credit.minutes, 0, source.target_credit.minutes,
                 ("generic_low_intensity_residual",), 0, (), source.target_credit.minutes, 0,
                 ("catalog_minimum_session_envelope",), "taper", applicable.target_rowing_exposures,
-                False, False, "insufficient_generic_credit_for_two_catalog_exposures", ("physical_exposure_planning",),
+                True, False, "insufficient_generic_credit_for_two_catalog_exposures", ("physical_exposure_planning",),
             ))
             continue
         target_headroom, maximum_headroom = _headroom(source, loads, selected)
@@ -161,7 +161,7 @@ def plan_physical_exposures(
                 f"exposure:{source.id}", (source.id,), source.target_credit.minutes, 0, source.target_credit.minutes,
                 ("generic_low_intensity_residual",), 0, (), source.target_credit.minutes, 0,
                 ("taper_frequency_retention", "rolling_maximum"), "taper", applicable.target_rowing_exposures,
-                False, False, "insufficient_headroom_for_catalog_minimum", ("physical_exposure_planning",),
+                True, False, "insufficient_headroom_for_catalog_minimum", ("physical_exposure_planning",),
             ))
             continue
         child = PhysicalExposureChild(

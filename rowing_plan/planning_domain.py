@@ -509,8 +509,13 @@ class PhysicalExposurePlan:
             raise ValueError("physical_exposure_plan_child_count_mismatch")
         if self.realized_credit_minutes < 0 or self.unrealized_credit_minutes < 0 or self.realized_credit_minutes + self.unrealized_credit_minutes != self.source_credit_total:
             raise ValueError("physical_exposure_plan_realization_is_invalid")
-        if self.total_credit_conserved != (sum(item.target_credit.minutes for item in self.children) == self.realized_credit_minutes):
+        child_total = sum(item.target_credit.minutes for item in self.children)
+        if any(item.target_credit.minutes <= 0 for item in self.children):
+            raise ValueError("physical_exposure_plan_child_credit_must_be_positive")
+        if child_total != self.realized_credit_minutes or child_total > self.source_credit_total:
             raise ValueError("physical_exposure_plan_credit_conservation_mismatch")
+        if not self.total_credit_conserved:
+            raise ValueError("physical_exposure_plan_credit_not_conserved")
         object.__setattr__(self, "source_need_ids", tuple(sorted(set(self.source_need_ids))))
         object.__setattr__(self, "physiological_purposes", tuple(sorted(set(self.physiological_purposes))))
         object.__setattr__(self, "distribution_rationale", tuple(sorted(set(self.distribution_rationale))))

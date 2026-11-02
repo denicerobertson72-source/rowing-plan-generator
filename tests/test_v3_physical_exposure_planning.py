@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date, timedelta
 
 from rowing_plan.intensity import build_intensity_profile
 from rowing_plan.physical_exposure_planning import plan_physical_exposures
-from rowing_plan.planning_domain import PhysiologicalCredit, TrainingDistributionTarget, TrainingNeed, TrainingRole
+import pytest
+
+from rowing_plan.planning_domain import PhysicalExposureChild, PhysicalExposurePlan, PhysiologicalCredit, TrainingDistributionTarget, TrainingNeed, TrainingRole
 from rowing_plan.planning_normalization import normalize_planning_inputs
 from rowing_plan.physiological_state import reduce_physiological_state
 from rowing_plan.power_profile import build_power_profile
@@ -99,3 +102,17 @@ def test_physical_exposure_planning_is_deterministic_and_does_not_change_strengt
     second = plan_physical_exposures(*args, context=context, state=state, profile=profile)
     assert first == second
     assert {item.id for item in first.needs if item.role in {TrainingRole.STRENGTH, TrainingRole.QUALITY}} == {"strength", "quality"}
+
+
+def test_physical_exposure_plan_accepts_full_partial_and_zero_realization_and_rejects_bad_accounting():
+    child = PhysicalExposureChild("child", ("source",), TrainingRole.TECHNICAL_REENTRY, PhysiologicalCredit(TrainingRole.TECHNICAL_REENTRY, 1, 20, True), 20, 20, AS_OF, AS_OF, "generic", "test")
+    common = dict(plan_id="plan", source_need_ids=("source",), source_credit_total=48, physiological_purposes=("generic",), splittable_credit_minutes=48, non_splittable_credit_minutes=0, distribution_rationale=("test",), race_taper_context="taper", frequency_target_served=3, total_credit_conserved=True, rolling_max_feasible=True)
+    assert PhysicalExposurePlan(realized_credit_minutes=48, unrealized_credit_minutes=0, physical_exposure_count=1, children=(replace(child, target_credit=PhysiologicalCredit(TrainingRole.TECHNICAL_REENTRY, 1, 48, True), preferred_envelope=48),), **common)
+    assert PhysicalExposurePlan(realized_credit_minutes=20, unrealized_credit_minutes=28, physical_exposure_count=1, children=(child,), **common)
+    assert PhysicalExposurePlan(realized_credit_minutes=0, unrealized_credit_minutes=48, physical_exposure_count=0, children=(), **common)
+    with pytest.raises(ValueError):
+        PhysicalExposurePlan(realized_credit_minutes=20, unrealized_credit_minutes=20, physical_exposure_count=1, children=(child,), **common)
+    with pytest.raises(ValueError):
+        PhysicalExposurePlan(realized_credit_minutes=20, unrealized_credit_minutes=28, physical_exposure_count=1, children=(replace(child, target_credit=PhysiologicalCredit(TrainingRole.TECHNICAL_REENTRY, 1, 30, True), preferred_envelope=30),), **common)
+    with pytest.raises(ValueError):
+        PhysicalExposurePlan(realized_credit_minutes=-1, unrealized_credit_minutes=49, physical_exposure_count=0, children=(), **common)
