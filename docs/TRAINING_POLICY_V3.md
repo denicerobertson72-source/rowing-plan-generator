@@ -24,7 +24,7 @@ research citation.
 | continuous distribution target | software implementation choice | dose-derived exposure/gap preference | internal implementation | distinguishes avoidable clustering from justified recovery without a weekly stencil | coach | continuous placement |
 | taper frequency retention | research constrained | reduce volume while retaining useful frequency where recovery permits | S009 | a taper is not automatically a cessation of movement | coach | V3 taper sequence interpretation |
 | second unexplained taper OFF day | evidence-informed heuristic | strong soft penalty outside final 48h | internal implementation | favors low-cost continuity only when recovery, authority, availability, and dose allow it | coach | V3 continuous placement |
-| taper low-intensity partition | evidence-informed heuristic | partition an approved generic residual into catalog-feasible physical exposures | S009 | preserves movement frequency without increasing the approved dose | coach | V3 taper redistribution |
+| taper physical-exposure planning | evidence-informed heuristic | represent approved generic low-intensity residual credit with catalog-feasible physical exposures | S009 | preserves movement frequency without increasing approved dose or weakening purpose-specific UT2 credit | coach | V3 exposure planning |
 | partition search and tie-break | software implementation choice | catalog minima, bounded deterministic search, credit-conservation validation | internal implementation | execution mechanics only; not a physiological prescription | no | V3 taper redistribution |
 | dedicated UT2 / long aerobic starting credit | evidence-informed heuristic | 90 / 75 minutes | existing app policy | athlete capacity may reduce either starting magnitude | coach | aerobic need generation |
 | AT/TR/AN/PP are categories, not protocols | evidence-informed heuristic | bounded categories | S014–S016, S020 | avoids copied universal exposure protocols | coach | quality-need generation |
@@ -45,6 +45,10 @@ research citation.
 | short power is supplemental | research constrained | does not replace 2K | S021–S023, S026–S028 | refines within-athlete profile | athlete test update | progression inputs |
 | athlete-relative development focus | evidence-informed heuristic | valid 2K, 30R20, 60-second and 7-stroke relationships only | S030, S021–S023, S026–S028 | ranks compatible workout form using the athlete's own tests; it is not a universal weakness classifier | coach | V3 selector only |
 | individualized coaching emphasis | coach or athlete preference | explicit focus may override heuristic focus | S030 | documented coaching principle supports individualized emphasis, not proprietary algorithms | coach or athlete | V3 selector only |
+| individual needs, sport demands, tolerance and monitoring | research constrained | primary programming inputs | S032 | NSCA position statement supports individualized needs analysis and monitoring rather than categorical programming | coach | policy interpretation / future readiness layer |
+| no categorical female load reduction | research constrained | no sex, menstrual-cycle, contraception, menopause or age multiplier | S026, S031, S032 | sex-specific context may matter, but categorical assumptions are not an individual prescription | not applicable | policy boundary |
+| optional reported symptom/readiness context | coach or athlete preference | optional and separately reported | S031, S032 | symptoms, sleep, recovery and health context may warrant individualized review | athlete or coach | future readiness layer |
+| strength continuity is individualized and rolling | evidence-informed heuristic | preserve meaningful strength dimension when endurance rises, subject to recovery and authority | S017, S031, S032 | supports continuity without turning evidence into a fixed frequency | coach | strength need interpretation |
 | availability, commitments, bands, and user fixes | coach or athlete preference | athlete-specific | athlete or coach input | authority/preferences are outside physiology | athlete or coach | constraint interpretation |
 | tie breaking, search width, serialization | software implementation choice | deterministic execution | internal implementation | execution property only | no | solver/audit infrastructure |
 
@@ -55,8 +59,13 @@ research citation.
 - Exact dose counts, exposure counts, recovery spans, and taper lengths that
   are not directly established by a registered source remain heuristics or
   preferences.
-- No sex, menstrual-cycle, contraception, menopause, or age multiplier is
-  automatically applied without athlete-specific evidence.
+- Sex-specific physiology may affect context and individual response, but no
+  sex, menstrual-cycle, contraception, menopause, or age multiplier is
+  automatically applied. S031/S032 support individual needs analysis,
+  sport demands, dosing tolerance and monitoring—not categorical prescription.
+- Menstrual tracking and sensitive health context are optional. Phase-based
+  resistance prescription, contraception rules, menopause penalties, RED-S
+  diagnosis, and inferred bone-risk/medical restrictions are outside scope.
 - Load targets are continuous decision budgets: each combines a trailing
   completed window with the following same-length prospective interval. They
   are not a pure future-only quota and never infer Monday–Sunday identity.
@@ -68,11 +77,11 @@ research citation.
 - Distribution targets are soft chronological preferences derived from dose and
   practical session capacity. They do not prescribe named weekdays or a fixed
   sessions-per-week template.
-- Taper frequency retention may repartition only residual low-intensity credit
-  whose provenance explicitly identifies it as a load top-up. Categorical
-  dedicated-UT2 credit is not silently converted to UT3. Partitioned children
-  must conserve their parent's total credit and remain inside every applicable
-  rolling load maximum.
+- Taper frequency retention is decided before placement by physical-exposure
+  planning. Only generic low-intensity residual credit may be represented as
+  multiple catalog-feasible easy exposures; categorical dedicated-UT2 credit
+  is not silently converted to UT3. Exposure children conserve parent credit
+  and must be feasible inside every applicable rolling-load maximum.
 - A second consecutive empty available taper date is a soft sequence signal,
   not a universal rest-day prohibition. Recovery, fixed rest, authority,
   unavailability, high load, and the final 48-hour race window may all justify

@@ -13,7 +13,10 @@ rules.
 | S018, S019, S020 | Mode-specific accounting, RPE/recovery context, threshold caution | Exact physiology from generic bands |
 | S009 | Taper-compatible low-cost roles | A template-level taper transformation |
 | S012, S013, S026 | 2k and short-power relevance | A predicted 2k or sex-specific intensity reduction |
+| S031, S032 | Individual needs analysis, monitoring and strength-conditioning context | A female-specific archetype dose, cycle-phase template, menopause reduction, or universal recovery rule |
 
 No archetype reduces targets or duration because of sex, age, menopause status,
 or menstrual phase. Masters and female athletes are represented through their
 demonstrated workload, recovery and coaching context in later selection logic.
+Reported symptoms or clinician restrictions may require individualized review;
+they are not inferred from demographic or health-category fields.
