@@ -28,12 +28,11 @@ from .periodization import build_season_phases
 from .physiological_state import reduce_physiological_state
 from .plan_assembly_v2 import _sort_key, _totals, build_plan_version_from_v2
 from .planning_domain import AuthorityType, Placement, PlacementAuthorityStatus, PhysiologicalState, TrainingNeed, TrainingRole
+from .physical_exposure_planning import plan_physical_exposures
 from .training_load_targets import derive_training_distribution_targets, derive_training_load_targets, reconcile_training_load_targets
 from .training_needs import (
     generate_residual_aerobic_needs,
     generate_training_need_plan,
-    partition_taper_frequency_needs,
-    validate_frequency_partitions,
 )
 from .planning_normalization import NormalizedPlanningContext, normalize_planning_inputs
 from .scheduler_v2 import finalize_translated_quality_sequence, translate_quality_role
@@ -381,12 +380,11 @@ def generate_plan_sequence_v3_candidate(
     )
     categorical_ids = {item.id for item in categorical_needs}
     residual_needs = tuple(item for item in residual_plan if item.id not in categorical_ids)
-    redistribution = partition_taper_frequency_needs(
+    exposure_planning = plan_physical_exposures(
         (*categorical_needs, *residual_needs), distribution_targets, context=context, state=state,
         profile=profile, selected_placements=categorical.placements, load_targets=load_targets,
     )
-    effective_needs = redistribution.needs
-    validate_frequency_partitions(effective_needs)
+    effective_needs = exposure_planning.needs
     placed = place_continuous_training_needs(
         context, state, effective_needs, policy, profile=profile, config=placement_config,
         load_targets=load_targets,
@@ -541,18 +539,22 @@ def generate_plan_sequence_v3_candidate(
             "taper_frequency_retention": item.taper_frequency_retention,
         } for item in distribution_targets),
         "training_distribution": distribution_diagnostics,
-        "frequency_redistribution": tuple({
-            "distribution_target_exposures": item.distribution_target_exposures,
-            "selected_exposures": item.selected_exposures,
-            "frequency_deficit": item.frequency_deficit,
-            "redistribution_attempted": item.redistribution_attempted,
-            "source_need_id": item.source_need_id,
-            "original_credit": item.original_credit,
-            "partition_credits": item.partition_credits,
-            "redistribution_reason": item.redistribution_reason,
-            "redistribution_blocked_reason": item.redistribution_blocked_reason,
+        "physical_exposure_plans": tuple({
+            "plan_id": item.plan_id,
+            "physiological_source_needs": item.source_need_ids,
+            "approved_low_intensity_credit": item.source_credit_total,
+            "realized_residual_credit": item.realized_credit_minutes,
+            "unrealized_residual_credit": item.unrealized_credit_minutes,
+            "physical_exposure_count": item.physical_exposure_count,
+            "physical_exposure_credits": tuple(child.target_credit.minutes for child in item.children),
+            "catalog_minimums": tuple(child.minimum_materializable_envelope for child in item.children),
+            "purpose_preserved": item.physiological_purposes,
             "total_credit_conserved": item.total_credit_conserved,
-        } for item in redistribution.diagnostics),
+            "rolling_max_feasible": item.rolling_max_feasible,
+            "frequency_target_served": item.frequency_target_served,
+            "exposure_plan_failure_reason": item.failure_reason,
+            "distribution_rationale": item.distribution_rationale,
+        } for item in exposure_planning.plans),
         "empty_date_rationales": empty_date_rationales,
         "replacement_placements": tuple({"placement_id": item.placement_id, "date": item.date, "role": item.role.value if item.role else None, "reservation_minutes": item.reservation_minutes, "target_credit": item.target_credit, "served_need_ids": item.served_need_ids} for item in placed.placements),
     }

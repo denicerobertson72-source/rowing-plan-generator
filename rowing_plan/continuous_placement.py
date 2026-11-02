@@ -148,7 +148,23 @@ _LOW_INTENSITY_ROLES = frozenset({
 })
 
 
+def _placement_purpose_class(need: TrainingNeed) -> str:
+    """Policy semantics used by the beam before cosmetic distribution gains."""
+    if need.progression_relation == "taper_strength_continuity":
+        return "required_continuity"
+    if need.partition_reason == "physical_exposure_plan":
+        return "approved_frequency_preservation"
+    if need.progression_relation and "load_target_residual" in need.progression_relation:
+        return "optional_residual_topup"
+    return "ordinary"
+
+
 def _priority(need: TrainingNeed) -> int:
+    purpose = _placement_purpose_class(need)
+    # An approved, maximum-bounded frequency child outranks a later optional
+    # residual, but remains below required taper-strength continuity.
+    if purpose == "approved_frequency_preservation":
+        return 56
     return _PRIORITY_WEIGHT.get(need.priority, 50)
 
 

@@ -453,6 +453,71 @@ class TrainingNeed:
 
 
 @dataclass(frozen=True)
+class PhysicalExposureChild:
+    """One catalog-feasible physical representation of approved credit.
+
+    The child is deliberately upstream of date placement: it says what may be
+    scheduled, never that it has been scheduled.
+    """
+    child_id: str
+    source_need_ids: tuple[str, ...]
+    role: TrainingRole
+    target_credit: PhysiologicalCredit
+    minimum_materializable_envelope: int
+    preferred_envelope: int
+    earliest_date: date
+    latest_date: date
+    purpose_retained: str
+    distribution_reason: str
+    catalog_capability: str | None = None
+    provenance: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.earliest_date > self.latest_date:
+            raise ValueError("physical_exposure_child_window_is_reversed")
+        if self.minimum_materializable_envelope < 0 or self.preferred_envelope < self.minimum_materializable_envelope:
+            raise ValueError("physical_exposure_child_envelope_is_invalid")
+        object.__setattr__(self, "source_need_ids", tuple(sorted(set(self.source_need_ids))))
+        object.__setattr__(self, "provenance", tuple(sorted(set(self.provenance))))
+
+
+@dataclass(frozen=True)
+class PhysicalExposurePlan:
+    """Typed bridge from approved physiological credit to physical sessions."""
+    plan_id: str
+    source_need_ids: tuple[str, ...]
+    source_credit_total: int
+    realized_credit_minutes: int
+    unrealized_credit_minutes: int
+    physiological_purposes: tuple[str, ...]
+    physical_exposure_count: int
+    children: tuple[PhysicalExposureChild, ...]
+    splittable_credit_minutes: int
+    non_splittable_credit_minutes: int
+    distribution_rationale: tuple[str, ...]
+    race_taper_context: str | None
+    frequency_target_served: int | None
+    total_credit_conserved: bool
+    rolling_max_feasible: bool
+    failure_reason: str | None = None
+    provenance: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.source_credit_total < 0 or self.physical_exposure_count < 0:
+            raise ValueError("physical_exposure_plan_values_are_invalid")
+        if self.physical_exposure_count != len(self.children):
+            raise ValueError("physical_exposure_plan_child_count_mismatch")
+        if self.realized_credit_minutes < 0 or self.unrealized_credit_minutes < 0 or self.realized_credit_minutes + self.unrealized_credit_minutes != self.source_credit_total:
+            raise ValueError("physical_exposure_plan_realization_is_invalid")
+        if self.total_credit_conserved != (sum(item.target_credit.minutes for item in self.children) == self.realized_credit_minutes):
+            raise ValueError("physical_exposure_plan_credit_conservation_mismatch")
+        object.__setattr__(self, "source_need_ids", tuple(sorted(set(self.source_need_ids))))
+        object.__setattr__(self, "physiological_purposes", tuple(sorted(set(self.physiological_purposes))))
+        object.__setattr__(self, "distribution_rationale", tuple(sorted(set(self.distribution_rationale))))
+        object.__setattr__(self, "provenance", tuple(sorted(set(self.provenance))))
+
+
+@dataclass(frozen=True)
 class ProjectedSequenceItem:
     """An immutable future event used only for local physiological context."""
 
