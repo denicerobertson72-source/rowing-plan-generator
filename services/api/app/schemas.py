@@ -59,6 +59,8 @@ class WorkoutLogRequest(BaseModel):
     coach_cues: str = ""
     carry_cue_forward: bool = False
     actual_segments: list[ActualSessionSegment] = Field(default_factory=list)
+    provenance: Optional[str] = None
+    planned_session_key: Optional[str] = None
 
 class OptionalActivityLogRequest(WorkoutLogRequest):
     """An athlete-performed activity that was not a prescribed plan session."""

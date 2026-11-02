@@ -153,6 +153,11 @@ class SQLiteRepositories:
                 return row["log_id"]
             log_id=str(uuid4()); db.execute("INSERT INTO workout_logs VALUES (?, ?, ?, ?, ?)",(log_id,plan_id,session_key,json.dumps(payload),self._now()))
             return log_id
+    def delete_log(self, plan_id: str, session_key: str) -> bool:
+        """Remove the one idempotent actual associated with a prescription."""
+        with self._connect() as db:
+            result=db.execute("DELETE FROM workout_logs WHERE plan_id=? AND session_key=?",(plan_id,session_key))
+        return bool(result.rowcount)
     def logs_for_plan(self, plan_id: str) -> list[dict[str, Any]]:
         with self._connect() as db: rows=db.execute("SELECT * FROM workout_logs WHERE plan_id=? ORDER BY created_at DESC",(plan_id,)).fetchall()
         return [{"log_id":row["log_id"],"session_key":row["session_key"],"created_at":row["created_at"],"payload":json.loads(row["payload_json"])} for row in rows]
@@ -322,6 +327,10 @@ class PostgresRepositories:
                 return row["log_id"]
             log_id=str(uuid4()); cursor.execute("INSERT INTO workout_logs (log_id, plan_id, session_key, payload_json) VALUES (%s, %s, %s, %s)",(log_id,plan_id,session_key,Jsonb(payload)))
         return log_id
+    def delete_log(self, plan_id: str, session_key: str) -> bool:
+        with self._connect() as db, db.cursor() as cursor:
+            cursor.execute("DELETE FROM workout_logs WHERE plan_id=%s AND session_key=%s",(plan_id,session_key))
+            return bool(cursor.rowcount)
     def logs_for_plan(self, plan_id: str) -> list[dict[str, Any]]:
         with self._connect() as db, db.cursor() as cursor:
             cursor.execute("SELECT log_id, session_key, created_at, payload_json FROM workout_logs WHERE plan_id=%s ORDER BY created_at DESC",(plan_id,)); rows=cursor.fetchall()

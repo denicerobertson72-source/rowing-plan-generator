@@ -1130,6 +1130,56 @@ def log_workout(plan_id: str, session_key: str, log: WorkoutLogRequest, user_id:
     return {"status": "accepted", "log_id": REPOSITORIES.save_log(plan_id, session_key, payload), "session_load_au":session_load_au(payload), "adjustment":proposal}
 
 
+def _planned_completion_payload(source: dict, session_key: str) -> dict:
+    """Build an actual record without turning unknown athlete metrics into facts."""
+    minutes=source.get("total_cardio_minutes") or source.get("strength_minutes") or source.get("total_training_minutes") or 0
+    band=source.get("band") if source.get("band") in {"UT3","UT2","UT1","AT","TR","AN","PP","mixed_unsure"} else "mixed_unsure"
+    return {
+        "status":"completed", "completion":"yes", "actual_duration_min":minutes,
+        "actual_intensity":band, "actual_segments":[], "provenance":"completed_as_planned",
+        "planned_session_key":session_key, "planned_session":dict(source),
+    }
+
+
+def _quick_completion_is_removable(actual: dict) -> bool:
+    """Only a pristine quick record can be reversed by the compact control."""
+    if actual.get("provenance") != "completed_as_planned":
+        return False
+    return not any(actual.get(field) for field in (
+        "rpe", "average_hr", "peak_hr", "average_watts", "average_split_seconds",
+        "average_rate", "technical_note", "conditions", "notes", "coach_cues",
+    )) and not actual.get("actual_segments")
+
+
+@app.post("/api/v1/plans/{plan_id}/sessions/{session_key}/complete-as-planned")
+def complete_as_planned(plan_id: str, session_key: str, user_id: str = Depends(current_user_id)) -> dict:
+    """Idempotently create the normal actual log from a past/today prescription."""
+    record=owned_plan(plan_id,user_id)
+    source=next((s for s in record["plan"].get("sessions",[]) if stable_session_key(s)==session_key),None)
+    if not source: raise HTTPException(404,"Session not found")
+    if source.get("session_id")=="RACE" or source.get("mode")=="race":
+        raise HTTPException(422,"Race sessions require a recorded result, not quick completion.")
+    if source.get("session_id") in {"OFF","REST"} or source.get("session_role") in {"rest","designated_rest"}:
+        raise HTTPException(422,"Off/rest days use Record session.")
+    if date.fromisoformat(source["date"]) > date.today(): raise HTTPException(422,"Future sessions cannot be completed")
+    existing=actual_by_key(plan_id).get(session_key)
+    if existing and existing.get("provenance") != "completed_as_planned":
+        return {"status":"accepted","log_id":next((entry["log_id"] for entry in REPOSITORIES.logs_for_plan(plan_id) if entry["session_key"]==session_key),None),"session_load_au":session_load_au(existing),"adjustment":{"recommendation":"none","classification":"existing_actual","changes":[]}}
+    payload=_planned_completion_payload(source,session_key)
+    return {"status":"accepted","log_id":REPOSITORIES.save_log(plan_id,session_key,payload),"session_load_au":session_load_au(payload),"adjustment":{"recommendation":"none","classification":"completed_as_planned","changes":[]}}
+
+
+@app.delete("/api/v1/plans/{plan_id}/sessions/{session_key}/complete-as-planned")
+def undo_complete_as_planned(plan_id: str, session_key: str, user_id: str = Depends(current_user_id)) -> dict:
+    owned_plan(plan_id,user_id)
+    actual=actual_by_key(plan_id).get(session_key)
+    if not actual: return {"status":"not_found"}
+    if not _quick_completion_is_removable(actual):
+        raise HTTPException(409,"Add or edit details to change this recorded actual safely.")
+    REPOSITORIES.delete_log(plan_id,session_key)
+    return {"status":"removed"}
+
+
 @app.post("/api/v1/plans/{plan_id}/days/{activity_date}/actuals")
 def log_optional_activity(plan_id: str, activity_date: date, log: OptionalActivityLogRequest, user_id: str = Depends(current_user_id)) -> dict:
     """Record an athlete activity on a prescribed Off/rest day without changing it."""
