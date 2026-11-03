@@ -1270,13 +1270,24 @@ def season_summary(plan_id: str, user_id: str = Depends(current_user_id)) -> dic
     profile=REPOSITORIES.get(record["athlete_id"]) or {}
     today_value=date.today()
     phases=record["plan"].get("phases",[])
-    current=next((item for item in phases if item["date"]==today_value.isoformat()), next((item for item in phases if item["date"]>=today_value.isoformat()), None))
+    # Modern PlanVersions persist an additive display-safe phase type.  Older
+    # versions contain only the stable phase ID, so recover the type only when
+    # the current profile's immutable season-phase mapping proves it.
+    from rowing_plan.periodization import build_season_phases
+    phase_types={item["phase_id"]: item["phase_type"] for item in build_season_phases(profile)}
+    def display_phase(item):
+        if not item:
+            return None
+        phase_id=item.get("phase")
+        phase_type=item.get("phase_type") or phase_types.get(phase_id)
+        return {**item,"phase_id":phase_id,**({"phase_type":phase_type} if phase_type else {})}
+    current=display_phase(next((item for item in phases if item["date"]==today_value.isoformat()), next((item for item in phases if item["date"]>=today_value.isoformat()), None)))
     races=profile.get("races",[])
     next_race=next((race for race in sorted(races,key=lambda r:r["start_date"]) if date.fromisoformat(race["start_date"])>=today_value),None)
     transitions=[]; prior=None
     for item in phases:
         if item["phase"]!=prior:
-            transitions.append(item); prior=item["phase"]
+            transitions.append(display_phase(item)); prior=item["phase"]
     return {"current_phase":current,"next_race":next_race,"days_to_next_race":(date.fromisoformat(next_race["start_date"])-today_value).days if next_race else None,"transitions":transitions}
 
 @app.get("/api/v1/plans/{plan_id}/excel")

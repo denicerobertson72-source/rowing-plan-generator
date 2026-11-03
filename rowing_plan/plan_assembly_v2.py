@@ -40,13 +40,14 @@ def _json(value):
     if isinstance(value,(tuple,list)): return [_json(item) for item in value]
     return value
 
-def build_plan_version_from_v2(*, profile: dict, bands, power: dict, calendar: tuple[DateContext,...], requests: tuple[V2SessionMaterializationRequest,...], rest_dates=(), authoritative_sessions=(), historical_calendar_days=None, selector_histories=None, selector_history_seed=(), chronological_selector_history=False, generated_at=None, v2_diagnostics=None, warnings=(), plan_impacts=()) -> V2PlanAssemblyResult:
+def build_plan_version_from_v2(*, profile: dict, bands, power: dict, calendar: tuple[DateContext,...], requests: tuple[V2SessionMaterializationRequest,...], rest_dates=(), authoritative_sessions=(), historical_calendar_days=None, selector_histories=None, selector_history_seed=(), chronological_selector_history=False, generated_at=None, v2_diagnostics=None, warnings=(), plan_impacts=(), phase_types_by_date=None) -> V2PlanAssemblyResult:
     """Materialize resolved V2 facts into a PlanVersion-shaped dictionary.
 
     It never invokes placement, translation, finalization, persistence, or API
     code.  Totals are reporting values computed from final serialized sessions.
     """
     rest_dates=frozenset(rest_dates); valid_dates={item.date for item in calendar}
+    phase_types_by_date={str(key): value for key, value in (phase_types_by_date or {}).items() if value}
     if any(day not in valid_dates for day in rest_dates): return V2PlanAssemblyResult(False,failure_reason="rest_date_outside_calendar")
     histories=selector_histories or {}; materialized=[]; chronological_history=[dict(item) for item in selector_history_seed]
     for request in sorted(requests,key=lambda item:(item.date,item.placement_id)):
@@ -63,7 +64,14 @@ def build_plan_version_from_v2(*, profile: dict, bands, power: dict, calendar: t
                 "role":request.role, "reason_code":"incomplete_session_shape",
                 "missing_fields":tuple(sorted(_REQUIRED-set(result.session))),
             })
-        materialized.append(dict(result.session))
+        session=dict(result.session)
+        phase_type=phase_types_by_date.get(session["date"])
+        if phase_type:
+            # ``phase`` remains the established internal identifier.  The
+            # display-safe domain value is additive so old consumers retain
+            # their exact phase-ID contract.
+            session["phase_type"]=phase_type
+        materialized.append(session)
         fingerprint=result.session.get("session_fingerprint")
         if chronological_selector_history and isinstance(fingerprint,dict): chronological_history.append({**fingerprint,"date":result.session["date"],"completed":False})
     rest_conflict=next((session for session in materialized if session["date"] in {day.isoformat() for day in rest_dates}),None)
@@ -98,5 +106,5 @@ def build_plan_version_from_v2(*, profile: dict, bands, power: dict, calendar: t
     generated_calendar=_calendar_days(calendar,rest_dates)
     historical=dict(historical_calendar_days or {})
     calendar_days=[dict(historical.get(item["date"],item)) for item in generated_calendar]
-    plan={"plan_version":"0.7.0","profile_id":profile.get("athlete",{}).get("display_name","athlete"),"generated_at":generated_at or date.today().isoformat(),"schedule_signature":schedule_signature(profile),"intensity_profile":_json(bands),"power_profile":_json(power),"sessions":sessions,"calendar_days":calendar_days,"phases":[{"date":item.date.isoformat(),"phase":item.phase_id} for item in calendar],"weekly_totals":_totals(sessions),"warnings":_json(warnings),"plan_impacts":_json(plan_impacts),"v2_diagnostics":_json(v2_diagnostics or {"scheduler_version":"v2","demand_satisfaction":[],"rolling_targets":[],"repair_changes":[],"target_consequences":[],"overrides":[]})}
+    plan={"plan_version":"0.7.0","profile_id":profile.get("athlete",{}).get("display_name","athlete"),"generated_at":generated_at or date.today().isoformat(),"schedule_signature":schedule_signature(profile),"intensity_profile":_json(bands),"power_profile":_json(power),"sessions":sessions,"calendar_days":calendar_days,"phases":[{"date":item.date.isoformat(),"phase":item.phase_id,**({"phase_type":phase_types_by_date[item.date.isoformat()]} if phase_types_by_date.get(item.date.isoformat()) else {})} for item in calendar],"weekly_totals":_totals(sessions),"warnings":_json(warnings),"plan_impacts":_json(plan_impacts),"v2_diagnostics":_json(v2_diagnostics or {"scheduler_version":"v2","demand_satisfaction":[],"rolling_targets":[],"repair_changes":[],"target_consequences":[],"overrides":[]})}
     return V2PlanAssemblyResult(True,plan)

@@ -242,7 +242,7 @@ def generate_plan_v2(profile: dict, config: dict, bands, power: dict, locked_ses
         diagnostics_payload["post_race_recovery_dates"]=tuple(item.date.isoformat() for item in calendar if item.post_race_recovery)
         diagnostics_payload["post_race_hard_recovery_dates"]=tuple(item.date.isoformat() for item in calendar if item.post_race_hard_recovery)
         diagnostics_payload["post_race_return_to_training_dates"]=tuple(item.date.isoformat() for item in calendar if item.post_race_return_to_training)
-        result = build_plan_version_from_v2(profile=profile, bands=bands, power=power, calendar=calendar, requests=requests, rest_dates=rest_dates, authoritative_sessions=tuple(carried_by_key.values()), historical_calendar_days=historical_calendar, v2_diagnostics=diagnostics_payload)
+        result = build_plan_version_from_v2(profile=profile, bands=bands, power=power, calendar=calendar, requests=requests, rest_dates=rest_dates, authoritative_sessions=tuple(carried_by_key.values()), historical_calendar_days=historical_calendar, v2_diagnostics=diagnostics_payload, phase_types_by_date={item.date: phase_types.get(item.phase_id) for item in calendar})
         _log_generation_timing("materialization", materialization_started)
     except V2PlanningError:
         raise

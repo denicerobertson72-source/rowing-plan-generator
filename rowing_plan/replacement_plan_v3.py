@@ -559,6 +559,7 @@ def generate_plan_sequence_v3_candidate(
         "replacement_placements": tuple({"placement_id": item.placement_id, "date": item.date, "role": item.role.value if item.role else None, "reservation_minutes": item.reservation_minutes, "target_credit": item.target_credit, "served_need_ids": item.served_need_ids} for item in placed.placements),
     }
     started = perf_counter()
+    phase_types_by_date=_phase_lookup(profile, tuple(item.date for item in calendar))
     assembled = build_plan_version_from_v2(
         profile=dict(profile), bands=bands, power=dict(power), calendar=calendar,
         requests=materialized.requests, rest_dates=materialized.rest_dates,
@@ -567,6 +568,7 @@ def generate_plan_sequence_v3_candidate(
         # new active authoritative session with a date outside that calendar.
         authoritative_sessions=serialized_locks, historical_calendar_days={},
         v2_diagnostics=diagnostics, selector_history_seed=selector_history, chronological_selector_history=True,
+        phase_types_by_date={item.date: phase_types_by_date[item.date][1] for item in calendar},
     )
     timings.append(("plan_assembly", round((perf_counter() - started) * 1000, 3)))
     if not assembled.success:

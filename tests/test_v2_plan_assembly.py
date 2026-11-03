@@ -5,6 +5,8 @@ from services.api.tests.disposable_browser_fixture import synthetic_profile
 from rowing_plan.intensity import build_intensity_profile
 from rowing_plan.models import DateContext, DatedTrainingRole, QualityTranslationContext, V2SessionMaterializationRequest
 from rowing_plan.plan_assembly_v2 import build_plan_version_from_v2
+from rowing_plan.periodization import build_season_phases
+from rowing_plan.planner_v2 import generate_plan_v2
 from rowing_plan.power_profile import build_power_profile
 from rowing_plan.scheduler_v2 import finalize_translated_quality_sequence, translate_quality_role
 
@@ -68,3 +70,32 @@ def test_v27b_complete_shape_totals_and_diagnostics_use_serialized_sessions():
     assert total["cardio_minutes"]==44 and total["rowing_minutes"]==44 and total["strength_sessions"]==1 and total["quality_sessions"]==0
     assert result.plan["v2_diagnostics"]["rolling_targets"][0]["target_horizon_start"]=="2026-09-07"
     assert json.dumps(result.plan)
+
+
+def test_phase_display_type_is_additive_and_legacy_phase_only_payloads_remain_valid():
+    profile,bands,power=inputs(); phase_id="671f046f-76f3-5164-9ab5-ffc4fef3c5e4"
+    days=(DateContext(date(2026,9,7),"Monday",phase_id,True,90,0,90),)
+    request=req("dedicated_ut2",date(2026,9,7),60,phase=phase_id)
+    displayed=build_plan_version_from_v2(
+        profile=profile,bands=bands,power=power,calendar=days,requests=(request,),
+        phase_types_by_date={date(2026,9,7):"general_preparation"},
+    )
+    legacy=build_plan_version_from_v2(profile=profile,bands=bands,power=power,calendar=days,requests=(request,))
+
+    assert displayed.success and legacy.success
+    assert displayed.plan["sessions"][0]["phase"] == phase_id
+    assert displayed.plan["sessions"][0]["phase_type"] == "general_preparation"
+    assert displayed.plan["phases"] == [{"date":"2026-09-07","phase":phase_id,"phase_type":"general_preparation"}]
+    assert legacy.plan["sessions"][0]["phase"] == phase_id
+    assert "phase_type" not in legacy.plan["sessions"][0]
+    assert json.dumps(legacy.plan)
+
+
+def test_generated_v2_plan_maps_each_internal_phase_id_to_its_canonical_display_type():
+    profile,bands,power=inputs()
+    plan=generate_plan_v2(profile,CONFIG,bands,power)
+    canonical={item["phase_id"]:item["phase_type"] for item in build_season_phases(profile)}
+    by_date={item["date"]:item for item in plan["phases"]}
+
+    assert all(item["phase"] in canonical and item["phase_type"] == canonical[item["phase"]] for item in plan["phases"])
+    assert all(session["phase_type"] == by_date[session["date"]]["phase_type"] for session in plan["sessions"])

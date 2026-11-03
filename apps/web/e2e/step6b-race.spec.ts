@@ -244,6 +244,34 @@ test("Season roadmap uses the saved PlanVersion and links to its weeks", async (
   for (const [width,height] of [[375,667],[390,844],[430,932],[844,390],[768,1024],[1280,900]]) { await page.setViewportSize({width,height}); expect(await page.locator("body").evaluate(element=>element.scrollWidth<=window.innerWidth)).toBeTruthy(); }
 });
 
+test("Season renders additive phase types and never exposes internal phase IDs", async ({page}) => {
+  const rawId="671f046f-76f3-5164-9ab5-ffc4fef3c5e4";
+  const plan={
+    sessions:[
+      {date:"2026-08-31",day:"Monday",phase:rawId,phase_type:"general_preparation",mode:"erg",session_id:"UT2",title:"Aerobic base",band:"UT2",total_cardio_minutes:60,rowing_minutes:60,structure:"Easy aerobic rowing."},
+      {date:"2026-09-02",day:"Wednesday",phase:rawId,phase_type:"race_specific_preparation",mode:"on_water",session_id:"COACHED",title:"Coached row",band:"UT2",total_cardio_minutes:30,rowing_minutes:30,structure:"Coach-led rowing."},
+      {date:"2026-09-07",day:"Monday",phase:rawId,phase_type:"taper",mode:"erg",session_id:"UT2",title:"Easy taper row",band:"UT2",total_cardio_minutes:40,rowing_minutes:40,structure:"Easy rowing."},
+      {date:"2026-09-08",day:"Tuesday",phase:rawId,mode:"strength",session_id:"LIFT",title:"Heavy lifting",band:"STRENGTH",total_cardio_minutes:0,structure:"Strength."},
+      {date:"2026-09-14",day:"Monday",phase:rawId,mode:"erg",session_id:"UT2",title:"Legacy aerobic row",band:"UT2",total_cardio_minutes:45,rowing_minutes:45,structure:"Easy rowing."},
+    ],
+    phases:[{date:"2026-08-31",phase:rawId,phase_type:"general_preparation"}],
+  };
+  await page.addInitScript(() => localStorage.setItem("rowing-plan-session-v1",JSON.stringify({athleteId:"athlete-1",planId:"plan-1"})));
+  await page.route("**/api/v1/plans/plan-1",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({plan_id:"plan-1",athlete_id:"athlete-1",version_number:1,plan_needs_update:false,plan})}));
+  await page.route("**/api/v1/athletes/athlete-1",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({athlete_id:"athlete-1",athlete_profile:{season:{season_name:"Display contract",start_date:"2026-08-31",end_date:"2026-09-13"}},profile_revision:1})}));
+  await page.route("**/api/v1/plans/plan-1/season",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({current_phase:{date:"2026-08-31",phase:rawId,phase_id:rawId,phase_type:"general_preparation"},transitions:[]})}));
+
+  await page.goto("/season");
+  await expect(page.locator(".season-header p").filter({hasText:"Current phase:"})).toContainText("General Preparation");
+  await expect(page.locator(".phase-bar")).toContainText("General");
+  await expect(page.locator("a.season-week").first()).toContainText("General Preparation → Race Specific Preparation");
+  await expect(page.locator("a.season-week").first()).toContainText("90 min rowing · Strength ×0 · Coaching ×1");
+  await expect(page.locator("a.season-week").nth(1).locator("h3")).toHaveCount(1);
+  await expect(page.locator("a.season-week").nth(2).locator("h3")).toHaveCount(0);
+  await expect(page.getByText(/peak \/ key race/)).toBeVisible();
+  await expect(page.locator("body")).not.toContainText(rawId);
+});
+
 test("Onboarding recovers the account athlete when this origin has no local session", async ({page}) => {
   let creates=0;
   page.on("request", request => { if (request.method()==="POST" && request.url().endsWith("/athletes")) creates++; });
