@@ -12,6 +12,7 @@
 /* A transparency-only derivative of the canonical icon prevents its opaque source field from reading as a panel. */
 body:before{background-image:url("/icons/rowing-wallpaper.png");background-size:clamp(20rem,92vw,38rem);opacity:.18;mix-blend-mode:normal}
 .week-card>.actions,.week-card>.status,.week-card>.note{grid-column:2;margin:0}.week-card>.actions a,.week-card>.actions button{flex:0 1 auto}
+.week-cards{gap:.55rem}.week-card{padding:.85rem;gap:.6rem}.week-actions{margin-top:.1rem;gap:.3rem;align-items:center}.week-actions .week-action{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:.4rem .7rem;border-radius:999px;font-size:.82rem;line-height:1.1;white-space:nowrap}.week-actions .week-action-details{background:transparent;color:#145a4f;border:1px solid #9bcfc6;font-weight:750}.week-actions .week-action-completion{background:#e3f5ef;color:#145a4f}.week-actions .notice{flex-basis:100%;margin:0}.week-actions .week-action:focus-visible{outline:3px solid #087e8b;outline-offset:2px}@media(max-width:430px){.week-actions{gap:.25rem}.week-actions .week-action{min-height:40px;padding:.4rem .6rem;font-size:.78rem}}
 .log-sheet{max-height:calc(100dvh - env(safe-area-inset-top));overflow-y:auto;padding-bottom:calc(1.25rem + env(safe-area-inset-bottom))}
 @media(max-width:430px){body:before{background-size:92vw}}
 .server-invalid { border: 2px solid #b42318 !important; }

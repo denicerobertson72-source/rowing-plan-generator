@@ -134,6 +134,51 @@ test("Week presents semantic cards without internal role labels or narrow-screen
   }
 });
 
+test("Week keeps completion and logging actions compact without changing their state-specific access", async ({page}) => {
+  await page.clock.install({time:new Date("2026-11-05T12:00:00")});
+  await page.setViewportSize({width:375,height:812});
+  await page.addInitScript(() => localStorage.setItem("rowing-plan-session-v1",JSON.stringify({athleteId:"compact-athlete",planId:"compact-week-plan"})));
+  const session=(date:string,day:string,session_id:string,actual?:Record<string,unknown>) => ({date,day,session_id,mode:session_id==="RACE"?"race":"erg",title:session_id==="RACE"?"Race":"Independent row",band:session_id==="RACE"?"RACE":"UT2",structure:"Easy aerobic row",total_cardio_minutes:45,rowing_minutes:45,rating:"18–20 spm",hr_range:"120–140 bpm",session_role:session_id==="RACE"?"RACE":"AEROBIC_BASE",actual});
+  const quick={provenance:"completed_as_planned",status:"completed",actual_duration_min:45,actual_intensity:"UT2",rpe:3};
+  const modified={provenance:"logged",status:"modified",actual_duration_min:30,actual_intensity:"UT1",rpe:6};
+  const days=[
+    {date:"2026-11-02",day:"Monday",state:"no_additional_session" as const,sessions:[session("2026-11-02","Monday","quick",quick)]},
+    {date:"2026-11-03",day:"Tuesday",state:"no_additional_session" as const,sessions:[session("2026-11-03","Tuesday","incomplete")]},
+    {date:"2026-11-04",day:"Wednesday",state:"no_additional_session" as const,sessions:[session("2026-11-04","Wednesday","modified",modified)]},
+    {date:"2026-11-05",day:"Thursday",state:"no_additional_session" as const,sessions:[session("2026-11-05","Thursday","RACE")]},
+    {date:"2026-11-06",day:"Friday",state:"no_additional_session" as const,sessions:[session("2026-11-06","Friday","future")]},
+    {date:"2026-11-07",day:"Saturday",state:"designated_rest" as const,sessions:[]},
+  ];
+  const plan={sessions:days.flatMap(day=>day.sessions),phases:[]};
+  await page.route("**/api/v1/plans/compact-week-plan",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({plan_id:"compact-week-plan",athlete_id:"compact-athlete",version_number:1,plan_needs_update:false,plan})}));
+  await page.route("**/api/v1/plans/compact-week-plan/week**",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({plan_needs_update:false,plan_version:1,week_start:"2026-11-02",days})}));
+  await page.route("**/api/v1/plans/compact-week-plan/today**",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({plan_needs_update:false,plan_version:1,date:"2026-11-05",state:"no_additional_session",sessions:[session("2026-11-05","Thursday","today")]})}));
+  await page.goto("/week?week=2026-11-02");
+  const cards=page.locator(".week-card");
+  const quickCard=cards.nth(0), incomplete=cards.nth(1), modifiedCard=cards.nth(2), race=cards.nth(3), future=cards.nth(4);
+  await expect(incomplete.getByRole("button",{name:"Mark workout completed as planned"})).toHaveText("Done as planned");
+  await expect(incomplete.getByRole("button",{name:"Log session for this workout"})).toHaveText("Log");
+  await expect(incomplete.getByRole("link",{name:"View workout details for Aerobic base"})).toHaveText("Details");
+  await expect(quickCard.getByRole("button",{name:"Undo completed as planned"})).toHaveText("✓ Done");
+  await expect(quickCard.getByRole("button",{name:"Edit logged session for this workout"})).toHaveText("Add details");
+  await expect(quickCard.getByRole("link",{name:"View workout details for Aerobic base"})).toBeVisible();
+  await expect(modifiedCard.getByText(/Completed.*modified/i)).toBeVisible();
+  await expect(modifiedCard.getByRole("button",{name:"Edit logged session for this workout"})).toHaveText("Edit");
+  await expect(modifiedCard.getByRole("link",{name:"View workout details for Aerobic base"})).toBeVisible();
+  await expect(future.getByRole("link",{name:"View workout details for Aerobic base"})).toBeVisible();
+  await expect(future.getByRole("button")).toHaveCount(0);
+  await expect(race.getByRole("link",{name:"View workout details for Race"})).toBeVisible();
+  await expect(race.getByRole("button")).toHaveCount(0);
+  await expect(page.locator(".week-empty.designated_rest").getByRole("button",{name:"Record session"})).toBeVisible();
+  await expect(incomplete.locator(".week-actions")).toHaveClass(/week-actions/);
+  await expect(incomplete.locator(".week-action-details")).toHaveClass(/week-action-details/);
+  expect(await incomplete.locator(".week-actions").evaluate(element=>getComputedStyle(element).display)).toBe("flex");
+  expect(await incomplete.locator(".week-actions .week-action").evaluateAll(items=>items.every(item=>getComputedStyle(item).width!=="100%"))).toBeTruthy();
+  expect(await page.locator("body").evaluate(element=>element.scrollWidth<=window.innerWidth)).toBeTruthy();
+  await page.goto("/");
+  await expect(page.locator(".session-card .week-actions")).toHaveCount(0);
+});
+
 test("independent rowing sessions expose the shared detailed actual log without coach-only labels", async ({page}) => {
   await page.setViewportSize({width:390,height:844});
   await page.goto("/week?week=2026-09-14");

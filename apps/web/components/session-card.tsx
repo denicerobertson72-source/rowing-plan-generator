@@ -13,15 +13,16 @@ const isQuick=(actual:Record<string,unknown>|undefined)=>actual?.provenance==="c
 const isModified=(actual:Record<string,unknown>|undefined, session:PlanSession)=>Boolean(actual && !isQuick(actual) && (actual.actual_duration_min!==session.total_cardio_minutes || actual.actual_intensity!==session.band || actual.status==="modified"));
 
 /** Shared by Today and Week so each prescribed session has one completion action. */
-export function CompletionControl({planId,session,onChanged}:{planId:string;session:PlanSession;onChanged?:()=>void}) {
+export function CompletionControl({planId,session,onChanged,compact=false}:{planId:string;session:PlanSession;onChanged?:()=>void;compact?:boolean}) {
   const initial=session.actual as Record<string,unknown>|undefined;
   const [actual,setActual]=useState(initial); const [saving,setSaving]=useState(false); const [error,setError]=useState("");
   const eligible=session.date<=localCalendarDate() && session.session_id!=="RACE" && session.mode!=="race";
   if(!eligible) return null;
   const complete=async()=>{setSaving(true);setError("");try{await completeAsPlanned(planId,keyFor(session));setActual({provenance:"completed_as_planned"});onChanged?.();}catch{setError("Couldn’t save completion. Try again.");}finally{setSaving(false);}};
   const undo=async()=>{setSaving(true);setError("");try{await undoCompleteAsPlanned(planId,keyFor(session));setActual(undefined);onChanged?.();}catch{setError("Add or edit details to change this recorded actual safely.");}finally{setSaving(false);}};
-  if(actual) return <>{error&&<p className="notice">{error}</p>}<button className="quiet" disabled={saving} onClick={isQuick(actual)?undo:undefined}>{saving?"Saving…":isQuick(actual)?"✓ Completed as planned":isModified(actual,session)?"✓ Completed — modified":"✓ Completed"}</button></>;
-  return <>{error&&<p className="notice">{error}</p>}<button className="quiet" disabled={saving} onClick={complete}>{saving?"Saving…":"Completed as planned"}</button></>;
+  const className=compact?"quiet week-action week-action-completion":"quiet";
+  if(actual) return <>{error&&<p className="notice">{error}</p>}<button className={className} aria-label={isQuick(actual)?"Undo completed as planned":"Workout completed"} disabled={saving} onClick={isQuick(actual)?undo:undefined}>{saving?"Saving…":compact&&isQuick(actual)?"✓ Done":isQuick(actual)?"✓ Completed as planned":isModified(actual,session)?"✓ Completed — modified":"✓ Completed"}</button></>;
+  return <>{error&&<p className="notice">{error}</p>}<button className={className} aria-label="Mark workout completed as planned" disabled={saving} onClick={complete}>{saving?"Saving…":compact?"Done as planned":"Completed as planned"}</button></>;
 }
 
 export function SessionCard({session,planId}:{session:PlanSession;planId:string}) {
