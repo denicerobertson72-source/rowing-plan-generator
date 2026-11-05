@@ -144,6 +144,33 @@ def test_user_fixed_serialized_authority_is_carried_not_rematerialized():
     assert not candidate.materialization_diagnostics
 
 
+def test_serialized_authority_is_scoped_to_the_active_v3_calendar():
+    """A future carried lock belongs to its later PlanVersion, not this one."""
+
+    profile, bands, power = _inputs()
+    in_range = date(2026, 10, 2)
+    after_horizon = date(2026, 10, 23)  # default 21-day window ends Oct 21
+
+    def serialized(day: date, identifier: str) -> dict:
+        return {
+            "date": day.isoformat(), "day": day.strftime("%A"), "phase": "authoritative",
+            "fixed": True, "mode": "erg", "session_id": identifier,
+            "title": "Athlete choice", "band": "UT2", "total_cardio_minutes": 44,
+            "rowing_minutes": 44, "quality_minutes": 0,
+            "structure": "Existing authoritative prescription.",
+        }
+
+    candidate = generate_plan_sequence_v3_candidate(
+        profile, CONFIG, bands, power, planning_date=date(2026, 10, 1), needs=(),
+        future_placements=(WindowPlacement("fixed", in_range, "dedicated_ut2", "fixed", 44, False, (), True),),
+        locked_sessions=(serialized(in_range, "in-range"), serialized(after_horizon, "later-window")),
+    )
+
+    assert candidate.success
+    assert any(item["date"] == in_range.isoformat() and item["session_id"] == "in-range" for item in candidate.plan["sessions"])
+    assert not any(item.get("session_id") == "later-window" for item in candidate.plan["sessions"])
+
+
 def test_end_to_end_repeated_race_candidate_is_deterministic_and_respects_recovery():
     profile, bands, power = _inputs()
     profile["season"] = {"start_date": "2026-09-01", "end_date": "2026-10-05", "current_weekly_endurance_minutes": 180, "target_peak_weekly_endurance_minutes": 220}

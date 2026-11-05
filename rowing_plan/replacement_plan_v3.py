@@ -456,11 +456,24 @@ def generate_plan_sequence_v3_candidate(
     }
     materialized = adapt_placements_to_materialization_requests(placed.placements, profile=profile, selection_context=selection_context, selector_history=selector_history)
     timings.append(("materialization", round((perf_counter() - started) * 1000, 3)))
+    # ``locked_sessions`` can carry forward authority from a longer prior
+    # PlanVersion.  Assembly owns only this candidate's finite calendar, so
+    # retain the serialized authority contract solely for dates it can
+    # actually represent.  The original locks remain normalized authority for
+    # their own future planning windows; they are not discarded or re-dated.
+    calendar = _calendar_from_placement_result(placed, profile)
+    calendar_dates = {item.date.isoformat() for item in calendar}
+    user_fixed_dates = {
+        item.date.isoformat() for item in placed.placements
+        if item.authority_type is AuthorityType.USER_FIXED_PLACEMENT
+        and item.date.isoformat() in calendar_dates
+    }
     serialized_locks = tuple(
         dict(item) for item in locked_sessions
-        if isinstance(item, Mapping) and {"date", "day", "session_id", "mode", "title", "band", "total_cardio_minutes", "phase", "structure"} <= set(item)
+        if isinstance(item, Mapping)
+        and {"date", "day", "session_id", "mode", "title", "band", "total_cardio_minutes", "phase", "structure"} <= set(item)
+        and item.get("date") in calendar_dates
     )
-    user_fixed_dates = {item.date.isoformat() for item in placed.placements if item.authority_type is AuthorityType.USER_FIXED_PLACEMENT}
     supplied_dates = {item["date"] for item in serialized_locks}
     authority_diagnostics = tuple(
         MaterializationDiagnostic("authority_mismatch", detail="user_fixed_serialized_session_required")
@@ -474,7 +487,6 @@ def generate_plan_sequence_v3_candidate(
     )
     if all_materialization_diagnostics:
         return ReplacementPlanCandidate(False, None, context, state, effective_needs, placed.placements, placed.diagnostics, all_materialization_diagnostics, all_materialization_diagnostics[0].code, tuple(timings))
-    calendar = _calendar_from_placement_result(placed, profile)
     historical_calendar = {
         item["date"]: dict(item) for item in (prior_plan or {}).get("calendar_days", ())
         if isinstance(item, Mapping) and isinstance(item.get("date"), str) and item["date"] < planning_date.isoformat()

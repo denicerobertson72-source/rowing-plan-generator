@@ -527,7 +527,7 @@ def execute_selected_planner(*, choice: PlannerChoice, profile: dict, bands: lis
                 "reason_code": candidate.failure_reason or "v3_research_contract_failed",
                 "placement_id": placement.placement_id if placement else None,
                 "training_need_id": need.id if need else None,
-                "date": placement.date.isoformat() if placement else None,
+                "date": placement.date.isoformat() if placement else (failed.date.isoformat() if failed and failed.date else None),
                 "role": placement.role.value if placement and placement.role else (failed.role if failed else None),
                 "target_credit": placement.target_credit.minutes if placement else None,
                 "reservation_minutes": placement.reservation_minutes if placement else None,
