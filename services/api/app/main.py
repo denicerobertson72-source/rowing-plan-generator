@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 import sys
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -37,6 +38,9 @@ from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, AthleteUp
 
 CONFIG = json.loads((ROOT / "config/defaults.json").read_text())
 logger = logging.getLogger(__name__)
+_replacement_v3_current_stage: ContextVar[str | None] = ContextVar(
+    "replacement_v3_current_stage", default=None,
+)
 app = FastAPI(title="Rowing Plan API", version="0.4.0", openapi_url="/api/v1/openapi.json", docs_url="/docs")
 allowed_origins=[origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if origin.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
@@ -375,6 +379,22 @@ def _log_generation_timing(*, planner: str, stage: str, started: float) -> None:
     logger.info("planner_generation_timing planner=%s stage=%s duration_ms=%.3f", planner, stage, (perf_counter() - started) * 1000)
 
 
+def _replacement_v3_stage_observer(event: str, stage: str, duration_ms: float | None, metadata: dict[str, object]) -> None:
+    """Emit safe V3 stage boundaries without exposing profile/session payloads."""
+
+    if event == "start":
+        _replacement_v3_current_stage.set(stage)
+        logger.info(
+            "planner_generation_stage_start planner=replacement_v3 stage=%s metadata=%s",
+            stage, metadata,
+        )
+        return
+    logger.info(
+        "planner_generation_timing planner=replacement_v3 stage=%s duration_ms=%.3f metadata=%s",
+        stage, duration_ms if duration_ms is not None else 0.0, metadata,
+    )
+
+
 def _session_key_for_generation(session: dict) -> str:
     return f'{session.get("date")}:{session.get("session_id")}:{session.get("mode")}'
 
@@ -465,14 +485,25 @@ def execute_selected_planner(*, choice: PlannerChoice, profile: dict, bands: lis
         from rowing_plan.replacement_plan_v3 import generate_plan_sequence_v3_candidate
         from rowing_plan.replacement_shadow import compare_v2_with_v3
 
+        _replacement_v3_current_stage.set("candidate_initialization")
         candidate = generate_plan_sequence_v3_candidate(
             profile, CONFIG, bands, power, planning_date=planning_date,
             prior_plan=prior_plan, history_actuals=history_actuals,
-            locked_sessions=locked_sessions,
+            locked_sessions=locked_sessions, stage_observer=_replacement_v3_stage_observer,
         )
+        comparison_started = perf_counter()
+        _replacement_v3_stage_observer("start", "comparison_validation", None, {})
         comparison = compare_v2_with_v3(
             v2_plan=None, candidate=candidate, planning_date=planning_date,
             v2_failure_reason="v2_not_executed_for_live_v3",
+        )
+        _replacement_v3_stage_observer(
+            "complete", "comparison_validation", (perf_counter() - comparison_started) * 1000,
+            {
+                "candidate_success": candidate.success,
+                "promotion_blocker_count": len(comparison.promotion_blockers),
+                "materialization_failure_count": len(comparison.materialization_failures),
+            },
         )
         if not candidate.success or comparison.promotion_blockers:
             failed = candidate.materialization_diagnostics[0] if candidate.materialization_diagnostics else None
@@ -526,10 +557,6 @@ def execute_selected_planner(*, choice: PlannerChoice, profile: dict, bands: lis
             "timings_ms": candidate.stage_timings_ms,
         }
         plan["v2_diagnostics"] = diagnostics
-        for stage, _duration in candidate.stage_timings_ms:
-            # Individual duration logging remains aggregate-only and contains
-            # no athlete/session payload.
-            logger.info("planner_generation_timing planner=replacement_v3 stage=%s", stage)
         return plan
     raise PlannerRoutingError("unknown_planner_choice")
 
@@ -666,12 +693,17 @@ def safe_generation_metadata(profile: dict) -> dict:
     """Log only structural planner context for an unexpected generation failure."""
     activities=profile.get("recurring_activities")
     tests=profile.get("tests") if isinstance(profile.get("tests"),dict) else {}
+    training_context=profile.get("training_context")
+    preferences=profile.get("preferences")
     return {
         "recurring_activities_present":activities is not None,
         "recurring_activity_count":len(activities) if isinstance(activities,list) else 0,
         "race_count":len(profile.get("races",[])) if isinstance(profile.get("races"),list) else 0,
         "performance_test_count":len(tests.get("multi_duration_power_tests",[])) if isinstance(tests.get("multi_duration_power_tests"),list) else 0,
         "season_dates_present":bool(profile.get("season",{}).get("start_date") and profile.get("season",{}).get("end_date")),
+        "has_training_context": isinstance(training_context, dict),
+        "training_context_field_count": len(training_context) if isinstance(training_context, dict) else 0,
+        "has_readiness_preference": isinstance(preferences, dict) and "readiness_checkins_enabled" in preferences,
     }
 
 
@@ -702,10 +734,13 @@ def unexpected_generation_error(error: Exception, profile: dict, athlete_id: str
     source=f"{trace[-1].filename}:{trace[-1].lineno}" if trace else "unknown"
     metadata=safe_generation_metadata(profile)
     planner_diagnostics=safe_planner_failure_diagnostics(error)
+    v3_stage=_replacement_v3_current_stage.get()
+    current_stage=v3_stage if stage == "plan_generation" and v3_stage else stage
+    planner="replacement_v3" if v3_stage else None
     logger.exception(
-        "plan_generation_failed error_id=%s exception_class=%s exception_message=%s source=%s stage=%s athlete_id_present=%s planversion_creation_started=%s recurring_activities_present=%s recurring_activity_count=%s race_count=%s performance_test_count=%s season_dates_present=%s planner_diagnostics=%s",
-        error_id, type(error).__name__, str(error), source, stage, bool(athlete_id), planversion_creation_started,
-        metadata["recurring_activities_present"], metadata["recurring_activity_count"], metadata["race_count"], metadata["performance_test_count"], metadata["season_dates_present"], planner_diagnostics,
+        "plan_generation_failed reference=%s error_id=%s planner=%s exception_class=%s exception_message=%s source=%s stage=%s athlete_id_present=%s planversion_creation_started=%s recurring_activities_present=%s recurring_activity_count=%s race_count=%s performance_test_count=%s season_dates_present=%s has_training_context=%s training_context_field_count=%s has_readiness_preference=%s planner_diagnostics=%s",
+        error_id, error_id, planner, type(error).__name__, str(error), source, current_stage, bool(athlete_id), planversion_creation_started,
+        metadata["recurring_activities_present"], metadata["recurring_activity_count"], metadata["race_count"], metadata["performance_test_count"], metadata["season_dates_present"], metadata["has_training_context"], metadata["training_context_field_count"], metadata["has_readiness_preference"], planner_diagnostics,
     )
     return HTTPException(500, detail={"error_code":"plan_generation_failed","error_id":error_id})
 
@@ -975,6 +1010,7 @@ def update_athlete(athlete_id: str, request: AthleteUpdateRequest, user_id: str 
 @app.post("/api/v1/athletes/{athlete_id}/plans/generate", response_model=PlanResponse)
 def generate_for_athlete(athlete_id: str, request: RegenerateRequest, user_id: str = Depends(current_user_id)) -> PlanResponse:
     profile=owned_athlete(athlete_id,user_id)
+    _replacement_v3_current_stage.set(None)
     stage="locked_session_loading"; planversion_creation_started=False
     choice=default_planner_choice()
     try:

@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from time import perf_counter
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .continuous_placement import (
     ContinuousPlacementDiagnostics,
@@ -344,21 +344,45 @@ def generate_plan_sequence_v3_candidate(
     locked_sessions=(), future_placements=(), policy: TrainingPolicy = DEFAULT_TRAINING_POLICY,
     placement_config: PlacementSearchConfig = PlacementSearchConfig(),
     needs: tuple[TrainingNeed, ...] | None = None,
+    stage_observer: Callable[[str, str, float | None, Mapping[str, object]], None] | None = None,
 ) -> ReplacementPlanCandidate:
     """Generate an in-memory replacement candidate only; never persist or route."""
+
+    def stage_start(stage: str, **metadata: object) -> float:
+        if stage_observer:
+            stage_observer("start", stage, None, metadata)
+        return perf_counter()
+
+    def stage_complete(stage: str, started_at: float, **metadata: object) -> float:
+        elapsed = round((perf_counter() - started_at) * 1000, 3)
+        if stage_observer:
+            stage_observer("complete", stage, elapsed, metadata)
+        return elapsed
+
     del config
     timings: list[tuple[str, float]] = []
-    started = perf_counter()
+    started = stage_start(
+        "normalization", planning_date=planning_date.isoformat(),
+        supplied_history_actual_count=len(history_actuals or {}),
+        supplied_locked_session_count=len(locked_sessions),
+    )
     context = normalize_planning_inputs(
         profile, planning_date=planning_date, prior_plan=prior_plan,
         history_actuals=history_actuals, locked_sessions=locked_sessions,
         future_placements=future_placements,
     )
-    timings.append(("normalization", round((perf_counter() - started) * 1000, 3)))
-    started = perf_counter()
+    timings.append(("normalization", stage_complete(
+        "normalization", started,
+        historical_fact_count=len(context.historical_facts),
+        authoritative_commitment_count=len(context.authoritative_commitments),
+    )))
+    started = stage_start("physiological_reduction")
     state = reduce_physiological_state(context, profile=profile)
-    timings.append(("physiological_reduction", round((perf_counter() - started) * 1000, 3)))
-    started = perf_counter()
+    timings.append(("physiological_reduction", stage_complete(
+        "physiological_reduction", started,
+        recovery_constraint_count=len(state.recovery_constraints),
+    )))
+    started = stage_start("need_generation")
     need_plan = generate_training_need_plan(context, state, policy, profile=profile)
     performance = build_athlete_performance_profile(profile, as_of=planning_date)
     limiter = derive_performance_limiter(performance, coach_focus=profile.get("preferences", {}).get("development_focus"))
@@ -369,12 +393,20 @@ def generate_plan_sequence_v3_candidate(
     load_targets = derive_training_load_targets(context, state, policy, profile=profile, planning_date=planning_date)
     distribution_targets = derive_training_distribution_targets(load_targets, policy)
     categorical_needs = tuple(needs) if needs is not None else need_plan.needs
-    timings.append(("need_generation", round((perf_counter() - started) * 1000, 3)))
-    started = perf_counter()
+    timings.append(("need_generation", stage_complete(
+        "need_generation", started,
+        need_count=len(categorical_needs), load_target_count=len(load_targets),
+    )))
+    started = stage_start("categorical_placement", need_count=len(categorical_needs))
     categorical = place_continuous_training_needs(
         context, state, categorical_needs, policy, profile=profile, config=placement_config,
         distribution_targets=distribution_targets,
     )
+    stage_complete(
+        "categorical_placement", started, placement_count=len(categorical.placements),
+        unplaced_need_count=len(categorical.diagnostics.unplaced_needs),
+    )
+    started = stage_start("physical_exposure_planning")
     residual_plan = generate_residual_aerobic_needs(
         categorical_needs, load_targets, policy, selected_placements=categorical.placements,
     )
@@ -385,6 +417,12 @@ def generate_plan_sequence_v3_candidate(
         profile=profile, selected_placements=categorical.placements, load_targets=load_targets,
     )
     effective_needs = exposure_planning.needs
+    stage_complete(
+        "physical_exposure_planning", started,
+        residual_need_count=len(residual_needs), effective_need_count=len(effective_needs),
+        physical_exposure_plan_count=len(exposure_planning.plans),
+    )
+    started = stage_start("final_placement_reconciliation", need_count=len(effective_needs))
     placed = place_continuous_training_needs(
         context, state, effective_needs, policy, profile=profile, config=placement_config,
         load_targets=load_targets,
@@ -399,8 +437,12 @@ def generate_plan_sequence_v3_candidate(
     )
     empty_date_rationales = _empty_date_rationales(placed, state, final_load_targets)
     distribution_diagnostics = _distribution_diagnostics(placed, distribution_targets)
-    timings.append(("sequence_placement", round((perf_counter() - started) * 1000, 3)))
-    started = perf_counter()
+    timings.append(("sequence_placement", stage_complete(
+        "final_placement_reconciliation", started,
+        placement_count=len(placed.placements),
+        unplaced_need_count=len(placed.diagnostics.unplaced_needs),
+    )))
+    started = stage_start("materialization", placement_count=len(placed.placements))
     selector_history = _selector_history_from_prior(prior_plan)
     selection_context = {
         "active_training_focus": focus.primary,
@@ -425,6 +467,11 @@ def generate_plan_sequence_v3_candidate(
         for item in sorted(user_fixed_dates - supplied_dates)
     )
     all_materialization_diagnostics = (*materialized.diagnostics, *authority_diagnostics)
+    stage_complete(
+        "materialization", started,
+        materialization_request_count=len(materialized.requests),
+        materialization_diagnostic_count=len(all_materialization_diagnostics),
+    )
     if all_materialization_diagnostics:
         return ReplacementPlanCandidate(False, None, context, state, effective_needs, placed.placements, placed.diagnostics, all_materialization_diagnostics, all_materialization_diagnostics[0].code, tuple(timings))
     calendar = _calendar_from_placement_result(placed, profile)
@@ -558,7 +605,7 @@ def generate_plan_sequence_v3_candidate(
         "empty_date_rationales": empty_date_rationales,
         "replacement_placements": tuple({"placement_id": item.placement_id, "date": item.date, "role": item.role.value if item.role else None, "reservation_minutes": item.reservation_minutes, "target_credit": item.target_credit, "served_need_ids": item.served_need_ids} for item in placed.placements),
     }
-    started = perf_counter()
+    started = stage_start("plan_assembly", placement_count=len(placed.placements))
     phase_types_by_date=_phase_lookup(profile, tuple(item.date for item in calendar))
     assembled = build_plan_version_from_v2(
         profile=dict(profile), bands=bands, power=dict(power), calendar=calendar,
@@ -570,7 +617,10 @@ def generate_plan_sequence_v3_candidate(
         v2_diagnostics=diagnostics, selector_history_seed=selector_history, chronological_selector_history=True,
         phase_types_by_date={item.date: phase_types_by_date[item.date][1] for item in calendar},
     )
-    timings.append(("plan_assembly", round((perf_counter() - started) * 1000, 3)))
+    timings.append(("plan_assembly", stage_complete(
+        "plan_assembly", started,
+        assembled_success=assembled.success,
+    )))
     if not assembled.success:
         failure = dict(assembled.failure_diagnostics)
         diagnostic = MaterializationDiagnostic(
@@ -593,9 +643,11 @@ def generate_plan_sequence_v3_candidate(
         key=lambda item: item["date"],
     )
     from .planner_v2 import validate_v2_plan_contract_details
-    started = perf_counter()
+    started = stage_start("validation")
     contract_error = validate_v2_plan_contract_details(plan, authoritative_sessions=historical_sessions)
-    timings.append(("validation", round((perf_counter() - started) * 1000, 3)))
+    timings.append(("validation", stage_complete(
+        "validation", started, contract_valid=not bool(contract_error),
+    )))
     if contract_error:
         diagnostic = MaterializationDiagnostic("planversion_contract_failure", detail=str(contract_error.get("reason_code")))
         return ReplacementPlanCandidate(False, None, context, state, effective_needs, placed.placements, placed.diagnostics, (diagnostic,), diagnostic.detail, tuple(timings))
