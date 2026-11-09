@@ -15,7 +15,7 @@ from .periodization import race_dates
 from .planning_domain import (
     AuthoritySource, AuthorityType, AuthoritativeCommitment, ConflictBehavior,
     HistoricalFact, HistoricalFactType, PhysiologicalCredit, Provenance,
-    ProvenanceSource, TrainingRole,
+    ProvenanceSource, TrainingRole, TrainingModality, normalize_training_modality,
 )
 
 
@@ -78,12 +78,14 @@ def _session_role(session: Mapping[str, Any]) -> TrainingRole | None:
 
 
 def _activity_role(activity_type: str | None) -> TrainingRole | None:
-    normalized = str(activity_type or "").lower().replace("-", "_").replace(" ", "_")
-    if normalized in {"erg", "on_water", "rowing", "row"}:
+    modality = normalize_training_modality(activity_type)
+    if modality in {TrainingModality.ERG, TrainingModality.ON_WATER}:
         return TrainingRole.DEDICATED_UT2
-    if normalized == "strength":
+    if modality in {TrainingModality.BIKE, TrainingModality.ELLIPTICAL, TrainingModality.STAIR_CLIMBER, TrainingModality.RUNNING}:
+        return TrainingRole.GENERAL_AEROBIC
+    if modality is TrainingModality.STRENGTH:
         return TrainingRole.STRENGTH
-    if normalized in {"mobility", "recovery", "rest"}:
+    if str(activity_type or "").lower().replace("-", "_").replace(" ", "_") in {"mobility", "mobility_recovery", "recovery", "rest"}:
         return TrainingRole.REST
     return None
 

@@ -33,6 +33,7 @@ from rowing_plan.replacement_shadow import PlannerShadowComparison, compare_v2_w
 from .repositories import REPOSITORIES, profile_revision, public_profile, with_profile_revision
 from .auth import current_user_id
 from rowing_plan.training_load import load_summary, session_load_au
+from rowing_plan.planning_domain import normalize_training_modality, TrainingModality
 from rowing_plan.recurring_activities import normalize_recurring_schedule_for_planning, schedule_signature
 from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, AthleteUpdateRequest, OptionalActivityLogRequest, PlanGenerationRequest, PlanResponse, PrivateCheckInRequest, RacePostingRequest, RegenerateRequest, WeeklyOverrideRequest, WorkoutLogRequest
 
@@ -817,7 +818,8 @@ def optional_activity_history_session(session_key: str, payload: dict) -> dict:
     cannot manufacture a second completed exposure.
     """
     _, activity_date, activity_type = session_key.split(":", 2)
-    mode={"erg":"erg", "on_water":"on_water", "strength":"strength"}.get(activity_type, "other")
+    modality=normalize_training_modality(activity_type)
+    mode={TrainingModality.ERG:"erg", TrainingModality.ON_WATER:"on_water", TrainingModality.STRENGTH:"strength"}.get(modality, modality.value if modality in {TrainingModality.BIKE, TrainingModality.ELLIPTICAL, TrainingModality.STAIR_CLIMBER, TrainingModality.RUNNING} else "other")
     minutes=payload.get("actual_duration_min") or 0
     session={
         "date":activity_date,

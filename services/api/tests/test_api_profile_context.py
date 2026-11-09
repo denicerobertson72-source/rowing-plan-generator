@@ -56,6 +56,27 @@ def test_profile_context_persists_without_affecting_legacy_profile_loading():
     assert stored["preferences"]["readiness_checkins_enabled"] is True
 
 
+def test_cross_training_capability_round_trips_without_affecting_legacy_profiles():
+    with TemporaryDirectory() as directory:
+        client, previous = _client(Path(directory) / "cross-training-profile.sqlite3")
+        try:
+            created = client.post("/api/v1/athletes", json={"athlete_profile": synthetic_profile()})
+            athlete_id = created.json()["athlete_id"]
+            loaded = client.get(f"/api/v1/athletes/{athlete_id}")
+            updated = loaded.json()["athlete_profile"]
+            updated["cross_training"] = {"modalities": {
+                "bike": {"enabled": True, "familiarity": "regular", "preference": "prefer"},
+                "elliptical": {"enabled": False, "familiarity": None, "preference": "neutral"},
+            }}
+            saved = client.put(f"/api/v1/athletes/{athlete_id}", json={"athlete_profile": updated, "expected_revision": loaded.json()["profile_revision"]})
+            reloaded = client.get(f"/api/v1/athletes/{athlete_id}")
+        finally:
+            REPOSITORIES._instance = previous
+    assert created.status_code == loaded.status_code == saved.status_code == reloaded.status_code == 200
+    assert "cross_training" not in loaded.json()["athlete_profile"]
+    assert reloaded.json()["athlete_profile"]["cross_training"] == updated["cross_training"]
+
+
 def test_invalid_review_only_strength_frequency_is_rejected_without_creating_context_data():
     with TemporaryDirectory() as directory:
         client, previous = _client(Path(directory) / "invalid-profile-context.sqlite3")

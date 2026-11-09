@@ -46,6 +46,17 @@ def validate_profile(profile: dict) -> list[str]:
         for key in ("strength_limitations", "training_restriction_summary"):
             if key in context and (not isinstance(context[key], str) or len(context[key]) > 1000):
                 errors.append(f"{key.replace('_',' ').capitalize()} must be text of 1000 characters or fewer.")
+    cross_training=profile.get("cross_training")
+    if cross_training is not None:
+        if not isinstance(cross_training, dict) or not isinstance(cross_training.get("modalities", {}), dict):
+            errors.append("Cross-training options must be an object.")
+        else:
+            allowed={"bike","elliptical","stair_climber","running"}
+            for mode, value in cross_training.get("modalities", {}).items():
+                if mode not in allowed or not isinstance(value, dict): errors.append("Cross-training modality is invalid."); continue
+                if not isinstance(value.get("enabled"), bool): errors.append(f"Cross-training {mode} enabled must be true or false.")
+                if value.get("familiarity") not in (None,"new","some_experience","regular"): errors.append(f"Cross-training {mode} familiarity is invalid.")
+                if value.get("preference", "neutral") not in ("prefer","neutral","avoid"): errors.append(f"Cross-training {mode} preference is invalid.")
     errors.extend(validate_recurring_activities(profile))
     return errors
 

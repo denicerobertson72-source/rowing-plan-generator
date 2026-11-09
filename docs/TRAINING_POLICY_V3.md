@@ -51,6 +51,9 @@ research citation.
 | strength continuity is individualized and rolling | evidence-informed heuristic | preserve meaningful strength dimension when endurance rises, subject to recovery and authority | S017, S031, S032 | supports continuity without turning evidence into a fixed frequency | coach | strength need interpretation |
 | availability, commitments, bands, and user fixes | coach or athlete preference | athlete-specific | athlete or coach input | authority/preferences are outside physiology | athlete or coach | constraint interpretation |
 | tie breaking, search width, serialization | software implementation choice | deterministic execution | internal implementation | execution property only | no | solver/audit infrastructure |
+| cross-training capability capture | coach or athlete preference | optional modality, familiarity, and preference | S033–S035 | captures available activities without treating them as a prescription | athlete or coach | M1 profile/history only |
+| cross-training is general, not rowing-specific exposure | research constrained | no rowing-dose equivalence or rowing-zone conversion | S034, S036 | modality specificity is retained; non-rowing history is descriptive only | no | M1 history accounting |
+| conservative unfamiliar-modality handling | evidence-informed heuristic | retain unfamiliarity; do not assume regular tolerance | S033, S035 | new activities need gradual context-aware introduction | coach | future capability review only |
 
 ## Deliberate boundaries
 
@@ -90,6 +93,13 @@ research citation.
   within-athlete relationships. It does not predict a 2K, infer lactate
   threshold from 30R20, or apply population/age/sex labels. Missing evidence
   yields `unknown`, not an invented limiter.
+- M1 cross-training records optional athlete capability and completed
+  general-aerobic history only. It creates no TrainingNeed, load target,
+  placement, materialized workout, or fixed weekday. General-aerobic and
+  rowing minutes are descriptive dimensions, never additive physical duration;
+  a 50-minute easy erg can appear in both dimensions while remaining 50
+  minutes. Non-rowing HR/RPE is preserved but does not acquire rowing-zone
+  credit.
 
 ## Audit contract
 

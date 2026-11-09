@@ -728,6 +728,22 @@
       },
       "additionalProperties": false
     },
+    "cross_training": {
+      "type": "object",
+      "properties": {
+        "modalities": {
+          "type": "object",
+          "properties": {
+            "bike": {"$ref": "#/$defs/crossTrainingModality"},
+            "elliptical": {"$ref": "#/$defs/crossTrainingModality"},
+            "stair_climber": {"$ref": "#/$defs/crossTrainingModality"},
+            "running": {"$ref": "#/$defs/crossTrainingModality"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "locked_weeks": {
       "type": "array",
       "items": {
@@ -736,5 +752,17 @@
       }
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "crossTrainingModality": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "familiarity": {"enum": ["new", "some_experience", "regular", null]},
+        "preference": {"enum": ["prefer", "neutral", "avoid"]}
+      },
+      "additionalProperties": false
+    }
+  }
 }

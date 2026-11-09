@@ -19,6 +19,8 @@ from .planning_domain import (
     RecoveryConstraint,
     RuleClass,
     TrainingRole,
+    TrainingModality,
+    normalize_training_modality,
 )
 from .planning_normalization import NormalizedPlanningContext
 from .training_policy import DEFAULT_PHYSIOLOGICAL_POLICY, TrainingPolicyRule
@@ -33,6 +35,18 @@ _QUALITY_BANDS = frozenset({"AT", "TR", "AN", "PP"})
 _AEROBIC_BANDS = frozenset({"UT3", "UT2", "UT1"})
 _LOW_INTENSITY_BANDS = frozenset({"UT3", "UT2"})
 _ROWING_ROLES = _AEROBIC_ROLES | {TrainingRole.QUALITY, TrainingRole.RACE}
+_CROSS_TRAINING_MODALITIES = frozenset({TrainingModality.BIKE, TrainingModality.ELLIPTICAL, TrainingModality.STAIR_CLIMBER, TrainingModality.RUNNING})
+
+
+def _general_aerobic_fact(fact: HistoricalFact) -> bool:
+    """M1 ledger classification only; it does not affect prescription."""
+    actual = fact.completed_actual or {}
+    modality = normalize_training_modality(actual.get("activity_type") or actual.get("mode"))
+    # Cross-modal history earns only descriptive general-aerobic accounting
+    # when it explicitly says easy/aerobic. Unknown intensity is retained but
+    # receives no inferred aerobic/rowing-zone credit.
+    explicit = _explicit_band(fact)
+    return fact.physiological_credit.role in _AEROBIC_ROLES or (modality in _CROSS_TRAINING_MODALITIES and explicit in _LOW_INTENSITY_BANDS)
 
 
 def _rules_by_key(policy: Iterable[TrainingPolicyRule]) -> dict[str, TrainingPolicyRule]:
@@ -62,6 +76,14 @@ def _explicit_band(fact: HistoricalFact) -> str | None:
 def _classification(fact: HistoricalFact) -> str | None:
     if fact.type is HistoricalFactType.RACE_FACT:
         return "RACE"
+    modality = normalize_training_modality((fact.completed_actual or {}).get("activity_type") or (fact.completed_actual or {}).get("mode"))
+    # An external HR/RPE or an athlete-entered UT label does not turn a
+    # non-rowing modality into rowing-zone history. Strength remains strength
+    # even when an app/device supplied an intensity label.
+    if modality in _CROSS_TRAINING_MODALITIES:
+        return None
+    if modality is TrainingModality.STRENGTH:
+        return "strength"
     explicit = _explicit_band(fact)
     if explicit:
         return explicit
@@ -119,6 +141,8 @@ def _recent_load(completed: tuple[HistoricalFact, ...], *, as_of: date, window_d
     strength_exposures = 0
     race_exposures = 0
     optional_minutes = 0
+    general_aerobic_minutes = 0
+    general_aerobic_exposures = 0
     for fact in in_window:
         role = fact.physiological_credit.role
         duration = _actual_duration(fact)
@@ -136,11 +160,15 @@ def _recent_load(completed: tuple[HistoricalFact, ...], *, as_of: date, window_d
             race_exposures += 1
         if fact.type is HistoricalFactType.OPTIONAL_ACTIVITY and fact.physiological_credit.eligible:
             optional_minutes += duration
+        if _general_aerobic_fact(fact):
+            general_aerobic_minutes += duration
+            general_aerobic_exposures += max(1, fact.physiological_credit.exposures)
     return RecentLoad(
         window_days=window_days, window_start=start, as_of_date=as_of,
         rowing_minutes=rowing_minutes, low_intensity_rowing_minutes=low_intensity_minutes,
         quality_exposures=quality_exposures, strength_exposures=strength_exposures,
         race_exposures=race_exposures, optional_activity_minutes=optional_minutes,
+        general_aerobic_minutes=general_aerobic_minutes, general_aerobic_exposures=general_aerobic_exposures,
         counted_fact_ids=tuple(item.id for item in in_window),
         excluded_outside_window_fact_ids=excluded,
         duplicate_facts_excluded=duplicate_facts_excluded,

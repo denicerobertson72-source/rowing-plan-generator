@@ -95,3 +95,18 @@ def test_optional_actual_rejects_a_day_that_is_not_planned_off():
         finally:
             REPOSITORIES._instance=previous
     assert response.status_code == 422
+
+
+def test_optional_off_day_accepts_canonical_cross_training_modality_without_creating_a_plan_session():
+    with TemporaryDirectory() as directory:
+        previous=REPOSITORIES._instance; repository=SQLiteRepositories(Path(directory)/"bike-actual.sqlite3"); REPOSITORIES._instance=repository
+        try:
+            athlete_id=repository.create(synthetic_profile(),"development-user")
+            plan_id=repository.save_plan(athlete_id,_off_day_plan())
+            response=TestClient(app).post(f"/api/v1/plans/{plan_id}/days/2026-09-07/actuals",json={"status":"completed","activity_type":"bike","actual_duration_min":45,"actual_intensity":"UT2","average_hr":140,"rpe":3})
+            locked, actuals, _ = _generation_history(repository.get_plan(plan_id))
+        finally:
+            REPOSITORIES._instance=previous
+    assert response.status_code == 200
+    assert actuals["actual:2026-09-07:bike"]["activity_type"] == "bike"
+    assert locked[0]["mode"] == "bike" and locked[0]["session_id"] == "ACTUAL_BIKE"

@@ -50,6 +50,7 @@ class ConflictBehavior(_TextEnum):
 
 
 class TrainingRole(_TextEnum):
+    GENERAL_AEROBIC = "general_aerobic"
     DEDICATED_UT2 = "dedicated_ut2"
     LONG_AEROBIC = "long_aerobic"
     UT1_AEROBIC_STRENGTH = "ut1_aerobic_strength"
@@ -68,6 +69,42 @@ class TrainingRole(_TextEnum):
     RECOVERY_AEROBIC = "recovery_aerobic"
     TAPER_MAINTENANCE = "taper_maintenance"
     RACE_PREPARATION = "race_preparation"
+
+
+class TrainingModality(_TextEnum):
+    """Canonical activity modality for actual-history and profile capability data.
+
+    It is intentionally separate from ``TrainingRole``: modality identifies how
+    work was performed; a role is a conservative physiological classification.
+    M1 records the former and reduces descriptive history only.
+    """
+    ON_WATER = "on_water"
+    ERG = "erg"
+    BIKE = "bike"
+    ELLIPTICAL = "elliptical"
+    STAIR_CLIMBER = "stair_climber"
+    RUNNING = "running"
+    STRENGTH = "strength"
+    OTHER = "other"
+
+
+_MODALITY_ALIASES = {
+    "rowing": TrainingModality.ERG, "row": TrainingModality.ERG,
+    "bike_erg": TrainingModality.BIKE, "stationary_bike": TrainingModality.BIKE,
+    "cycling": TrainingModality.BIKE, "bicycle": TrainingModality.BIKE,
+    "run": TrainingModality.RUNNING, "stairclimber": TrainingModality.STAIR_CLIMBER,
+}
+
+
+def normalize_training_modality(value: Any) -> TrainingModality | None:
+    """Normalize safe legacy aliases without reinterpreting unknown entries."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.lower().strip().replace("-", "_").replace(" ", "_")
+    try:
+        return TrainingModality(normalized)
+    except ValueError:
+        return _MODALITY_ALIASES.get(normalized)
 
 
 class RuleClass(_TextEnum):
@@ -259,6 +296,8 @@ class RecentLoad:
     strength_exposures: int = 0
     race_exposures: int = 0
     optional_activity_minutes: int = 0
+    general_aerobic_minutes: int = 0
+    general_aerobic_exposures: int = 0
     counted_fact_ids: tuple[str, ...] = ()
     excluded_outside_window_fact_ids: tuple[str, ...] = ()
     duplicate_facts_excluded: int = 0
@@ -270,6 +309,7 @@ class RecentLoad:
             self.rowing_minutes, self.low_intensity_rowing_minutes,
             self.quality_exposures, self.strength_exposures,
             self.race_exposures, self.optional_activity_minutes,
+            self.general_aerobic_minutes, self.general_aerobic_exposures,
         ):
             if value < 0:
                 raise ValueError("recent_load_values_must_be_nonnegative")

@@ -64,7 +64,7 @@ class WorkoutLogRequest(BaseModel):
 
 class OptionalActivityLogRequest(WorkoutLogRequest):
     """An athlete-performed activity that was not a prescribed plan session."""
-    activity_type: Literal["erg","on_water","walk","cross_training","strength","mobility_recovery","other"]
+    activity_type: Literal["erg","on_water","bike","elliptical","stair_climber","running","walk","cross_training","strength","mobility_recovery","other"]
     distance_meters: Optional[int] = Field(default=None, ge=0)
 
 class PrivateCheckInRequest(BaseModel):
