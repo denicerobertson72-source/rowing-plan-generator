@@ -24,6 +24,18 @@ test("Profile accepts an empty preferred long-session day through save and gener
   expect(await days.evaluateAll(items=>items.every(item=>!(item as HTMLInputElement).checked))).toBeTruthy();
 });
 
+test("Profile saves optional cross-training capability without scheduling it", async ({page}) => {
+  await page.goto("/profile");
+  await expect(page.getByText("Cross-training options")).toBeVisible();
+  await page.getByRole("checkbox", {name:"Bike / bike erg"}).check();
+  await page.locator('select[name="cross-training-bike-familiarity"]').selectOption("regular");
+  await page.locator('select[name="cross-training-bike-preference"]').selectOption("prefer");
+  let saved:any;
+  page.on("request",request=>{if(request.method()==="PUT"&&request.url().includes("/athletes/"))saved=JSON.parse(request.postData()||"{}");});
+  await page.getByRole("button",{name:"Save profile details"}).click();
+  await expect.poll(()=>saved?.athlete_profile?.cross_training?.modalities?.bike).toEqual({enabled:true,familiarity:"regular",preference:"prefer"});
+});
+
 test("Profile maps server capacity validation errors to the field", async ({page}) => {
   await page.setViewportSize({width:390,height:844}); await page.goto("/profile");
   await page.route("**/api/v1/athletes/**",route=>route.fulfill({status:422,contentType:"application/json",body:JSON.stringify({detail:{validation_errors:["Current rowing sessions per week must be a non-negative whole number."]}})}));
@@ -215,6 +227,19 @@ test("Week navigation advances within the saved PlanVersion and preserves its UR
   await expect(page.locator(".week-nav b")).toHaveText(second);
   await page.getByText("Previous week").click();
   await expect(page.locator(".week-nav b")).toHaveText(first);
+});
+
+test("Week navigation retains a trailing calendar week with no materialized sessions", async ({page}) => {
+  await page.addInitScript(() => localStorage.setItem("rowing-plan-session-v1",JSON.stringify({athleteId:"calendar-athlete",planId:"calendar-plan"})));
+  const calendar_days=Array.from({length:21},(_,offset)=>{const day=new Date("2026-10-27T12:00:00");day.setDate(day.getDate()+offset);return {date:day.toISOString().slice(0,10),state:"no_additional_session"};});
+  const session={date:"2026-11-09",day:"Monday",session_id:"UT2",mode:"erg",title:"Easy aerobic row",band:"UT2",structure:"40 min",total_cardio_minutes:40,rowing_minutes:40,session_role:"AEROBIC_BASE"};
+  await page.route("**/api/v1/plans/calendar-plan",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({plan_id:"calendar-plan",athlete_id:"calendar-athlete",version_number:1,plan_needs_update:false,plan:{sessions:[session],calendar_days,phases:[]}})}));
+  await page.route("**/api/v1/plans/calendar-plan/week**",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({plan_needs_update:false,plan_version:1,week_start:"2026-11-16",days:Array.from({length:7},(_,offset)=>({date:`2026-11-${String(16+offset).padStart(2,"0")}`,day:"Monday",state:"no_additional_session",sessions:[]}))})}));
+  await page.goto("/week?week=2026-11-09");
+  await page.getByRole("button",{name:"Next week"}).click();
+  await expect(page.locator(".week-nav b")).toContainText("Nov 16");
+  await expect(page.getByText("No planned sessions").first()).toBeVisible();
+  await expect(page.getByRole("button",{name:"Next week"})).toBeDisabled();
 });
 
 test("Week defaults to the browser-local current week while explicit links stay authoritative", async ({page}) => {
