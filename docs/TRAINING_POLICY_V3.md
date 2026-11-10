@@ -56,6 +56,7 @@ research citation.
 | conservative unfamiliar-modality handling | evidence-informed heuristic | retain unfamiliarity; do not assume regular tolerance | S033, S035 | new activities need gradual context-aware introduction | coach | future capability review only |
 | total endurance is one physical budget | software implementation choice | use the approved rowing-load envelope as the initial total-endurance envelope | existing V3 load target; S033-S036 | this is a reconciliation boundary, not an added prescription | no | M2 endurance-demand diagnostics |
 | rowing-specific work is protected before substitution | research constrained | no universal rowing/cross-training percentage | S033-S036 | sport specificity, technique, racing, and categorical work remain distinct from general aerobic support | coach | future cross-training substitution policy |
+| athlete-relative composition emphasis | evidence-informed heuristic | one phase-compatible development role within existing load ceilings | S030, S032 | valid 2K/30R20/60-second/7-stroke relationships may alter compatible role emphasis; no published dose formula is claimed | coach | M2.8 TrainingNeeds |
 
 ## Deliberate boundaries
 
@@ -120,6 +121,14 @@ research citation.
   are never silently converted. Date-specific availability is the existing
   extension point for future seasonal modality availability; no universal
   winter months are encoded.
+- M2.8 keeps the existing test-battery semantics: 2K is an integrated anchor,
+  30R20 is aerobic-strength/endurance evidence, 60-second work is
+  anaerobic-lactic evidence, and 7-stroke work is peak-power evidence.  A
+  complete valid battery may request one *phase-compatible* development role
+  inside existing total-load, low-intensity, quality, recovery, and
+  race/taper guards.  This exact mapping is a transparent app heuristic, not
+  a published formula or population classification. Incomplete batteries keep
+  conservative composition, and race/taper/recovery override long-term focus.
 
 ## Audit contract
 

@@ -499,6 +499,39 @@ class TotalTrainingLoadTarget:
 
 
 @dataclass(frozen=True)
+class TrainingCompositionTarget:
+    """Athlete-relative emphasis inside existing rolling load envelopes.
+
+    This is intentionally not an intensity-percentage prescription.  It
+    identifies at most one compatible development role and leaves actual
+    minute, recovery, capacity, and maximum-load enforcement to existing
+    needs and placement contracts.
+    """
+
+    horizon_start: date
+    horizon_end: date
+    horizon_days: int
+    dominant_focus: str
+    secondary_focus: str | None
+    protected_low_intensity_minutes: int
+    desired_development_roles: tuple[TrainingRole, ...] = ()
+    maximum_quality_exposures: int = 1
+    confidence: str = "unavailable"
+    limiter_mode: str = "unknown"
+    rationale: tuple[str, ...] = ()
+    provenance: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.horizon_days < 1 or self.horizon_end != self.horizon_start + timedelta(days=self.horizon_days - 1):
+            raise ValueError("training_composition_target_horizon_is_invalid")
+        if self.protected_low_intensity_minutes < 0 or self.maximum_quality_exposures < 0:
+            raise ValueError("training_composition_target_values_are_invalid")
+        object.__setattr__(self, "desired_development_roles", tuple(sorted(set(self.desired_development_roles), key=lambda item: item.value)))
+        object.__setattr__(self, "rationale", tuple(sorted(set(self.rationale))))
+        object.__setattr__(self, "provenance", tuple(sorted(set(self.provenance))))
+
+
+@dataclass(frozen=True)
 class TrainingDistributionTarget:
     """Soft chronological sequence-quality expectation, never a weekly stencil."""
     horizon_start: date

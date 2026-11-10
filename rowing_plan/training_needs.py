@@ -17,6 +17,7 @@ from .planning_domain import (
     PhysiologicalCredit,
     PhysiologicalState,
     TrainingLoadTarget,
+    TrainingCompositionTarget,
     TrainingDistributionTarget,
     TrainingNeed,
     TrainingRole,
@@ -508,6 +509,7 @@ def generate_training_need_plan(
     policy: TrainingPolicy = DEFAULT_TRAINING_POLICY,
     *,
     profile: Mapping[str, Any] | None = None,
+    composition_target: TrainingCompositionTarget | None = None,
 ) -> TrainingNeedGeneration:
     """Build deterministic undated needs from normalized facts and state only."""
     state = state or reduce_physiological_state(context, profile=profile)
@@ -572,6 +574,10 @@ def generate_training_need_plan(
             policy_keys=("dedicated_ut2_target_credit_minutes", "low_intensity_emphasis", "mode_specific_accounting"),
             progression_relation="aerobic_development",
         ))
+    composition_roles = set(composition_target.desired_development_roles) if composition_target else set()
+    quality_override = next((role for role in composition_roles if role in {
+        TrainingRole.THRESHOLD_AT, TrainingRole.ANAEROBIC_AN, TrainingRole.POWER_PP,
+    }), None)
     if taper:
         adjustments.append("taper_volume_reduced")
         if TrainingRole.QUALITY not in recovery_blocked:
@@ -591,9 +597,10 @@ def generate_training_need_plan(
             progression_relation="threshold_development",
         ))
     elif phase == "race_specific_preparation" and TrainingRole.QUALITY not in recovery_blocked:
+        quality_role = quality_override or TrainingRole.RACE_SPECIFIC_TR
         needs.append(_need(
-            policy, TrainingRole.RACE_SPECIFIC_TR,
-            PhysiologicalCredit(TrainingRole.RACE_SPECIFIC_TR, 1, _integer(rules["quality_target_credit_minutes"].value), True), ordinary_window,
+            policy, quality_role,
+            PhysiologicalCredit(quality_role, 1, _integer(rules["quality_target_credit_minutes"].value), True), ordinary_window,
             recovery_cost="hard", priority="race_specific",
             policy_keys=("ordinary_race_specific_work_is_tr_unless_explicitly_anaerobic_or_power", "quality_target_credit_minutes"),
             race_relevance="upcoming_race", progression_relation="race_specific_development",
@@ -623,6 +630,20 @@ def generate_training_need_plan(
     elif strength_gap and TrainingRole.STRENGTH in recovery_blocked:
         blocked.append(TrainingRole.STRENGTH.value)
 
+    # Composition is upstream of placement but downstream of established
+    # phase/race/recovery safety.  A compatible aerobic-strength emphasis is
+    # additive only as a categorical rowing need; quality overrides the
+    # existing race-specific role above rather than creating two hard sessions.
+    if TrainingRole.UT1_AEROBIC_STRENGTH in composition_roles and not race_recovery:
+        needs.append(_need(
+            policy, TrainingRole.UT1_AEROBIC_STRENGTH,
+            PhysiologicalCredit(TrainingRole.UT1_AEROBIC_STRENGTH, 1, _integer(rules["quality_target_credit_minutes"].value), True),
+            ordinary_window, recovery_cost="moderate", priority="aerobic_base",
+            policy_keys=("athlete_relative_composition", "low_intensity_emphasis"),
+            progression_relation="athlete_relative_aerobic_strength",
+            provenance=("training_composition_target",),
+        ))
+
     ordered = expand_repeated_exposure_needs(needs)
     active_counts: dict[str, int] = {}
     for need in ordered:
@@ -651,6 +672,7 @@ def generate_training_needs(
     policy: TrainingPolicy = DEFAULT_TRAINING_POLICY,
     *,
     profile: Mapping[str, Any] | None = None,
+    composition_target: TrainingCompositionTarget | None = None,
 ) -> tuple[TrainingNeed, ...]:
     """Return ordered needs; use ``generate_training_need_plan`` for diagnostics."""
-    return generate_training_need_plan(context, state, policy, profile=profile).needs
+    return generate_training_need_plan(context, state, policy, profile=profile, composition_target=composition_target).needs

@@ -34,6 +34,7 @@ from .training_needs import (
     generate_residual_aerobic_needs,
     generate_training_need_plan,
 )
+from .training_composition import derive_training_composition_target
 from .planning_normalization import NormalizedPlanningContext, normalize_planning_inputs
 from .scheduler_v2 import finalize_translated_quality_sequence, translate_quality_role
 from .training_policy import DEFAULT_TRAINING_POLICY, TrainingPolicy
@@ -383,7 +384,6 @@ def generate_plan_sequence_v3_candidate(
         recovery_constraint_count=len(state.recovery_constraints),
     )))
     started = stage_start("need_generation")
-    need_plan = generate_training_need_plan(context, state, policy, profile=profile)
     performance = build_athlete_performance_profile(profile, as_of=planning_date)
     limiter = derive_performance_limiter(performance, coach_focus=profile.get("preferences", {}).get("development_focus"))
     next_race = _upcoming_race_fact(profile, planning_date)
@@ -391,6 +391,14 @@ def generate_plan_sequence_v3_candidate(
     prior_diagnostics = (prior_plan or {}).get("v2_diagnostics", {}) if isinstance(prior_plan, Mapping) else {}
     development_block = derive_development_block(focus, planning_date=planning_date, prior_diagnostics=prior_diagnostics)
     load_targets = derive_training_load_targets(context, state, policy, profile=profile, planning_date=planning_date)
+    composition_target = derive_training_composition_target(
+        planning_date=planning_date, state=state, load_targets=load_targets,
+        performance=performance, limiter=limiter, focus=focus,
+        development_block=development_block,
+    )
+    need_plan = generate_training_need_plan(
+        context, state, policy, profile=profile, composition_target=composition_target,
+    )
     total_training_targets = derive_total_training_load_targets(context, state, policy, profile=profile, planning_date=planning_date)
     endurance_demand_targets = derive_endurance_demand_targets(load_targets, state)
     distribution_targets = derive_training_distribution_targets(load_targets, policy)
@@ -518,6 +526,17 @@ def generate_plan_sequence_v3_candidate(
         "performance_limiter": {"mode": limiter.mode, "primary_focus": limiter.primary_focus, "secondary_focus": limiter.secondary_focus, "evidence": limiter.evidence, "tests_used": limiter.tests_used, "tests_missing": limiter.tests_missing, "policy_version": limiter.policy_version, "rationale": limiter.rationale},
         "active_training_focus": {"primary": focus.primary, "secondary": focus.secondary, "source": focus.source, "phase": focus.phase, "race_type": focus.race_type, "days_to_race": focus.days_to_race, "rationale": focus.rationale},
         "performance_development_block": {"block_id": development_block.block_id, "start_date": development_block.start_date.isoformat(), "end_date": development_block.end_date.isoformat(), "primary_focus": development_block.primary_focus, "secondary_focus": development_block.secondary_focus, "progression_family": development_block.progression_family, "current_progression_step": development_block.current_progression_step, "completed_key_exposures": development_block.completed_key_exposures, "retest_state": development_block.retest_state, "completion_state": development_block.completion_state},
+        "training_composition_target": {
+            "horizon_days": composition_target.horizon_days,
+            "dominant_focus": composition_target.dominant_focus,
+            "secondary_focus": composition_target.secondary_focus,
+            "protected_low_intensity_minutes": composition_target.protected_low_intensity_minutes,
+            "desired_development_roles": tuple(item.value for item in composition_target.desired_development_roles),
+            "maximum_quality_exposures": composition_target.maximum_quality_exposures,
+            "confidence": composition_target.confidence,
+            "limiter_mode": composition_target.limiter_mode,
+            "rationale": composition_target.rationale,
+        },
         "workout_selection_explanations": {"WHY_THIS_ROLE": "placement role is fixed by M11A-D", "WHY_THIS_WORKOUT": "deterministic compatible selector ranking", "ACTIVE_TRAINING_FOCUS": focus.primary, "TEST_EVIDENCE_USED": performance.source_test_ids or ("none",), "RACE_CONTEXT_USED": focus.race_type, "PROGRESSION_REASON": selection_context["progression_reason"], "VARIETY_REASON": "recent final fingerprints penalize exact/equivalent repetition", "REPETITION_REASON": "only explicit/no-alternative reasons", "RECENT_HISTORY_CONSIDERED": len(selector_history)},
         "replacement_comparison": {
             "needs_generated": len(effective_needs), "needs_placed": len({item.training_need_id for item in placed.placements if item.authority_status is PlacementAuthorityStatus.PROVISIONAL}),
