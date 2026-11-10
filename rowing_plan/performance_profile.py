@@ -142,12 +142,34 @@ def build_athlete_performance_profile(profile: Mapping[str, Any], *, as_of: date
     trends = longitudinal(testing_blocks(dict(profile)), as_of, 365)
     deltas = {key: value for key, value in (trends.get("rows", [])[-1] if trends.get("rows") else {}).items() if key.endswith("_pct_change") and value is not None}
     present = len(current)
+    component_count = sum(
+        value is not None
+        for value in (values["thirty_min_rate_capped_optional"], values["sixty_second"], values["seven_stroke_peak"])
+    )
+    relationship_count = len(relationships)
+    if not present:
+        completeness = "none"
+        confidence = "unavailable"
+    elif two and component_count == 0:
+        completeness = "integrated_anchor"
+        confidence = "low"
+    elif not two:
+        completeness = "component_only"
+        confidence = "low"
+    elif component_count == 1:
+        completeness = "integrated_plus_one_component"
+        confidence = "medium"
+    elif component_count == 3:
+        completeness = "complete"
+        confidence = "high"
+    else:
+        completeness = "multiple_component_relationships"
+        confidence = "high" if relationship_count >= 2 else "medium"
     return AthletePerformanceProfile(
         tuple(sorted(item.test_id for item in current.values())), tuple(sorted(entries, key=lambda item: (item.protocol, item.test_date or date.min, item.test_id))),
         two.time_seconds if two else None, values["two_k"], values["thirty_min_rate_capped_optional"], values["sixty_second"], values["seven_stroke_peak"], values["twenty_second_optional"],
         dict(sorted(relationships.items())), dict(sorted(deltas.items())),
-        "high" if present >= 4 else "medium" if present >= 2 else "low" if present else "unavailable",
-        "complete" if all(current.get(key) for key in ("two_k", "thirty_min_rate_capped_optional", "sixty_second", "seven_stroke_peak")) else "partial" if present else "none",
+        confidence, completeness,
         tuple(warnings), ("power_profile.testing_blocks", PROFILE_VERSION),
     )
 
@@ -156,18 +178,27 @@ def derive_performance_limiter(performance: AthletePerformanceProfile, *, coach_
     missing = tuple(key for key, value in (("two_k", performance.two_k_watts), ("thirty_r20", performance.thirty_r20_watts), ("sixty_second", performance.sixty_second_watts), ("seven_stroke", performance.seven_stroke_watts)) if value is None)
     if coach_focus:
         return PerformanceLimiterProfile("coach_defined", coach_focus, None, ("explicit coach/profile focus",), performance.confidence, performance.source_test_ids, missing, PROFILE_VERSION, ("coach_input",), "Current development priority supplied by coach or athlete.")
-    # The app deliberately requires a complete explicit battery before using
-    # its versioned relative heuristic; no population cutoffs are used.
-    if missing:
-        return PerformanceLimiterProfile("unknown", "insufficient_evidence", None, (), "unavailable" if len(missing) == 4 else "low", performance.source_test_ids, missing, PROFILE_VERSION, ("missing_test_evidence",), "Insufficient valid test relationships for a relative limiter interpretation.")
+    if performance.two_k_watts is None:
+        if performance.thirty_r20_watts is not None:
+            return PerformanceLimiterProfile("component_context", "aerobic_strength_context", None, ("30R20_without_2k_anchor",), performance.confidence, performance.source_test_ids, missing, PROFILE_VERSION, ("component_evidence_without_integrated_anchor",), "30R20 supplies conservative aerobic context without fabricating a 2K-relative limiter.")
+        return PerformanceLimiterProfile("unknown", "insufficient_evidence", None, (), performance.confidence, performance.source_test_ids, missing, PROFILE_VERSION, ("missing_integrated_anchor",), "No supported athlete-relative component comparison is available.")
+    candidates: list[tuple[str, float, str]] = []
     ratios = performance.relationships
+    if ratios.get("thirty_r20_to_two_k") is not None:
+        candidates.append(("aerobic_strength", ratios["thirty_r20_to_two_k"], "thirty_r20_to_two_k"))
+    if ratios.get("sixty_second_to_two_k") is not None:
+        candidates.append(("anaerobic_lactic", ratios["sixty_second_to_two_k"], "sixty_second_to_two_k"))
+    peak_ratio_key = "seven_stroke_to_sixty_second" if ratios.get("seven_stroke_to_sixty_second") is not None else "seven_stroke_to_two_k"
+    if ratios.get(peak_ratio_key) is not None:
+        candidates.append(("anaerobic_alactic_peak_power", ratios[peak_ratio_key], peak_ratio_key))
+    if not candidates:
+        return PerformanceLimiterProfile("integrated_anchor", "integrated_rowing_performance", None, ("2k_anchor_without_component_comparison",), performance.confidence, performance.source_test_ids, missing, PROFILE_VERSION, ("integrated_anchor_only",), "A valid 2K informs integrated rowing context but does not identify a component limiter.")
     focus = min(
-        (("aerobic_strength", ratios.get("thirty_r20_to_two_k", 0)),
-         ("anaerobic_lactic", ratios.get("sixty_second_to_two_k", 0)),
-         ("anaerobic_alactic_peak_power", ratios.get("seven_stroke_to_sixty_second", 0))),
-        key=lambda item: (item[1], item[0]),
+        candidates, key=lambda item: (item[1], item[0]),
     )[0]
-    return PerformanceLimiterProfile("athlete_relative_heuristic", focus, "integrated_race_performance", tuple(sorted(f"{key}={value:.3f}" for key, value in ratios.items())), "medium", performance.source_test_ids, (), PROFILE_VERSION, ("athlete_relative_relationships", "evidence_informed_heuristic"), "Relative development priority from the athlete's own valid test relationships; not a universal weakness label.")
+    evidence = tuple(sorted(f"{key}={value:.3f}" for _focus, value, key in candidates))
+    confidence = "high" if len(candidates) >= 2 else "medium"
+    return PerformanceLimiterProfile("athlete_relative_heuristic", focus, "integrated_race_performance", evidence, confidence, performance.source_test_ids, missing, PROFILE_VERSION, ("athlete_relative_relationships", "evidence_informed_heuristic"), "Relative development priority from the athlete's own supported test relationships; not a universal weakness label.")
 
 
 def derive_training_focus(limiter: PerformanceLimiterProfile, *, phase: str, race_type: str = "general", days_to_race: int | None = None, recovery_active: bool = False) -> TrainingFocus:

@@ -92,10 +92,13 @@ research citation.
   not a universal rest-day prohibition. Recovery, fixed rest, authority,
   unavailability, high load, and the final 48-hour race window may all justify
   leaving it empty.
-- V3's performance limiter is a versioned app heuristic based only on valid
-  within-athlete relationships. It does not predict a 2K, infer lactate
-  threshold from 30R20, or apply population/age/sex labels. Missing evidence
-  yields `unknown`, not an invented limiter.
+- V3's performance limiter is a versioned app heuristic based only on the
+  valid within-athlete relationship actually available. A 2K alone remains an
+  integrated anchor; a component test alone is conservative context; a 2K
+  plus that component can inform only that component's emphasis. It does not
+  predict a 2K, infer lactate threshold from 30R20, or apply
+  population/age/sex labels. Missing tests never reduce the normal training
+  dose or manufacture conclusions about another component.
 - M1 cross-training records optional athlete capability and completed
   general-aerobic history only. It creates no TrainingNeed, load target,
   placement, materialized workout, or fixed weekday. General-aerobic and
@@ -121,14 +124,14 @@ research citation.
   are never silently converted. Date-specific availability is the existing
   extension point for future seasonal modality availability; no universal
   winter months are encoded.
-- M2.8 keeps the existing test-battery semantics: 2K is an integrated anchor,
-  30R20 is aerobic-strength/endurance evidence, 60-second work is
-  anaerobic-lactic evidence, and 7-stroke work is peak-power evidence.  A
-  complete valid battery may request one *phase-compatible* development role
+- M2.8 treats every performance test as optional evidence: 2K is an integrated
+  anchor, 30R20 is aerobic-strength/endurance evidence, 60-second work is
+  anaerobic-lactic evidence, and 7-stroke work is peak-power evidence. A
+  supported relationship may request one *phase-compatible* development role
   inside existing total-load, low-intensity, quality, recovery, and
-  race/taper guards.  This exact mapping is a transparent app heuristic, not
-  a published formula or population classification. Incomplete batteries keep
-  conservative composition, and race/taper/recovery override long-term focus.
+  race/taper guards; it does not require a complete battery. This exact
+  mapping is a transparent app heuristic, not a published formula or
+  population classification. Race/taper/recovery override long-term focus.
 
 ## Audit contract
 

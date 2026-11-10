@@ -6,6 +6,7 @@ import json
 
 from rowing_plan.intensity import build_intensity_profile
 from rowing_plan.power_profile import build_power_profile
+from rowing_plan.performance_profile import build_athlete_performance_profile, derive_performance_limiter
 from rowing_plan.replacement_plan_v3 import generate_plan_sequence_v3_candidate
 
 AS_OF = date(2026, 11, 16)
@@ -82,11 +83,60 @@ def test_imminent_race_overrides_peak_power_development():
     assert target["desired_development_roles"] == []
 
 
-def test_incomplete_battery_keeps_conservative_baseline_without_composition_shift():
+def test_two_k_plus_30r20_uses_available_aerobic_relationship_without_other_component_claims():
     profile = _profile([_test("2k", "two_k", 420), _test("r20", "thirty_min_rate_capped_optional", 150)])
     candidate = _candidate(profile)
     assert candidate.success
     target = candidate.plan["v2_diagnostics"]["training_composition_target"]
-    assert target["limiter_mode"] == "unknown"
-    assert target["desired_development_roles"] == []
-    assert "incomplete_or_unknown_battery_preserves_conservative_baseline" in target["rationale"]
+    assert target["limiter_mode"] == "athlete_relative_heuristic"
+    assert target["desired_development_roles"] == ["ut1_aerobic_strength"]
+
+
+def test_optional_tests_degrade_by_supported_relationship_instead_of_all_or_nothing():
+    two_k = _test("2k", "two_k", 420)
+    r20 = _test("r20", "thirty_min_rate_capped_optional", 150)
+    sixty = _test("60", "sixty_second", 300)
+    peak = _test("7", "seven_stroke_peak", 250)
+    cases = (
+        ((), "unknown", "insufficient_evidence", "unavailable", "none"),
+        ((two_k,), "integrated_anchor", "integrated_rowing_performance", "low", "integrated_anchor"),
+        ((r20,), "component_context", "aerobic_strength_context", "low", "component_only"),
+        ((two_k, r20), "athlete_relative_heuristic", "aerobic_strength", "medium", "integrated_plus_one_component"),
+        ((two_k, sixty), "athlete_relative_heuristic", "anaerobic_lactic", "medium", "integrated_plus_one_component"),
+        ((two_k, peak), "athlete_relative_heuristic", "anaerobic_alactic_peak_power", "medium", "integrated_plus_one_component"),
+        ((two_k, r20, sixty, peak), "athlete_relative_heuristic", "aerobic_strength", "high", "complete"),
+    )
+    for tests, mode, focus, confidence, completeness in cases:
+        performance = build_athlete_performance_profile(_profile(list(tests)), as_of=AS_OF)
+        limiter = derive_performance_limiter(performance)
+        assert (limiter.mode, limiter.primary_focus) == (mode, focus)
+        assert (performance.confidence, performance.evidence_completeness) == (confidence, completeness)
+
+
+def test_missing_optional_tests_preserve_normal_dose_and_strength_without_test_derived_shift():
+    no_tests = _candidate(_profile([]))
+    two_k_only = _candidate(_profile([_test("2k", "two_k", 420)]))
+    assert no_tests.success and two_k_only.success
+    for candidate in (no_tests, two_k_only):
+        composition = candidate.plan["v2_diagnostics"]["training_composition_target"]
+        total = candidate.plan["v2_diagnostics"]["total_training_load_targets"][0]
+        sessions = candidate.plan["sessions"]
+        assert composition["desired_development_roles"] == []
+        assert total["total_training_target"] == 360
+        assert any(item["mode"] == "strength" for item in sessions)
+        assert sum(item["mode"] == "erg" for item in sessions) >= 2
+    assert no_tests.plan["v2_diagnostics"]["total_training_load_targets"] == two_k_only.plan["v2_diagnostics"]["total_training_load_targets"]
+
+
+def test_each_supported_two_k_component_pair_reaches_only_its_compatible_composition_role():
+    two_k = _test("2k", "two_k", 420)
+    cases = (
+        (_test("r20", "thirty_min_rate_capped_optional", 150), "ut1_aerobic_strength"),
+        (_test("60", "sixty_second", 300), "anaerobic_an"),
+        (_test("7", "seven_stroke_peak", 250), "power_pp"),
+    )
+    for component, expected_role in cases:
+        candidate = _candidate(_profile([two_k, component]))
+        assert candidate.success
+        target = candidate.plan["v2_diagnostics"]["training_composition_target"]
+        assert target["desired_development_roles"] == [expected_role]
