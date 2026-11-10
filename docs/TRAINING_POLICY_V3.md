@@ -111,6 +111,15 @@ research citation.
   This product reconciliation is a software/coach-facing heuristic, not a
   universal percentage or modality conversion claim. M2 still creates no
   cross-training need, selection, placement, materialization, or fixed day.
+- Current rowing environment is an athlete-entered modality constraint, not a
+  calendar-season inference: `erg` means erg-only, `on_water` means
+  on-water-only, and `mixed` uses the date/weekday rowing-mode declaration.
+  Erg satisfies rowing-specific physiological purposes (UT2/UT1/AT/TR/AN/PP)
+  when available, but does not claim boat-skill equivalence. Course practice
+  and explicitly on-water coached authority remain on-water commitments and
+  are never silently converted. Date-specific availability is the existing
+  extension point for future seasonal modality availability; no universal
+  winter months are encoded.
 
 ## Audit contract
 

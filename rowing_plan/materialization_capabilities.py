@@ -27,6 +27,39 @@ _ROLE_TO_SELECTOR = {
     "race_preparation": "RACE_PACE",
     "taper_maintenance": "RACE_PACE",
 }
+ROWING_MODALITIES = ("on_water", "erg")
+
+
+def rowing_modalities_for_date(profile: Mapping[str, object], day: date) -> tuple[str, ...]:
+    """Return available rowing *modalities*, separate from training purpose.
+
+    The existing athlete-level ``training_environment`` is the current global
+    availability declaration.  ``erg`` and ``on_water`` therefore override
+    stale mixed-environment weekday preferences; ``mixed`` continues to use a
+    date/weekday's explicit modes.  Date-specific records already provide the
+    narrow building block for a later seasonal availability UI without
+    hard-coding calendar months.
+    """
+    athlete = profile.get("athlete") if isinstance(profile, Mapping) else None
+    environment = str(athlete.get("training_environment", "mixed")) if isinstance(athlete, Mapping) else "mixed"
+    if environment == "erg":
+        return ("erg",)
+    if environment == "on_water":
+        return ("on_water",)
+
+    candidates: Mapping[str, object] | None = None
+    for item in profile.get("date_availability", ()):
+        if isinstance(item, Mapping) and str(item.get("date")) == day.isoformat():
+            candidates = item
+            break
+    if candidates is None:
+        for item in profile.get("weekly_availability", ()):
+            if isinstance(item, Mapping) and str(item.get("weekday", "")).lower() == day.strftime("%A").lower():
+                candidates = item
+                break
+    modes = candidates.get("rowing_modes", ()) if isinstance(candidates, Mapping) else ()
+    normalized = tuple(mode for mode in modes if mode in ROWING_MODALITIES)
+    return normalized or ("erg",)
 
 
 def phase_type_for_date(profile: Mapping[str, object], day: date) -> str:
@@ -40,10 +73,8 @@ def phase_type_for_date(profile: Mapping[str, object], day: date) -> str:
 
 
 def mode_for_date(profile: Mapping[str, object], day: date) -> str:
-    for item in profile.get("weekly_availability", ()):
-        if isinstance(item, Mapping) and str(item.get("weekday", "")).lower() == day.strftime("%A").lower():
-            return next((value for value in item.get("rowing_modes", ()) if value in {"erg", "on_water"}), "erg")
-    return "erg"
+    """Prefer the existing declared order for mixed environments."""
+    return rowing_modalities_for_date(profile, day)[0]
 
 
 def selector_role_for_replacement_role(role: str, phase_type: str) -> str | None:

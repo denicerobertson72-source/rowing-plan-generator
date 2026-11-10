@@ -5,6 +5,7 @@ from .conversions import format_split, watts_to_split_seconds
 from .models import V2SessionMaterializationRequest, V2SessionMaterializationResult
 from .power_profile import target_for_band
 from .session_selection import select_and_instantiate
+from .materialization_capabilities import mode_for_date
 
 _SELECTOR_ROLES={
     "dedicated_ut2":"AEROBIC_BASE", "long_aerobic":"LONG_AEROBIC",
@@ -14,8 +15,7 @@ _SELECTOR_ROLES={
 
 def _mode(profile: dict, day, requested: str|None) -> str:
     if requested: return requested
-    availability=next((item for item in profile.get("weekly_availability",[]) if item.get("weekday")==day.strftime("%A").lower()),{})
-    return next((item for item in availability.get("rowing_modes",[]) if item in {"erg","on_water"}),"erg")
+    return mode_for_date(profile, day)
 
 def _guidance(session: dict, bands, power: dict, *, mode: str, rate=None) -> dict:
     band_map={item["name"]:item for item in bands}
