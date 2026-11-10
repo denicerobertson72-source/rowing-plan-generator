@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from typing import Any, Iterable, Mapping
 
 from .planning_domain import (
-    AuthorityType, PhysiologicalState, Placement, PlacementAuthorityStatus, Provenance, ProvenanceSource, TrainingDistributionTarget, TrainingLoadTarget, TrainingNeed, TrainingRole,
+    AuthorityType, EnduranceDemandTarget, PhysiologicalState, Placement, PlacementAuthorityStatus, Provenance, ProvenanceSource, TrainingDistributionTarget, TrainingLoadTarget, TrainingNeed, TrainingRole,
 )
 from .planning_normalization import NormalizedPlanningContext
 from .training_policy import DEFAULT_TRAINING_POLICY, TrainingPolicy, TrainingPolicyRule
@@ -267,6 +267,87 @@ def derive_training_distribution_targets(
             item.taper_modifier < 1.0,
             ("residual_aerobic_session_minutes", "load_target_range_fractions", "taper_volume_multiplier"),
             ("dose_derived_continuous_exposure_expectation", "soft_gap_and_clustering_preference"),
+        ))
+    return tuple(values)
+
+
+def derive_endurance_demand_targets(
+    targets: Iterable[TrainingLoadTarget], state: PhysiologicalState,
+) -> tuple[EnduranceDemandTarget, ...]:
+    """Mirror approved rowing load envelopes as a single physical budget.
+
+    M2 does not use this target for need generation or placement.  Its history
+    comes from the identity-reconciled physical ledger, rather than adding the
+    overlapping rowing and general-aerobic descriptive dimensions.
+    """
+    recent_by_days = {7: state.recent_7d_load, 14: state.recent_14d_load}
+    values = []
+    for target in targets:
+        recent = recent_by_days.get(target.horizon_days)
+        if recent is None:
+            raise ValueError(f"endurance_demand_recent_load_missing:{target.horizon_days}")
+        completed = recent.physical_endurance_minutes
+        authority = target.authoritative_future_rowing_minutes
+        protected = authority
+        eligible = max(0, min(
+            target.total_rowing_target_minutes - completed - protected,
+            target.maximum_rowing_minutes - completed - protected,
+        ))
+        values.append(EnduranceDemandTarget(
+            id=f"endurance:{target.id}", source_load_target_id=target.id,
+            horizon_start=target.horizon_start, horizon_end=target.horizon_end,
+            horizon_days=target.horizon_days, phase=target.phase,
+            total_minimum_minutes=target.minimum_rowing_minutes,
+            total_target_minutes=target.total_rowing_target_minutes,
+            total_maximum_minutes=target.maximum_rowing_minutes,
+            completed_physical_endurance_minutes=completed,
+            authoritative_future_physical_endurance_minutes=authority,
+            completed_rowing_specific_minutes=recent.rowing_specific_minutes,
+            authoritative_future_rowing_specific_minutes=authority,
+            protected_rowing_specific_minutes=protected,
+            eligible_general_aerobic_residual_minutes=eligible,
+            source_policy_ids=target.source_policy_ids,
+            rationale=(
+                "existing_training_load_target_is_the_initial_physical_endurance_envelope",
+                "completed_physical_duration_is_identity_reconciled_not_descriptive_dimension_sum",
+                "rowing_specific_authority_protected_before_general_aerobic_residual",
+            ),
+            provenance=("training_load_target", "recent_load", "authoritative_commitments"),
+        ))
+    return tuple(values)
+
+
+def reconcile_endurance_demand_targets(
+    targets: Iterable[EnduranceDemandTarget], load_targets: Iterable[TrainingLoadTarget],
+) -> tuple[EnduranceDemandTarget, ...]:
+    """Expose the future substitution envelope without creating a new need.
+
+    Categorical rowing selected by the current V3 plan is protected. Generic
+    residual rowing is deliberately not protected: it is the future candidate
+    that M3+ may fulfil by rowing or an eligible cross-training mode.
+    """
+    load_by_id = {item.id: item for item in load_targets}
+    values = []
+    for target in targets:
+        load = load_by_id.get(target.source_load_target_id)
+        if load is None:
+            raise ValueError(f"endurance_demand_source_load_missing:{target.source_load_target_id}")
+        categorical = load.selected_categorical_rowing_minutes
+        protected = target.authoritative_future_rowing_specific_minutes + categorical
+        current_physical = (
+            target.completed_physical_endurance_minutes
+            + target.authoritative_future_physical_endurance_minutes
+            + categorical
+        )
+        eligible = max(0, min(
+            target.total_target_minutes - current_physical,
+            target.total_maximum_minutes - current_physical,
+        ))
+        values.append(replace(
+            target,
+            protected_rowing_specific_minutes=protected,
+            eligible_general_aerobic_residual_minutes=eligible,
+            rationale=tuple(sorted(set((*target.rationale, "selected_categorical_rowing_is_protected")))),
         ))
     return tuple(values)
 

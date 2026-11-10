@@ -54,6 +54,8 @@ research citation.
 | cross-training capability capture | coach or athlete preference | optional modality, familiarity, and preference | S033–S035 | captures available activities without treating them as a prescription | athlete or coach | M1 profile/history only |
 | cross-training is general, not rowing-specific exposure | research constrained | no rowing-dose equivalence or rowing-zone conversion | S034, S036 | modality specificity is retained; non-rowing history is descriptive only | no | M1 history accounting |
 | conservative unfamiliar-modality handling | evidence-informed heuristic | retain unfamiliarity; do not assume regular tolerance | S033, S035 | new activities need gradual context-aware introduction | coach | future capability review only |
+| total endurance is one physical budget | software implementation choice | use the approved rowing-load envelope as the initial total-endurance envelope | existing V3 load target; S033-S036 | this is a reconciliation boundary, not an added prescription | no | M2 endurance-demand diagnostics |
+| rowing-specific work is protected before substitution | research constrained | no universal rowing/cross-training percentage | S033-S036 | sport specificity, technique, racing, and categorical work remain distinct from general aerobic support | coach | future cross-training substitution policy |
 
 ## Deliberate boundaries
 
@@ -100,6 +102,15 @@ research citation.
   a 50-minute easy erg can appear in both dimensions while remaining 50
   minutes. Non-rowing HR/RPE is preserved but does not acquire rowing-zone
   credit.
+- M2 derives one total physical endurance budget from the existing approved
+  `TrainingLoadTarget`; it does not add a rowing target and a cross-training
+  target together. A fact may be both rowing-specific and general aerobic but
+  its physical duration is identity-reconciled once. Rowing-specific authority
+  and selected categorical work are protected first; only the remaining
+  low-intensity physical dose is an *eligible future substitution* diagnostic.
+  This product reconciliation is a software/coach-facing heuristic, not a
+  universal percentage or modality conversion claim. M2 still creates no
+  cross-training need, selection, placement, materialization, or fixed day.
 
 ## Audit contract
 

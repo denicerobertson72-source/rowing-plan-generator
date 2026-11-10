@@ -29,7 +29,7 @@ from .physiological_state import reduce_physiological_state
 from .plan_assembly_v2 import _sort_key, _totals, build_plan_version_from_v2
 from .planning_domain import AuthorityType, Placement, PlacementAuthorityStatus, PhysiologicalState, TrainingNeed, TrainingRole
 from .physical_exposure_planning import plan_physical_exposures
-from .training_load_targets import derive_training_distribution_targets, derive_training_load_targets, reconcile_training_load_targets
+from .training_load_targets import derive_endurance_demand_targets, derive_training_distribution_targets, derive_training_load_targets, reconcile_endurance_demand_targets, reconcile_training_load_targets
 from .training_needs import (
     generate_residual_aerobic_needs,
     generate_training_need_plan,
@@ -391,6 +391,7 @@ def generate_plan_sequence_v3_candidate(
     prior_diagnostics = (prior_plan or {}).get("v2_diagnostics", {}) if isinstance(prior_plan, Mapping) else {}
     development_block = derive_development_block(focus, planning_date=planning_date, prior_diagnostics=prior_diagnostics)
     load_targets = derive_training_load_targets(context, state, policy, profile=profile, planning_date=planning_date)
+    endurance_demand_targets = derive_endurance_demand_targets(load_targets, state)
     distribution_targets = derive_training_distribution_targets(load_targets, policy)
     categorical_needs = tuple(needs) if needs is not None else need_plan.needs
     timings.append(("need_generation", stage_complete(
@@ -435,6 +436,7 @@ def generate_plan_sequence_v3_candidate(
         load_targets, placements=placed.placements, need_by_id=need_by_id,
         suppressed_residual_by_target=placed.diagnostics.suppressed_residual_by_target,
     )
+    final_endurance_demand_targets = reconcile_endurance_demand_targets(endurance_demand_targets, final_load_targets)
     empty_date_rationales = _empty_date_rationales(placed, state, final_load_targets)
     distribution_diagnostics = _distribution_diagnostics(placed, distribution_targets)
     timings.append(("sequence_placement", stage_complete(
@@ -537,6 +539,8 @@ def generate_plan_sequence_v3_candidate(
                 "strength_exposures": state.recent_7d_load.strength_exposures,
                 "race_exposures": state.recent_7d_load.race_exposures,
                 "optional_activity_minutes": state.recent_7d_load.optional_activity_minutes,
+                "physical_endurance_minutes": state.recent_7d_load.physical_endurance_minutes,
+                "rowing_specific_minutes": state.recent_7d_load.rowing_specific_minutes,
                 "historical_facts_excluded_outside_horizon": len(state.recent_7d_load.excluded_outside_window_fact_ids),
                 "duplicate_facts_excluded": state.recent_7d_load.duplicate_facts_excluded,
             },
@@ -547,6 +551,8 @@ def generate_plan_sequence_v3_candidate(
                 "strength_exposures": state.recent_14d_load.strength_exposures,
                 "race_exposures": state.recent_14d_load.race_exposures,
                 "optional_activity_minutes": state.recent_14d_load.optional_activity_minutes,
+                "physical_endurance_minutes": state.recent_14d_load.physical_endurance_minutes,
+                "rowing_specific_minutes": state.recent_14d_load.rowing_specific_minutes,
                 "historical_facts_excluded_outside_horizon": len(state.recent_14d_load.excluded_outside_window_fact_ids),
                 "duplicate_facts_excluded": state.recent_14d_load.duplicate_facts_excluded,
             },
@@ -597,6 +603,19 @@ def generate_plan_sequence_v3_candidate(
             "preferred_max_aerobic_gap_days": item.preferred_max_aerobic_gap_days,
             "taper_frequency_retention": item.taper_frequency_retention,
         } for item in distribution_targets),
+        "endurance_demand_targets": tuple({
+            "id": item.id, "source_load_target_id": item.source_load_target_id,
+            "horizon_days": item.horizon_days, "phase": item.phase,
+            "total_endurance_minimum": item.total_minimum_minutes,
+            "total_endurance_target": item.total_target_minutes,
+            "total_endurance_maximum": item.total_maximum_minutes,
+            "completed_physical_endurance": item.completed_physical_endurance_minutes,
+            "completed_rowing_specific": item.completed_rowing_specific_minutes,
+            "authoritative_future_physical_endurance": item.authoritative_future_physical_endurance_minutes,
+            "authoritative_future_rowing_specific": item.authoritative_future_rowing_specific_minutes,
+            "protected_rowing_specific": item.protected_rowing_specific_minutes,
+            "eligible_general_aerobic_residual": item.eligible_general_aerobic_residual_minutes,
+        } for item in final_endurance_demand_targets),
         "training_distribution": distribution_diagnostics,
         "physical_exposure_plans": tuple({
             "plan_id": item.plan_id,

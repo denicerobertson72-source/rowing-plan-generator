@@ -298,6 +298,12 @@ class RecentLoad:
     optional_activity_minutes: int = 0
     general_aerobic_minutes: int = 0
     general_aerobic_exposures: int = 0
+    # A fact may be both rowing-specific and generally aerobic, but it is
+    # still exactly one physical exposure in this identity ledger.
+    physical_endurance_minutes: int = 0
+    rowing_specific_minutes: int = 0
+    physical_endurance_fact_ids: tuple[str, ...] = ()
+    rowing_specific_fact_ids: tuple[str, ...] = ()
     counted_fact_ids: tuple[str, ...] = ()
     excluded_outside_window_fact_ids: tuple[str, ...] = ()
     duplicate_facts_excluded: int = 0
@@ -310,11 +316,14 @@ class RecentLoad:
             self.quality_exposures, self.strength_exposures,
             self.race_exposures, self.optional_activity_minutes,
             self.general_aerobic_minutes, self.general_aerobic_exposures,
+            self.physical_endurance_minutes, self.rowing_specific_minutes,
         ):
             if value < 0:
                 raise ValueError("recent_load_values_must_be_nonnegative")
         object.__setattr__(self, "counted_fact_ids", tuple(sorted(set(self.counted_fact_ids))))
         object.__setattr__(self, "excluded_outside_window_fact_ids", tuple(sorted(set(self.excluded_outside_window_fact_ids))))
+        object.__setattr__(self, "physical_endurance_fact_ids", tuple(sorted(set(self.physical_endurance_fact_ids))))
+        object.__setattr__(self, "rowing_specific_fact_ids", tuple(sorted(set(self.rowing_specific_fact_ids))))
 
 
 @dataclass(frozen=True)
@@ -390,6 +399,50 @@ class TrainingLoadTarget:
         object.__setattr__(self, "rationale", tuple(sorted(set(self.rationale))))
         object.__setattr__(self, "provenance", tuple(sorted(set(self.provenance))))
         object.__setattr__(self, "overage_sources", tuple(sorted(set(self.overage_sources))))
+
+
+@dataclass(frozen=True)
+class EnduranceDemandTarget:
+    """One non-additive physical endurance budget for a rolling horizon.
+
+    ``TrainingLoadTarget`` remains the current rowing-planning contract. This
+    M2 object mirrors that approved envelope while separately exposing the
+    rowing-specific work protected before later substitution is considered.
+    """
+
+    id: str
+    source_load_target_id: str
+    horizon_start: date
+    horizon_end: date
+    horizon_days: int
+    phase: str
+    total_minimum_minutes: int
+    total_target_minutes: int
+    total_maximum_minutes: int
+    completed_physical_endurance_minutes: int
+    authoritative_future_physical_endurance_minutes: int
+    completed_rowing_specific_minutes: int
+    authoritative_future_rowing_specific_minutes: int
+    protected_rowing_specific_minutes: int
+    eligible_general_aerobic_residual_minutes: int
+    source_policy_ids: tuple[str, ...] = ()
+    rationale: tuple[str, ...] = ()
+    provenance: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.horizon_days < 1 or self.horizon_end != self.horizon_start + timedelta(days=self.horizon_days - 1):
+            raise ValueError("endurance_demand_target_horizon_is_invalid")
+        values = (
+            self.total_minimum_minutes, self.total_target_minutes, self.total_maximum_minutes,
+            self.completed_physical_endurance_minutes, self.authoritative_future_physical_endurance_minutes,
+            self.completed_rowing_specific_minutes, self.authoritative_future_rowing_specific_minutes,
+            self.protected_rowing_specific_minutes, self.eligible_general_aerobic_residual_minutes,
+        )
+        if any(item < 0 for item in values) or not self.total_minimum_minutes <= self.total_target_minutes <= self.total_maximum_minutes:
+            raise ValueError("endurance_demand_target_values_are_invalid")
+        object.__setattr__(self, "source_policy_ids", tuple(sorted(set(self.source_policy_ids))))
+        object.__setattr__(self, "rationale", tuple(sorted(set(self.rationale))))
+        object.__setattr__(self, "provenance", tuple(sorted(set(self.provenance))))
 
 
 @dataclass(frozen=True)

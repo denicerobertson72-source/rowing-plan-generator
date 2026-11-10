@@ -35,6 +35,13 @@ _QUALITY_BANDS = frozenset({"AT", "TR", "AN", "PP"})
 _AEROBIC_BANDS = frozenset({"UT3", "UT2", "UT1"})
 _LOW_INTENSITY_BANDS = frozenset({"UT3", "UT2"})
 _ROWING_ROLES = _AEROBIC_ROLES | {TrainingRole.QUALITY, TrainingRole.RACE}
+_ROWING_SPECIFIC_ROLES = _ROWING_ROLES | {
+    TrainingRole.THRESHOLD_AT, TrainingRole.RACE_SPECIFIC_TR,
+    TrainingRole.ANAEROBIC_AN, TrainingRole.POWER_PP,
+    TrainingRole.TECHNICAL_REENTRY, TrainingRole.RECOVERY_AEROBIC,
+    TrainingRole.TAPER_MAINTENANCE, TrainingRole.RACE_PREPARATION,
+    TrainingRole.COURSE_PRACTICE,
+}
 _CROSS_TRAINING_MODALITIES = frozenset({TrainingModality.BIKE, TrainingModality.ELLIPTICAL, TrainingModality.STAIR_CLIMBER, TrainingModality.RUNNING})
 
 
@@ -47,6 +54,16 @@ def _general_aerobic_fact(fact: HistoricalFact) -> bool:
     # receives no inferred aerobic/rowing-zone credit.
     explicit = _explicit_band(fact)
     return fact.physiological_credit.role in _AEROBIC_ROLES or (modality in _CROSS_TRAINING_MODALITIES and explicit in _LOW_INTENSITY_BANDS)
+
+
+def _rowing_specific_fact(fact: HistoricalFact) -> bool:
+    """Whether a completed fact is rowing-specific physical work."""
+    return fact.type is HistoricalFactType.RACE_FACT or fact.physiological_credit.role in _ROWING_SPECIFIC_ROLES
+
+
+def _physical_endurance_fact(fact: HistoricalFact) -> bool:
+    """One physical aerobic exposure, irrespective of descriptive ledgers."""
+    return _rowing_specific_fact(fact) or _general_aerobic_fact(fact)
 
 
 def _rules_by_key(policy: Iterable[TrainingPolicyRule]) -> dict[str, TrainingPolicyRule]:
@@ -143,6 +160,10 @@ def _recent_load(completed: tuple[HistoricalFact, ...], *, as_of: date, window_d
     optional_minutes = 0
     general_aerobic_minutes = 0
     general_aerobic_exposures = 0
+    physical_endurance_minutes = 0
+    rowing_specific_minutes = 0
+    physical_endurance_fact_ids: list[str] = []
+    rowing_specific_fact_ids: list[str] = []
     for fact in in_window:
         role = fact.physiological_credit.role
         duration = _actual_duration(fact)
@@ -163,12 +184,24 @@ def _recent_load(completed: tuple[HistoricalFact, ...], *, as_of: date, window_d
         if _general_aerobic_fact(fact):
             general_aerobic_minutes += duration
             general_aerobic_exposures += max(1, fact.physiological_credit.exposures)
+        # A rowing fact can be general aerobic too. This explicit identity
+        # ledger records it once as physical duration, never as a sum of the
+        # descriptive rowing and general-aerobic dimensions.
+        if _physical_endurance_fact(fact):
+            physical_endurance_minutes += duration
+            physical_endurance_fact_ids.append(fact.id)
+        if _rowing_specific_fact(fact):
+            rowing_specific_minutes += duration
+            rowing_specific_fact_ids.append(fact.id)
     return RecentLoad(
         window_days=window_days, window_start=start, as_of_date=as_of,
         rowing_minutes=rowing_minutes, low_intensity_rowing_minutes=low_intensity_minutes,
         quality_exposures=quality_exposures, strength_exposures=strength_exposures,
         race_exposures=race_exposures, optional_activity_minutes=optional_minutes,
         general_aerobic_minutes=general_aerobic_minutes, general_aerobic_exposures=general_aerobic_exposures,
+        physical_endurance_minutes=physical_endurance_minutes, rowing_specific_minutes=rowing_specific_minutes,
+        physical_endurance_fact_ids=tuple(physical_endurance_fact_ids),
+        rowing_specific_fact_ids=tuple(rowing_specific_fact_ids),
         counted_fact_ids=tuple(item.id for item in in_window),
         excluded_outside_window_fact_ids=excluded,
         duplicate_facts_excluded=duplicate_facts_excluded,
