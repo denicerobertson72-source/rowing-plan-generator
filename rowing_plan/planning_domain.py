@@ -301,8 +301,13 @@ class RecentLoad:
     # A fact may be both rowing-specific and generally aerobic, but it is
     # still exactly one physical exposure in this identity ledger.
     physical_endurance_minutes: int = 0
+    # Physical training is a non-additive identity ledger above endurance:
+    # strength and endurance each contribute once, while descriptive rowing /
+    # general-aerobic classifications never add a second charge.
+    physical_training_minutes: int = 0
     rowing_specific_minutes: int = 0
     physical_endurance_fact_ids: tuple[str, ...] = ()
+    physical_training_fact_ids: tuple[str, ...] = ()
     rowing_specific_fact_ids: tuple[str, ...] = ()
     counted_fact_ids: tuple[str, ...] = ()
     excluded_outside_window_fact_ids: tuple[str, ...] = ()
@@ -317,12 +322,14 @@ class RecentLoad:
             self.race_exposures, self.optional_activity_minutes,
             self.general_aerobic_minutes, self.general_aerobic_exposures,
             self.physical_endurance_minutes, self.rowing_specific_minutes,
+            self.physical_training_minutes,
         ):
             if value < 0:
                 raise ValueError("recent_load_values_must_be_nonnegative")
         object.__setattr__(self, "counted_fact_ids", tuple(sorted(set(self.counted_fact_ids))))
         object.__setattr__(self, "excluded_outside_window_fact_ids", tuple(sorted(set(self.excluded_outside_window_fact_ids))))
         object.__setattr__(self, "physical_endurance_fact_ids", tuple(sorted(set(self.physical_endurance_fact_ids))))
+        object.__setattr__(self, "physical_training_fact_ids", tuple(sorted(set(self.physical_training_fact_ids))))
         object.__setattr__(self, "rowing_specific_fact_ids", tuple(sorted(set(self.rowing_specific_fact_ids))))
 
 
@@ -440,6 +447,52 @@ class EnduranceDemandTarget:
         )
         if any(item < 0 for item in values) or not self.total_minimum_minutes <= self.total_target_minutes <= self.total_maximum_minutes:
             raise ValueError("endurance_demand_target_values_are_invalid")
+        object.__setattr__(self, "source_policy_ids", tuple(sorted(set(self.source_policy_ids))))
+        object.__setattr__(self, "rationale", tuple(sorted(set(self.rationale))))
+        object.__setattr__(self, "provenance", tuple(sorted(set(self.provenance))))
+
+
+@dataclass(frozen=True)
+class TotalTrainingLoadTarget:
+    """One rolling physical-duration envelope above strength and endurance.
+
+    It deliberately tracks session reservations, not overlapping physiological
+    descriptors.  Therefore a strength session and an erg session each charge
+    once; an erg session that is also low-intensity/general-aerobic does not.
+    """
+
+    id: str
+    horizon_start: date
+    horizon_end: date
+    horizon_days: int
+    phase: str
+    minimum_minutes: int
+    target_minutes: int
+    maximum_minutes: int
+    completed_physical_training_minutes: int
+    authoritative_future_physical_training_minutes: int
+    selected_physical_training_minutes: int = 0
+    selected_endurance_minutes: int = 0
+    selected_rowing_specific_minutes: int = 0
+    selected_strength_minutes: int = 0
+    selected_cross_training_minutes: int = 0
+    source_policy_ids: tuple[str, ...] = ()
+    rationale: tuple[str, ...] = ()
+    provenance: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.horizon_days < 1 or self.horizon_end != self.horizon_start + timedelta(days=self.horizon_days - 1):
+            raise ValueError("total_training_load_target_horizon_is_invalid")
+        values = (
+            self.minimum_minutes, self.target_minutes, self.maximum_minutes,
+            self.completed_physical_training_minutes,
+            self.authoritative_future_physical_training_minutes,
+            self.selected_physical_training_minutes,
+            self.selected_endurance_minutes, self.selected_rowing_specific_minutes,
+            self.selected_strength_minutes, self.selected_cross_training_minutes,
+        )
+        if any(item < 0 for item in values) or not self.minimum_minutes <= self.target_minutes <= self.maximum_minutes:
+            raise ValueError("total_training_load_target_values_are_invalid")
         object.__setattr__(self, "source_policy_ids", tuple(sorted(set(self.source_policy_ids))))
         object.__setattr__(self, "rationale", tuple(sorted(set(self.rationale))))
         object.__setattr__(self, "provenance", tuple(sorted(set(self.provenance))))

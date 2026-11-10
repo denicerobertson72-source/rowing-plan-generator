@@ -66,6 +66,16 @@ def _physical_endurance_fact(fact: HistoricalFact) -> bool:
     return _rowing_specific_fact(fact) or _general_aerobic_fact(fact)
 
 
+def _physical_training_fact(fact: HistoricalFact) -> bool:
+    """One completed duration that belongs in the total training ledger.
+
+    This is intentionally wider than endurance: completed strength is a real
+    physical session, but recovery notes and unclassified/unknown activities
+    are not silently promoted into training dose.
+    """
+    return _physical_endurance_fact(fact) or _classification(fact) == "strength"
+
+
 def _rules_by_key(policy: Iterable[TrainingPolicyRule]) -> dict[str, TrainingPolicyRule]:
     return {item.key: item for item in policy}
 
@@ -161,8 +171,10 @@ def _recent_load(completed: tuple[HistoricalFact, ...], *, as_of: date, window_d
     general_aerobic_minutes = 0
     general_aerobic_exposures = 0
     physical_endurance_minutes = 0
+    physical_training_minutes = 0
     rowing_specific_minutes = 0
     physical_endurance_fact_ids: list[str] = []
+    physical_training_fact_ids: list[str] = []
     rowing_specific_fact_ids: list[str] = []
     for fact in in_window:
         role = fact.physiological_credit.role
@@ -190,6 +202,9 @@ def _recent_load(completed: tuple[HistoricalFact, ...], *, as_of: date, window_d
         if _physical_endurance_fact(fact):
             physical_endurance_minutes += duration
             physical_endurance_fact_ids.append(fact.id)
+        if _physical_training_fact(fact):
+            physical_training_minutes += duration
+            physical_training_fact_ids.append(fact.id)
         if _rowing_specific_fact(fact):
             rowing_specific_minutes += duration
             rowing_specific_fact_ids.append(fact.id)
@@ -200,7 +215,9 @@ def _recent_load(completed: tuple[HistoricalFact, ...], *, as_of: date, window_d
         race_exposures=race_exposures, optional_activity_minutes=optional_minutes,
         general_aerobic_minutes=general_aerobic_minutes, general_aerobic_exposures=general_aerobic_exposures,
         physical_endurance_minutes=physical_endurance_minutes, rowing_specific_minutes=rowing_specific_minutes,
+        physical_training_minutes=physical_training_minutes,
         physical_endurance_fact_ids=tuple(physical_endurance_fact_ids),
+        physical_training_fact_ids=tuple(physical_training_fact_ids),
         rowing_specific_fact_ids=tuple(rowing_specific_fact_ids),
         counted_fact_ids=tuple(item.id for item in in_window),
         excluded_outside_window_fact_ids=excluded,

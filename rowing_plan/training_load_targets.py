@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from typing import Any, Iterable, Mapping
 
 from .planning_domain import (
-    AuthorityType, EnduranceDemandTarget, PhysiologicalState, Placement, PlacementAuthorityStatus, Provenance, ProvenanceSource, TrainingDistributionTarget, TrainingLoadTarget, TrainingNeed, TrainingRole,
+    AuthorityType, EnduranceDemandTarget, PhysiologicalState, Placement, PlacementAuthorityStatus, Provenance, ProvenanceSource, TotalTrainingLoadTarget, TrainingDistributionTarget, TrainingLoadTarget, TrainingNeed, TrainingRole,
 )
 from .planning_normalization import NormalizedPlanningContext
 from .training_policy import DEFAULT_TRAINING_POLICY, TrainingPolicy, TrainingPolicyRule
@@ -24,6 +24,10 @@ _ROWING_ROLES = _LOW_INTENSITY_ROLES | {
     TrainingRole.UT1_AEROBIC_STRENGTH, TrainingRole.QUALITY, TrainingRole.THRESHOLD_AT,
     TrainingRole.RACE_SPECIFIC_TR, TrainingRole.ANAEROBIC_AN, TrainingRole.POWER_PP,
     TrainingRole.TAPER_MAINTENANCE, TrainingRole.RACE_PREPARATION,
+}
+
+_PHYSICAL_ENDURANCE_ROLES = _ROWING_ROLES | {
+    TrainingRole.PRIVATE_COACHING, TrainingRole.COACHED_TRAINING,
 }
 
 
@@ -157,6 +161,18 @@ def _availability_ceiling(profile: Mapping[str, Any], start: date, days: int) ->
     return total
 
 
+def _total_training_baseline(profile: Mapping[str, Any]) -> tuple[int | None, str | None]:
+    """Return an explicit total-training baseline without reinterpreting legacy rowing data."""
+    athlete = profile.get("athlete", {}) if isinstance(profile.get("athlete"), Mapping) else {}
+    value = athlete.get("current_weekly_training_minutes")
+    if value is None:
+        return None, None
+    try:
+        return max(0, int(value)), "athlete.current_weekly_training_minutes"
+    except (TypeError, ValueError):
+        return None, None
+
+
 def _modifiers(context: NormalizedPlanningContext, state: PhysiologicalState, rules: Mapping[str, TrainingPolicyRule]) -> tuple[float, float, str]:
     taper = 1.0
     phase = str(state.phase_context.get("phase_type") or "general_preparation")
@@ -244,6 +260,89 @@ def derive_training_load_targets(
             provenance=("training_policy", "physiological_state", "authoritative_commitments"),
         ))
     return tuple(targets)
+
+
+def _authoritative_physical_training(context: NormalizedPlanningContext, start: date, days: int) -> int:
+    end = start + timedelta(days=days)
+    return sum(
+        item.reservation_minutes for item in context.authoritative_commitments
+        if item.date is not None and start <= item.date < end and item.type is not AuthorityType.FIXED_REST
+    )
+
+
+def derive_total_training_load_targets(
+    context: NormalizedPlanningContext,
+    state: PhysiologicalState,
+    policy: TrainingPolicy = DEFAULT_TRAINING_POLICY,
+    *, profile: Mapping[str, Any], planning_date: date | None = None,
+) -> tuple[TotalTrainingLoadTarget, ...]:
+    """Derive the opt-in top-level physical-duration envelope.
+
+    Old profiles have only a rowing baseline.  Returning no total targets for
+    those profiles is deliberate backward compatibility: rowing minutes are
+    not silently treated as total training minutes.
+    """
+    planning_date = planning_date or context.planning_date
+    if planning_date != context.planning_date or state.as_of_date != planning_date:
+        raise ValueError("total_training_load_target_planning_date_mismatch")
+    baseline, source = _total_training_baseline(profile)
+    if baseline is None:
+        return ()
+    rules = _rules(policy)
+    fractions = rules["load_target_range_fractions"].value
+    progression = rules["load_progression_guard"].value
+    taper, recovery, phase = _modifiers(context, state, rules)
+    targets: list[TotalTrainingLoadTarget] = []
+    for days, recent in ((7, state.recent_7d_load), (14, state.recent_14d_load)):
+        raw = baseline * (days / 7)
+        recent_average = recent.physical_training_minutes if days == 7 else round(recent.physical_training_minutes / 2)
+        guard = max(raw * float(progression["baseline_floor"]), recent_average * (1 + float(progression["maximum_increase"])))
+        guarded = min(raw, guard) if recent_average else raw
+        target = max(0, round(guarded * min(taper, recovery)))
+        targets.append(TotalTrainingLoadTarget(
+            id=f"total-training:{policy.version}:{days}d",
+            horizon_start=planning_date, horizon_end=planning_date + timedelta(days=days - 1),
+            horizon_days=days, phase=phase,
+            minimum_minutes=min(target, round(target * float(fractions["minimum"]))),
+            target_minutes=target,
+            maximum_minutes=max(target, round(target * float(fractions["maximum"]))),
+            completed_physical_training_minutes=recent.physical_training_minutes,
+            authoritative_future_physical_training_minutes=_authoritative_physical_training(context, planning_date, days),
+            source_policy_ids=("load_target_range_fractions", "load_progression_guard", "taper_volume_multiplier"),
+            rationale=(
+                f"baseline_source:{source}",
+                "top_level_physical_duration_envelope_strength_and_endurance_each_charge_once",
+                "legacy_rowing_baseline_is_not_reinterpreted_as_total_training",
+            ),
+            provenance=("training_policy", "physiological_state", "authoritative_commitments"),
+        ))
+    return tuple(targets)
+
+
+def reconcile_total_training_load_targets(
+    targets: Iterable[TotalTrainingLoadTarget], placements: Iterable[Placement],
+) -> tuple[TotalTrainingLoadTarget, ...]:
+    """Reconcile selected reservations once against every rolling horizon."""
+    selected = tuple(item for item in placements if item.authority_status is not PlacementAuthorityStatus.AUTHORITATIVE and item.role is not TrainingRole.REST)
+    result: list[TotalTrainingLoadTarget] = []
+    for target in targets:
+        in_horizon = tuple(item for item in selected if target.horizon_start <= item.date <= target.horizon_end)
+        total = sum(item.reservation_minutes for item in in_horizon)
+        endurance = sum(item.reservation_minutes for item in in_horizon if item.role in _PHYSICAL_ENDURANCE_ROLES)
+        rowing = sum(item.reservation_minutes for item in in_horizon if item.role in _ROWING_ROLES)
+        strength = sum(item.reservation_minutes for item in in_horizon if item.role is TrainingRole.STRENGTH)
+        # Cross-training remains shadow-only in M2: this field exists to
+        # preserve the non-additive contract when M3 begins prescribing it.
+        cross = max(0, endurance - rowing)
+        result.append(replace(
+            target,
+            selected_physical_training_minutes=total,
+            selected_endurance_minutes=endurance,
+            selected_rowing_specific_minutes=rowing,
+            selected_strength_minutes=strength,
+            selected_cross_training_minutes=cross,
+        ))
+    return tuple(result)
 
 
 def derive_training_distribution_targets(

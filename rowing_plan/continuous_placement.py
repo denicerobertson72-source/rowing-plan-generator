@@ -24,7 +24,7 @@ from .planning_domain import (
     ProvenanceSource,
     SequenceConstraintDecision,
     SequenceEligibility,
-    TrainingDistributionTarget, TrainingLoadTarget, TrainingNeed,
+    TotalTrainingLoadTarget, TrainingDistributionTarget, TrainingLoadTarget, TrainingNeed,
     TrainingRole,
 )
 from .planning_normalization import NormalizedPlanningContext
@@ -159,13 +159,17 @@ def _placement_purpose_class(need: TrainingNeed) -> str:
     return "ordinary"
 
 
-def _priority(need: TrainingNeed) -> int:
+def _priority(need: TrainingNeed, *, protect_strength: bool = False) -> int:
     purpose = _placement_purpose_class(need)
     # An approved, maximum-bounded frequency child outranks a later optional
     # residual, but remains below required taper-strength continuity.
     if purpose == "approved_frequency_preservation":
         return 56
-    return _PRIORITY_WEIGHT.get(need.priority, 50)
+    value = _PRIORITY_WEIGHT.get(need.priority, 50)
+    # When an explicit top-level budget exists, a strength minimum cannot be
+    # crowded out by discretionary endurance.  Legacy profiles retain their
+    # established ordering because they have no total-budget contract.
+    return max(value, 88) if protect_strength and need.role is TrainingRole.STRENGTH else value
 
 
 def _role_family(role: TrainingRole) -> str:
@@ -403,6 +407,32 @@ def _residual_maximum_blockers(
     return tuple(sorted(blocked))
 
 
+def _total_training_maximum_blockers(
+    need: TrainingNeed,
+    candidate_date: date,
+    reservation_minutes: int,
+    placements: tuple[Placement, ...],
+    targets: tuple[TotalTrainingLoadTarget, ...],
+) -> tuple[str, ...]:
+    """Keep all physical roles inside the shared duration envelope once."""
+    if need.role is TrainingRole.REST:
+        return ()
+    blocked = []
+    for target in targets:
+        if not target.horizon_start <= candidate_date <= target.horizon_end:
+            continue
+        selected = sum(
+            item.reservation_minutes for item in placements
+            if item.authority_status is not PlacementAuthorityStatus.AUTHORITATIVE
+            and item.role is not TrainingRole.REST
+            and target.horizon_start <= item.date <= target.horizon_end
+        )
+        total = target.completed_physical_training_minutes + target.authoritative_future_physical_training_minutes + selected
+        if total + reservation_minutes > target.maximum_minutes:
+            blocked.append(target.id)
+    return tuple(sorted(blocked))
+
+
 def _unplaced(
     context: NormalizedPlanningContext,
     state: PhysiologicalState,
@@ -413,6 +443,7 @@ def _unplaced(
     config: PlacementSearchConfig,
     profile: Mapping[str, Any] | None,
     load_targets: tuple[TrainingLoadTarget, ...],
+    total_training_targets: tuple[TotalTrainingLoadTarget, ...],
 ) -> tuple[UnplacedNeedDiagnostic, ...]:
     result = []
     placed = set(final.placed_need_ids)
@@ -445,12 +476,17 @@ def _unplaced(
             )
             if blockers:
                 reasons.append("short_horizon_maximum")
+                continue
+            if _total_training_maximum_blockers(need, day.date, reservation, final.placements, total_training_targets):
+                reasons.append("total_training_maximum")
         if need.latest_date < context.planning_date:
             status, primary = "missed", "window_elapsed"
         elif not candidates:
             status, primary = "deferred", "outside_search_horizon"
         elif "short_horizon_maximum" in reasons:
             status, primary = "deferred", "short_horizon_maximum"
+        elif "total_training_maximum" in reasons:
+            status, primary = "deferred", "total_training_maximum"
         elif reasons and all("recovery" in item or "spacing" in item for item in reasons):
             status, primary = "blocked_by_recovery", sorted(reasons)[0]
         elif "insufficient_capacity" in reasons or "multiple_sessions_not_allowed" in reasons:
@@ -474,6 +510,7 @@ def place_continuous_training_needs(
     prior_provisional_dates: Mapping[str, date] | None = None,
     initial_placements: tuple[Placement, ...] | list[Placement] = (),
     load_targets: tuple[TrainingLoadTarget, ...] = (),
+    total_training_targets: tuple[TotalTrainingLoadTarget, ...] = (),
     distribution_targets: tuple[TrainingDistributionTarget, ...] = (),
 ) -> ContinuousPlacementResult:
     """Place abstract needs with bounded deterministic beam search.
@@ -483,7 +520,7 @@ def place_continuous_training_needs(
     """
     if state.as_of_date != context.planning_date:
         raise ValueError("physiological_state_planning_date_mismatch")
-    all_needs = tuple(sorted(needs, key=lambda item: (-_priority(item), item.id)))
+    all_needs = tuple(sorted(needs, key=lambda item: (-_priority(item, protect_strength=bool(total_training_targets)), item.id)))
     dates, seeded, projected, authority_conflicts = _availability(context, profile, config)
     imported = tuple(sorted(initial_placements, key=lambda item: (item.date, item.placement_id)))
     remaining = {item.date: item.remaining_minutes for item in dates.values()}
@@ -534,6 +571,8 @@ def place_continuous_training_needs(
                     for target_id in blockers:
                         suppressed_residual_pairs[(need.id, target_id)] = (decision.recommended_credit_adjustment or need.target_credit).minutes
                     continue
+                if _total_training_maximum_blockers(need, day.date, reservation, current.placements, tuple(total_training_targets)):
+                    continue
                 stable = prior.get(need.id) == day.date
                 score, soft, preference, stability = _placement_score(
                     need, decision, day, stable, current.placements, tuple(distribution_targets),
@@ -571,7 +610,7 @@ def place_continuous_training_needs(
                     placements=tuple(sorted((*current.placements, placement), key=lambda item: (item.date, item.placement_id))),
                     projected=current.projected.with_item(projected_item), remaining=remaining,
                     placed_need_ids=tuple(sorted((*current.placed_need_ids, need.id))),
-                    fulfillment=current.fulfillment + score,
+                    fulfillment=current.fulfillment + score + (130 if total_training_targets and need.role is TrainingRole.STRENGTH else 0),
                     soft_penalty=current.soft_penalty + soft,
                     preference_gain=current.preference_gain + preference,
                     stability_gain=current.stability_gain + stability,
@@ -585,7 +624,7 @@ def place_continuous_training_needs(
                       item.prohibited_role_families, item.preferred, item.authoritative_placement_ids)
         for item in sorted(dates.values(), key=lambda item: item.date)
     )
-    unplaced = _unplaced(context, state, all_needs, dates, final, policy, config, profile, targets)
+    unplaced = _unplaced(context, state, all_needs, dates, final, policy, config, profile, targets, tuple(total_training_targets))
     need_by_id = {item.id: item for item in all_needs}
     repeated_placed: dict[str, int] = {}
     repeated_unplaced: dict[str, int] = {}

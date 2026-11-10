@@ -4,148 +4,1664 @@ import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AppShell } from "../../components/app-shell";
 import { useSaveFeedback } from "../../components/save-feedback";
-import { apiErrorMessage, generateAthletePlan, getAthlete, getCurrentAthlete, planGenerationError, updateAthlete } from "../../lib/api";
+import {
+  apiErrorMessage,
+  generateAthletePlan,
+  getAthlete,
+  getCurrentAthlete,
+  planGenerationError,
+  updateAthlete,
+} from "../../lib/api";
 import { cachePlan } from "../../lib/plan-cache";
 import { normalizeModernSchedulingProfile } from "../../lib/scheduling-profile";
-import { clearSavedSession, getSavedSession, saveSession } from "../../lib/session";
+import {
+  clearSavedSession,
+  getSavedSession,
+  saveSession,
+} from "../../lib/session";
 
 type Profile = Record<string, any>;
 type Activity = Record<string, any>;
 type Draft = { index: number | null; value: any };
-const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+const DAYS = [
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+  "sunday",
+];
 const STRENGTH_EQUIPMENT = [
-  ["full_gym", "Full gym"], ["barbell_rack", "Barbell / rack"], ["dumbbells", "Dumbbells"],
-  ["machines_cables", "Machines / cables"], ["kettlebells", "Kettlebells"],
-  ["bands_bodyweight", "Bands / bodyweight"], ["home_gym", "Home gym"], ["other", "Other"],
+  ["full_gym", "Full gym"],
+  ["barbell_rack", "Barbell / rack"],
+  ["dumbbells", "Dumbbells"],
+  ["machines_cables", "Machines / cables"],
+  ["kettlebells", "Kettlebells"],
+  ["bands_bodyweight", "Bands / bodyweight"],
+  ["home_gym", "Home gym"],
+  ["other", "Other"],
 ] as const;
 const CROSS_TRAINING_MODALITIES = [
-  ["bike", "Bike / bike erg"], ["elliptical", "Elliptical"],
-  ["stair_climber", "Stair climber"], ["running", "Running"],
+  ["bike", "Bike / bike erg"],
+  ["elliptical", "Elliptical"],
+  ["stair_climber", "Stair climber"],
+  ["running", "Running"],
 ] as const;
 const uid = () => crypto.randomUUID?.() ?? `item-${Date.now()}`;
-const label = (value: string) => value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-const dayValues = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-const blankRace = (start: string) => ({ event_name: "", start_date: start, end_date: start, race_dates: start ? [start] : [], practice_sessions: [], distance_m: 2000, environment: "on_water", boat_class: "", expected_races: 1, priority: "B", race_type: "mixed_general", travel_notes: "", notes: "" });
-const eventDates = (start: string, end: string) => { const days: string[] = []; if (!start || !end || start > end) return days; for (let current = new Date(`${start}T12:00:00`); current <= new Date(`${end}T12:00:00`); current.setDate(current.getDate() + 1)) days.push(current.toISOString().slice(0, 10)); return days; };
-const validationFields: Record<string,string>={"Current rowing sessions per week":"current_rowing_sessions_per_week","Desired rowing sessions per week":"desired_rowing_sessions_per_week","Longest comfortable continuous row minutes":"longest_comfortable_continuous_row_minutes","Current approx weekly rowing minutes":"current_approx_weekly_rowing_minutes"};
-const clearServerValidation=()=>{document.querySelectorAll("[data-server-validation]").forEach(node=>node.remove());const summary=document.createElement("p");summary.id="profile-validation-summary";summary.className="error";summary.dataset.serverValidation="true";summary.setAttribute("role","alert");document.querySelector(".profile-form")?.prepend(summary);};
-const showServerValidation=(error:unknown)=>{clearServerValidation();let messages:string[]=[];try{const detail=JSON.parse(String((error as any)?.message??"")).detail;messages=Array.isArray(detail?.validation_errors)?detail.validation_errors:[];}catch{}if(!messages.length)return false;let first:HTMLElement|null=null;messages.forEach(message=>{const name=Object.entries(validationFields).find(([label])=>message.startsWith(label))?.[1];const input=name?document.querySelector(`[name="${name}"]`) as HTMLElement|null:null;if(input){const id=`${name}-server-error`;input.setAttribute("aria-invalid","true");input.setAttribute("aria-describedby",id);input.classList.add("server-invalid");const note=document.createElement("p");note.id=id;note.className="field-error";note.dataset.serverValidation="true";note.textContent=message;input.insertAdjacentElement("afterend",note);first??=input;}else{const summary=document.querySelector("#profile-validation-summary");if(summary)summary.textContent=`We couldn’t save one of your training settings: ${message}`;}});const focusTarget=first as HTMLElement|null;if(focusTarget){focusTarget.scrollIntoView({block:"center"});focusTarget.focus();}return true;};
+const label = (value: string) =>
+  value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+const dayValues = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+const blankRace = (start: string) => ({
+  event_name: "",
+  start_date: start,
+  end_date: start,
+  race_dates: start ? [start] : [],
+  practice_sessions: [],
+  distance_m: 2000,
+  environment: "on_water",
+  boat_class: "",
+  expected_races: 1,
+  priority: "B",
+  race_type: "mixed_general",
+  travel_notes: "",
+  notes: "",
+});
+const eventDates = (start: string, end: string) => {
+  const days: string[] = [];
+  if (!start || !end || start > end) return days;
+  for (
+    let current = new Date(`${start}T12:00:00`);
+    current <= new Date(`${end}T12:00:00`);
+    current.setDate(current.getDate() + 1)
+  )
+    days.push(current.toISOString().slice(0, 10));
+  return days;
+};
+const validationFields: Record<string, string> = {
+  "Current rowing sessions per week": "current_rowing_sessions_per_week",
+  "Desired rowing sessions per week": "desired_rowing_sessions_per_week",
+  "Longest comfortable continuous row minutes":
+    "longest_comfortable_continuous_row_minutes",
+  "Current approx weekly rowing minutes":
+    "current_approx_weekly_rowing_minutes",
+  "Current weekly training minutes": "current_weekly_training_minutes",
+};
+const clearServerValidation = () => {
+  document
+    .querySelectorAll("[data-server-validation]")
+    .forEach((node) => node.remove());
+  const summary = document.createElement("p");
+  summary.id = "profile-validation-summary";
+  summary.className = "error";
+  summary.dataset.serverValidation = "true";
+  summary.setAttribute("role", "alert");
+  document.querySelector(".profile-form")?.prepend(summary);
+};
+const showServerValidation = (error: unknown) => {
+  clearServerValidation();
+  let messages: string[] = [];
+  try {
+    const detail = JSON.parse(String((error as any)?.message ?? "")).detail;
+    messages = Array.isArray(detail?.validation_errors)
+      ? detail.validation_errors
+      : [];
+  } catch {}
+  if (!messages.length) return false;
+  let first: HTMLElement | null = null;
+  messages.forEach((message) => {
+    const name = Object.entries(validationFields).find(([label]) =>
+      message.startsWith(label),
+    )?.[1];
+    const input = name
+      ? (document.querySelector(`[name="${name}"]`) as HTMLElement | null)
+      : null;
+    if (input) {
+      const id = `${name}-server-error`;
+      input.setAttribute("aria-invalid", "true");
+      input.setAttribute("aria-describedby", id);
+      input.classList.add("server-invalid");
+      const note = document.createElement("p");
+      note.id = id;
+      note.className = "field-error";
+      note.dataset.serverValidation = "true";
+      note.textContent = message;
+      input.insertAdjacentElement("afterend", note);
+      first ??= input;
+    } else {
+      const summary = document.querySelector("#profile-validation-summary");
+      if (summary)
+        summary.textContent = `We couldn’t save one of your training settings: ${message}`;
+    }
+  });
+  const focusTarget = first as HTMLElement | null;
+  if (focusTarget) {
+    focusTarget.scrollIntoView({ block: "center" });
+    focusTarget.focus();
+  }
+  return true;
+};
 
 function legacyActivities(profile: Profile): Activity[] {
   if (profile.recurring_activities?.length) return profile.recurring_activities;
   const availability = profile.weekly_availability ?? [];
-  const lifts = availability.filter((entry: any) => entry.heavy_lifting).map((entry: any) => entry.weekday);
-  const rests = availability.filter((entry: any) => entry.fixed_rest).map((entry: any) => entry.weekday);
-  return [...(lifts.length ? [{ activity_id: "strength", activity_type: "strength", sessions_per_week: lifts.length, scheduling_status: "preferred", preferred_days: lifts, allowed_days: lifts }] : []), ...(rests.length ? [{ activity_id: "rest", activity_type: "rest", sessions_per_week: rests.length, scheduling_status: "fixed", fixed_days: rests }] : [])];
+  const lifts = availability
+    .filter((entry: any) => entry.heavy_lifting)
+    .map((entry: any) => entry.weekday);
+  const rests = availability
+    .filter((entry: any) => entry.fixed_rest)
+    .map((entry: any) => entry.weekday);
+  return [
+    ...(lifts.length
+      ? [
+          {
+            activity_id: "strength",
+            activity_type: "strength",
+            sessions_per_week: lifts.length,
+            scheduling_status: "preferred",
+            preferred_days: lifts,
+            allowed_days: lifts,
+          },
+        ]
+      : []),
+    ...(rests.length
+      ? [
+          {
+            activity_id: "rest",
+            activity_type: "rest",
+            sessions_per_week: rests.length,
+            scheduling_status: "fixed",
+            fixed_days: rests,
+          },
+        ]
+      : []),
+  ];
 }
 
-function DayChoices({ title, helper, selected, onChange }: { title: string; helper: string; selected: string[]; onChange: (days: string[]) => void }) {
-  return <fieldset className="day-choices"><legend>{title}</legend><p className="field-help">{helper}</p><div className="day-choice-grid">{DAYS.map((day) => <label className="day-choice" key={day}><input type="checkbox" checked={selected.includes(day)} onChange={(event) => onChange(event.target.checked ? [...selected, day] : selected.filter((item) => item !== day))} /><span>{label(day)}</span></label>)}</div></fieldset>;
+function DayChoices({
+  title,
+  helper,
+  selected,
+  onChange,
+}: {
+  title: string;
+  helper: string;
+  selected: string[];
+  onChange: (days: string[]) => void;
+}) {
+  return (
+    <fieldset className="day-choices">
+      <legend>{title}</legend>
+      <p className="field-help">{helper}</p>
+      <div className="day-choice-grid">
+        {DAYS.map((day) => (
+          <label className="day-choice" key={day}>
+            <input
+              type="checkbox"
+              checked={selected.includes(day)}
+              onChange={(event) =>
+                onChange(
+                  event.target.checked
+                    ? [...selected, day]
+                    : selected.filter((item) => item !== day),
+                )
+              }
+            />
+            <span>{label(day)}</span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
 }
 
-function ActivityEditor({ activity, onSave, onCancel, saving }: { activity: Activity; onSave: (value: Activity) => void; onCancel: () => void; saving: boolean }) {
-  const [draft, setDraft] = useState<Activity>({ ...activity, same_day_rules: { ...(activity.same_day_rules ?? {}) } });
-  const set = (key: string, value: any) => setDraft((current) => ({ ...current, [key]: value }));
-  const setRule = (key: string, value: boolean) => setDraft((current) => ({ ...current, same_day_rules: { ...(current.same_day_rules ?? {}), [key]: value } }));
+function ActivityEditor({
+  activity,
+  onSave,
+  onCancel,
+  saving,
+}: {
+  activity: Activity;
+  onSave: (value: Activity) => void;
+  onCancel: () => void;
+  saving: boolean;
+}) {
+  const [draft, setDraft] = useState<Activity>({
+    ...activity,
+    same_day_rules: { ...(activity.same_day_rules ?? {}) },
+  });
+  const set = (key: string, value: any) =>
+    setDraft((current) => ({ ...current, [key]: value }));
+  const setRule = (key: string, value: boolean) =>
+    setDraft((current) => ({
+      ...current,
+      same_day_rules: { ...(current.same_day_rules ?? {}), [key]: value },
+    }));
   const schedule = draft.scheduling_status ?? "flexible";
-  const primaryKey = schedule === "fixed" ? "fixed_days" : schedule === "preferred" ? "preferred_days" : "allowed_days";
-  return <div className="modal-backdrop"><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="activity-editor-title"><div className="modal-heading"><h2 id="activity-editor-title">Edit {label(draft.activity_type ?? "activity")}</h2><button className="icon-button" type="button" onClick={onCancel} disabled={saving} aria-label="Close">×</button></div><div className="modal-body">
-    <label>Activity<select value={draft.activity_type} onChange={(event) => set("activity_type", event.target.value)}>{["strength", "private_coaching", "coached_row", "alternate_ut2", "rest", "other"].map((item) => <option key={item} value={item}>{label(item)}</option>)}</select></label>
-    <label>Sessions per week<input type="number" min="1" max="7" value={draft.sessions_per_week ?? 1} onChange={(event) => set("sessions_per_week", Number(event.target.value))} /></label>
-    {draft.activity_type === "strength" && <label>Typical strength session duration<input aria-label="Typical strength session duration" type="number" min="1" max="240" value={draft.duration_minutes ?? 60} onChange={(event) => set("duration_minutes", Number(event.target.value))} /><span className="field-help">Typical time for one strength session. Used for scheduling and total training time, not rowing minutes.</span></label>}
-    <label>Scheduling flexibility<select value={schedule} onChange={(event) => set("scheduling_status", event.target.value)}><option value="fixed">Fixed — must happen on these days</option><option value="preferred">Preferred — convenient, but movable</option><option value="flexible">Planner may choose</option></select></label>
-    <DayChoices title={schedule === "fixed" ? "Fixed days" : schedule === "preferred" ? "Preferred days" : "Allowed days"} helper={schedule === "fixed" ? "Must happen on these days." : schedule === "preferred" ? "Convenient days; the planner may move this activity." : "Days the planner may use. Leave empty to use any available day."} selected={dayValues(draft[primaryKey])} onChange={(days) => set(primaryKey, days)} />
-    {draft.activity_type === "strength" && schedule === "flexible" && dayValues(draft.allowed_days).length > 0 && <p className="field-help">This existing strength day restriction has been retained. Review it before clearing it; the planner will not guess that it is obsolete.</p>}
-    {schedule !== "fixed" && <DayChoices title={schedule === "preferred" ? "Allowed days" : "Preferred days"} helper={schedule === "preferred" ? "Additional days the planner may use." : "Convenient days; the planner may move this activity."} selected={dayValues(schedule === "preferred" ? draft.allowed_days : draft.preferred_days)} onChange={(days) => set(schedule === "preferred" ? "allowed_days" : "preferred_days", days)} />}
-    <DayChoices title="Prohibited days" helper="Days the planner may not use." selected={dayValues(draft.prohibited_days)} onChange={(days) => set("prohibited_days", days)} />
-    {["strength", "private_coaching", "coached_row", "alternate_ut2"].includes(draft.activity_type) && <fieldset className="same-day-rules"><legend>Same-day rules</legend><label className="check"><input type="checkbox" checked={draft.same_day_rules?.rowing_allowed === true} onChange={(event) => setRule("rowing_allowed", event.target.checked)} /><span>Rowing is allowed on the same day</span></label></fieldset>}
-    {draft.activity_type === "strength" && <fieldset className="alternate-cardio"><legend>Alternate aerobic after strength</legend><label>Plan setting<select value={draft.alternate_cardio?.mode ?? (draft.same_day_rules?.alternate_ut2_allowed ? "optional" : "off")} onChange={(event) => set("alternate_cardio", { ...(draft.alternate_cardio ?? {}), mode: event.target.value })}><option value="off">None</option><option value="optional">Optional if time</option><option value="planned">Include in plan</option></select></label><p className="field-help">None — no additional aerobic work after strength. Optional if time — shown as optional and not counted toward required training. Include in plan — scheduled as part of the planned week.</p>{((draft.alternate_cardio?.mode ?? (draft.same_day_rules?.alternate_ut2_allowed ? "optional" : "off")) !== "off") && <label>Maximum alternate minutes<input type="number" min="1" max="90" value={draft.alternate_cardio?.max_minutes ?? ""} onChange={(event) => set("alternate_cardio", { ...(draft.alternate_cardio ?? {}), max_minutes: Number(event.target.value) })} /></label>}</fieldset>}
-    <label>Race-week mobility<select value={draft.race_week_mobility ?? "normal"} onChange={(event) => set("race_week_mobility", event.target.value)}><option value="locked">Locked</option><option value="normal">Normal</option><option value="movable">Movable</option><option value="low_fatigue_only">Low fatigue only</option></select></label>
-    <label>Notes<textarea value={draft.notes ?? ""} onChange={(event) => set("notes", event.target.value)} /></label>
-  </div><div className="modal-actions"><button type="button" onClick={() => onSave(draft)} disabled={saving}>{saving ? "Saving…" : "Save activity"}</button><button type="button" className="quiet" onClick={onCancel} disabled={saving}>Cancel</button></div></section></div>;
+  const primaryKey =
+    schedule === "fixed"
+      ? "fixed_days"
+      : schedule === "preferred"
+        ? "preferred_days"
+        : "allowed_days";
+  return (
+    <div className="modal-backdrop">
+      <section
+        className="modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="activity-editor-title"
+      >
+        <div className="modal-heading">
+          <h2 id="activity-editor-title">
+            Edit {label(draft.activity_type ?? "activity")}
+          </h2>
+          <button
+            className="icon-button"
+            type="button"
+            onClick={onCancel}
+            disabled={saving}
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <div className="modal-body">
+          <label>
+            Activity
+            <select
+              value={draft.activity_type}
+              onChange={(event) => set("activity_type", event.target.value)}
+            >
+              {[
+                "strength",
+                "private_coaching",
+                "coached_row",
+                "alternate_ut2",
+                "rest",
+                "other",
+              ].map((item) => (
+                <option key={item} value={item}>
+                  {label(item)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Sessions per week
+            <input
+              type="number"
+              min="1"
+              max="7"
+              value={draft.sessions_per_week ?? 1}
+              onChange={(event) =>
+                set("sessions_per_week", Number(event.target.value))
+              }
+            />
+          </label>
+          {draft.activity_type === "strength" && (
+            <label>
+              Typical strength session duration
+              <input
+                aria-label="Typical strength session duration"
+                type="number"
+                min="1"
+                max="240"
+                value={draft.duration_minutes ?? 60}
+                onChange={(event) =>
+                  set("duration_minutes", Number(event.target.value))
+                }
+              />
+              <span className="field-help">
+                Typical time for one strength session. Used for scheduling and
+                total training time, not rowing minutes.
+              </span>
+            </label>
+          )}
+          <label>
+            Scheduling flexibility
+            <select
+              value={schedule}
+              onChange={(event) => set("scheduling_status", event.target.value)}
+            >
+              <option value="fixed">Fixed — must happen on these days</option>
+              <option value="preferred">
+                Preferred — convenient, but movable
+              </option>
+              <option value="flexible">Planner may choose</option>
+            </select>
+          </label>
+          <DayChoices
+            title={
+              schedule === "fixed"
+                ? "Fixed days"
+                : schedule === "preferred"
+                  ? "Preferred days"
+                  : "Allowed days"
+            }
+            helper={
+              schedule === "fixed"
+                ? "Must happen on these days."
+                : schedule === "preferred"
+                  ? "Convenient days; the planner may move this activity."
+                  : "Days the planner may use. Leave empty to use any available day."
+            }
+            selected={dayValues(draft[primaryKey])}
+            onChange={(days) => set(primaryKey, days)}
+          />
+          {draft.activity_type === "strength" &&
+            schedule === "flexible" &&
+            dayValues(draft.allowed_days).length > 0 && (
+              <p className="field-help">
+                This existing strength day restriction has been retained. Review
+                it before clearing it; the planner will not guess that it is
+                obsolete.
+              </p>
+            )}
+          {schedule !== "fixed" && (
+            <DayChoices
+              title={
+                schedule === "preferred" ? "Allowed days" : "Preferred days"
+              }
+              helper={
+                schedule === "preferred"
+                  ? "Additional days the planner may use."
+                  : "Convenient days; the planner may move this activity."
+              }
+              selected={dayValues(
+                schedule === "preferred"
+                  ? draft.allowed_days
+                  : draft.preferred_days,
+              )}
+              onChange={(days) =>
+                set(
+                  schedule === "preferred" ? "allowed_days" : "preferred_days",
+                  days,
+                )
+              }
+            />
+          )}
+          <DayChoices
+            title="Prohibited days"
+            helper="Days the planner may not use."
+            selected={dayValues(draft.prohibited_days)}
+            onChange={(days) => set("prohibited_days", days)}
+          />
+          {[
+            "strength",
+            "private_coaching",
+            "coached_row",
+            "alternate_ut2",
+          ].includes(draft.activity_type) && (
+            <fieldset className="same-day-rules">
+              <legend>Same-day rules</legend>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={draft.same_day_rules?.rowing_allowed === true}
+                  onChange={(event) =>
+                    setRule("rowing_allowed", event.target.checked)
+                  }
+                />
+                <span>Rowing is allowed on the same day</span>
+              </label>
+            </fieldset>
+          )}
+          {draft.activity_type === "strength" && (
+            <fieldset className="alternate-cardio">
+              <legend>Alternate aerobic after strength</legend>
+              <label>
+                Plan setting
+                <select
+                  value={
+                    draft.alternate_cardio?.mode ??
+                    (draft.same_day_rules?.alternate_ut2_allowed
+                      ? "optional"
+                      : "off")
+                  }
+                  onChange={(event) =>
+                    set("alternate_cardio", {
+                      ...(draft.alternate_cardio ?? {}),
+                      mode: event.target.value,
+                    })
+                  }
+                >
+                  <option value="off">None</option>
+                  <option value="optional">Optional if time</option>
+                  <option value="planned">Include in plan</option>
+                </select>
+              </label>
+              <p className="field-help">
+                None — no additional aerobic work after strength. Optional if
+                time — shown as optional and not counted toward required
+                training. Include in plan — scheduled as part of the planned
+                week.
+              </p>
+              {(draft.alternate_cardio?.mode ??
+                (draft.same_day_rules?.alternate_ut2_allowed
+                  ? "optional"
+                  : "off")) !== "off" && (
+                <label>
+                  Maximum alternate minutes
+                  <input
+                    type="number"
+                    min="1"
+                    max="90"
+                    value={draft.alternate_cardio?.max_minutes ?? ""}
+                    onChange={(event) =>
+                      set("alternate_cardio", {
+                        ...(draft.alternate_cardio ?? {}),
+                        max_minutes: Number(event.target.value),
+                      })
+                    }
+                  />
+                </label>
+              )}
+            </fieldset>
+          )}
+          <label>
+            Race-week mobility
+            <select
+              value={draft.race_week_mobility ?? "normal"}
+              onChange={(event) =>
+                set("race_week_mobility", event.target.value)
+              }
+            >
+              <option value="locked">Locked</option>
+              <option value="normal">Normal</option>
+              <option value="movable">Movable</option>
+              <option value="low_fatigue_only">Low fatigue only</option>
+            </select>
+          </label>
+          <label>
+            Notes
+            <textarea
+              value={draft.notes ?? ""}
+              onChange={(event) => set("notes", event.target.value)}
+            />
+          </label>
+        </div>
+        <div className="modal-actions">
+          <button type="button" onClick={() => onSave(draft)} disabled={saving}>
+            {saving ? "Saving…" : "Save activity"}
+          </button>
+          <button
+            type="button"
+            className="quiet"
+            onClick={onCancel}
+            disabled={saving}
+          >
+            Cancel
+          </button>
+        </div>
+      </section>
+    </div>
+  );
 }
 
-function RaceEditor({ draft, onChange, onSave, onCancel, onDelete, saving }: { draft: Draft; onChange: (value: any) => void; onSave: () => void; onCancel: () => void; onDelete?: () => void; saving: boolean }) {
-  const race = draft.value, set = (key: string, value: any) => onChange({ ...race, [key]: value });
-  const dates = eventDates(race.start_date ?? "", race.end_date ?? race.start_date ?? "");
-  const raceDates = Array.isArray(race.race_dates) ? race.race_dates : (race.start_date === race.end_date ? [race.start_date] : [race.end_date]);
+function RaceEditor({
+  draft,
+  onChange,
+  onSave,
+  onCancel,
+  onDelete,
+  saving,
+}: {
+  draft: Draft;
+  onChange: (value: any) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  onDelete?: () => void;
+  saving: boolean;
+}) {
+  const race = draft.value,
+    set = (key: string, value: any) => onChange({ ...race, [key]: value });
+  const dates = eventDates(
+    race.start_date ?? "",
+    race.end_date ?? race.start_date ?? "",
+  );
+  const raceDates = Array.isArray(race.race_dates)
+    ? race.race_dates
+    : race.start_date === race.end_date
+      ? [race.start_date]
+      : [race.end_date];
   const practices = race.practice_sessions ?? [];
-  const toggleRaceDate = (value: string, checked: boolean) => set("race_dates", checked ? [...raceDates, value].filter((item, index, all) => all.indexOf(item) === index).sort() : raceDates.filter((item: string) => item !== value));
-  const togglePractice = (value: string, checked: boolean) => set("practice_sessions", checked ? [...practices, { date: value, title: "Course practice", duration_minutes: 30 }] : practices.filter((item: any) => item.date !== value));
-  return <div className="modal-backdrop"><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="race-editor-title"><div className="modal-heading"><h2 id="race-editor-title">{draft.index === null ? "Add race" : "Edit race"}</h2><button className="icon-button" type="button" onClick={onCancel} disabled={saving} aria-label="Close">×</button></div><div className="modal-body">
-    <label>Race name<input value={race.event_name ?? ""} onChange={(event) => set("event_name", event.target.value)} /></label><div className="two-col"><label>Event start date<input type="date" value={race.start_date ?? ""} onChange={(event) => { const startDate = event.target.value, wasSingleDay = race.end_date === race.start_date, endDate = wasSingleDay ? startDate : race.end_date; onChange({ ...race, start_date: startDate, end_date: endDate, race_dates: wasSingleDay ? [startDate] : raceDates.filter((value: string) => value >= startDate && value <= endDate), practice_sessions: (race.practice_sessions ?? []).filter((item: any) => item.date >= startDate && item.date <= endDate) }); }} /></label><label>Event end date<input type="date" value={race.end_date ?? race.start_date ?? ""} onChange={(event) => { const endDate = event.target.value; onChange({ ...race, end_date: endDate, race_dates: raceDates.filter((value: string) => value >= (race.start_date ?? endDate) && value <= endDate), practice_sessions: (race.practice_sessions ?? []).filter((item: any) => item.date >= (race.start_date ?? endDate) && item.date <= endDate) }); }} /></label></div>
-    {race.start_date !== race.end_date && !race.race_dates && <p className="field-help">This older multi-day event has no confirmed competition dates. The planner will conservatively use the event end date until you save your actual race days.</p>}
-    <fieldset><legend>Actual competition day(s)</legend><p className="field-help">Select every day you will actually race. Event dates alone are not treated as race days.</p>{dates.map((value) => <label className="check" key={value}><input type="checkbox" checked={raceDates.includes(value)} onChange={(event) => toggleRaceDate(value, event.target.checked)} /> {new Date(`${value}T12:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</label>)}</fieldset>
-    <fieldset><legend>Optional event sessions</legend><p className="field-help">Course practice/familiarization is coach- or athlete-directed rowing, not race load.</p>{dates.map((value) => <label className="check" key={value}><input type="checkbox" checked={practices.some((item: any) => item.date === value)} disabled={raceDates.includes(value)} onChange={(event) => togglePractice(value, event.target.checked)} /> {new Date(`${value}T12:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })} — Course practice / familiarization</label>)}</fieldset>
-    <div className="two-col"><label>Distance<select value={race.distance_m ?? "custom"} onChange={(event) => set("distance_m", event.target.value === "custom" ? null : Number(event.target.value))}><option value="1000">1k</option><option value="2000">2k</option><option value="5000">5k</option><option value="custom">Custom</option></select></label>{race.distance_m === null && <label>Custom metres<input type="number" value={race.custom_distance_m ?? ""} onChange={(event) => set("custom_distance_m", Number(event.target.value))} /></label>}<label>Priority<select value={race.priority ?? "B"} onChange={(event) => set("priority", event.target.value)}><option>A</option><option>B</option><option>C</option></select></label></div>
-    <div className="two-col"><label>Environment<select value={race.environment ?? "on_water"} onChange={(event) => set("environment", event.target.value)}><option value="on_water">On water</option><option value="erg">Erg</option></select></label><label>Expected starts<input type="number" min="1" value={race.expected_races ?? 1} onChange={(event) => set("expected_races", Number(event.target.value))} /></label></div><label>Notes<textarea value={race.notes ?? ""} onChange={(event) => set("notes", event.target.value)} /></label>
-  </div><div className="modal-actions"><button type="button" onClick={onSave} disabled={saving}>{saving ? "Saving…" : "Save race"}</button><button className="quiet" type="button" onClick={onCancel} disabled={saving}>Cancel</button>{onDelete && <button className="danger" type="button" onClick={onDelete} disabled={saving}>Delete race</button>}</div></section></div>;
+  const toggleRaceDate = (value: string, checked: boolean) =>
+    set(
+      "race_dates",
+      checked
+        ? [...raceDates, value]
+            .filter((item, index, all) => all.indexOf(item) === index)
+            .sort()
+        : raceDates.filter((item: string) => item !== value),
+    );
+  const togglePractice = (value: string, checked: boolean) =>
+    set(
+      "practice_sessions",
+      checked
+        ? [
+            ...practices,
+            { date: value, title: "Course practice", duration_minutes: 30 },
+          ]
+        : practices.filter((item: any) => item.date !== value),
+    );
+  return (
+    <div className="modal-backdrop">
+      <section
+        className="modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="race-editor-title"
+      >
+        <div className="modal-heading">
+          <h2 id="race-editor-title">
+            {draft.index === null ? "Add race" : "Edit race"}
+          </h2>
+          <button
+            className="icon-button"
+            type="button"
+            onClick={onCancel}
+            disabled={saving}
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <div className="modal-body">
+          <label>
+            Race name
+            <input
+              value={race.event_name ?? ""}
+              onChange={(event) => set("event_name", event.target.value)}
+            />
+          </label>
+          <div className="two-col">
+            <label>
+              Event start date
+              <input
+                type="date"
+                value={race.start_date ?? ""}
+                onChange={(event) => {
+                  const startDate = event.target.value,
+                    wasSingleDay = race.end_date === race.start_date,
+                    endDate = wasSingleDay ? startDate : race.end_date;
+                  onChange({
+                    ...race,
+                    start_date: startDate,
+                    end_date: endDate,
+                    race_dates: wasSingleDay
+                      ? [startDate]
+                      : raceDates.filter(
+                          (value: string) =>
+                            value >= startDate && value <= endDate,
+                        ),
+                    practice_sessions: (race.practice_sessions ?? []).filter(
+                      (item: any) =>
+                        item.date >= startDate && item.date <= endDate,
+                    ),
+                  });
+                }}
+              />
+            </label>
+            <label>
+              Event end date
+              <input
+                type="date"
+                value={race.end_date ?? race.start_date ?? ""}
+                onChange={(event) => {
+                  const endDate = event.target.value;
+                  onChange({
+                    ...race,
+                    end_date: endDate,
+                    race_dates: raceDates.filter(
+                      (value: string) =>
+                        value >= (race.start_date ?? endDate) &&
+                        value <= endDate,
+                    ),
+                    practice_sessions: (race.practice_sessions ?? []).filter(
+                      (item: any) =>
+                        item.date >= (race.start_date ?? endDate) &&
+                        item.date <= endDate,
+                    ),
+                  });
+                }}
+              />
+            </label>
+          </div>
+          {race.start_date !== race.end_date && !race.race_dates && (
+            <p className="field-help">
+              This older multi-day event has no confirmed competition dates. The
+              planner will conservatively use the event end date until you save
+              your actual race days.
+            </p>
+          )}
+          <fieldset>
+            <legend>Actual competition day(s)</legend>
+            <p className="field-help">
+              Select every day you will actually race. Event dates alone are not
+              treated as race days.
+            </p>
+            {dates.map((value) => (
+              <label className="check" key={value}>
+                <input
+                  type="checkbox"
+                  checked={raceDates.includes(value)}
+                  onChange={(event) =>
+                    toggleRaceDate(value, event.target.checked)
+                  }
+                />{" "}
+                {new Date(`${value}T12:00:00`).toLocaleDateString(undefined, {
+                  weekday: "short",
+                  month: "short",
+                  day: "numeric",
+                })}
+              </label>
+            ))}
+          </fieldset>
+          <fieldset>
+            <legend>Optional event sessions</legend>
+            <p className="field-help">
+              Course practice/familiarization is coach- or athlete-directed
+              rowing, not race load.
+            </p>
+            {dates.map((value) => (
+              <label className="check" key={value}>
+                <input
+                  type="checkbox"
+                  checked={practices.some((item: any) => item.date === value)}
+                  disabled={raceDates.includes(value)}
+                  onChange={(event) =>
+                    togglePractice(value, event.target.checked)
+                  }
+                />{" "}
+                {new Date(`${value}T12:00:00`).toLocaleDateString(undefined, {
+                  weekday: "short",
+                  month: "short",
+                  day: "numeric",
+                })}{" "}
+                — Course practice / familiarization
+              </label>
+            ))}
+          </fieldset>
+          <div className="two-col">
+            <label>
+              Distance
+              <select
+                value={race.distance_m ?? "custom"}
+                onChange={(event) =>
+                  set(
+                    "distance_m",
+                    event.target.value === "custom"
+                      ? null
+                      : Number(event.target.value),
+                  )
+                }
+              >
+                <option value="1000">1k</option>
+                <option value="2000">2k</option>
+                <option value="5000">5k</option>
+                <option value="custom">Custom</option>
+              </select>
+            </label>
+            {race.distance_m === null && (
+              <label>
+                Custom metres
+                <input
+                  type="number"
+                  value={race.custom_distance_m ?? ""}
+                  onChange={(event) =>
+                    set("custom_distance_m", Number(event.target.value))
+                  }
+                />
+              </label>
+            )}
+            <label>
+              Priority
+              <select
+                value={race.priority ?? "B"}
+                onChange={(event) => set("priority", event.target.value)}
+              >
+                <option>A</option>
+                <option>B</option>
+                <option>C</option>
+              </select>
+            </label>
+          </div>
+          <div className="two-col">
+            <label>
+              Environment
+              <select
+                value={race.environment ?? "on_water"}
+                onChange={(event) => set("environment", event.target.value)}
+              >
+                <option value="on_water">On water</option>
+                <option value="erg">Erg</option>
+              </select>
+            </label>
+            <label>
+              Expected starts
+              <input
+                type="number"
+                min="1"
+                value={race.expected_races ?? 1}
+                onChange={(event) =>
+                  set("expected_races", Number(event.target.value))
+                }
+              />
+            </label>
+          </div>
+          <label>
+            Notes
+            <textarea
+              value={race.notes ?? ""}
+              onChange={(event) => set("notes", event.target.value)}
+            />
+          </label>
+        </div>
+        <div className="modal-actions">
+          <button type="button" onClick={onSave} disabled={saving}>
+            {saving ? "Saving…" : "Save race"}
+          </button>
+          <button
+            className="quiet"
+            type="button"
+            onClick={onCancel}
+            disabled={saving}
+          >
+            Cancel
+          </button>
+          {onDelete && (
+            <button
+              className="danger"
+              type="button"
+              onClick={onDelete}
+              disabled={saving}
+            >
+              Delete race
+            </button>
+          )}
+        </div>
+      </section>
+    </div>
+  );
 }
 
-const TESTS = [{ protocol: "two_k", label: "2k time", watts: false }, { protocol: "sixty_second", label: "60-second power", watts: true }, { protocol: "seven_stroke_peak", label: "7-stroke peak", watts: true }];
-const timeToSeconds = (value: string) => { const match = value.match(/^(\d+):(\d{1,2})$/); return match ? Number(match[1]) * 60 + Number(match[2]) : null; };
-const secondsToTime = (value: number | undefined) => value == null ? "" : `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}`;
+const TESTS = [
+  { protocol: "two_k", label: "2k time", watts: false },
+  { protocol: "sixty_second", label: "60-second power", watts: true },
+  { protocol: "seven_stroke_peak", label: "7-stroke peak", watts: true },
+];
+const timeToSeconds = (value: string) => {
+  const match = value.match(/^(\d+):(\d{1,2})$/);
+  return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+};
+const secondsToTime = (value: number | undefined) =>
+  value == null
+    ? ""
+    : `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}`;
 
 export default function ProfilePage() {
-  const [profile, setProfile] = useState<Profile | null>(null), [athleteId, setAthleteId] = useState<string | null>(null), [profileRevision, setProfileRevision] = useState(0), [error, setError] = useState(""), [activityDraft, setActivityDraft] = useState<Activity | null>(null), [raceDraft, setRaceDraft] = useState<Draft | null>(null), [saving, setSaving] = useState(false), [conflict, setConflict] = useState(false);
-  const saved = useMemo(() => getSavedSession(), []), { showSaveSuccess, showSaveError } = useSaveFeedback();
-  const loadLatest = async () => { const result = saved?.athleteId ? await getAthlete(saved.athleteId) : await getCurrentAthlete(); setAthleteId(result.athlete_id); setProfile(result.athlete_profile); setProfileRevision(result.profile_revision); if ((result as any).plan_id) saveSession({ athleteId: result.athlete_id, planId: (result as any).plan_id }); setConflict(false); };
-  useEffect(() => { loadLatest().catch(() => { if (saved?.athleteId) clearSavedSession(); setError(saved?.athleteId ? "Your selected profile is no longer available. Choose one of your account profiles." : "Create your athlete profile to begin."); }); }, [saved]);
-  useEffect(() => { document.querySelector<HTMLSelectElement>('select[name="strength_priority"]')?.setAttribute("aria-label", "Strength-training focus"); }, [profileRevision]);
-  if (error) return <AppShell title="Athlete Profile"><section className="empty"><p>{error}</p><Link href="/onboarding">Create Athlete Profile</Link></section></AppShell>;
-  if (!profile) return <AppShell title="Athlete Profile"><p>Loading Athlete Profile…</p></AppShell>;
-  const athlete = profile.athlete ?? {}, season = profile.season ?? {}, tests = profile.tests ?? {}, trainingContext = profile.training_context ?? {}, crossTraining = profile.cross_training?.modalities ?? {}, activities = legacyActivities(profile), persistedRaces = profile.races ?? [], races = [...persistedRaces].sort((a, b) => (a.start_date ?? "").localeCompare(b.start_date ?? "")), blocks = tests.testing_blocks ?? [], latest = blocks.at(-1) ?? { id: uid(), performance_tests: [] };
-  const persist = async (next: Profile, message: string) => { if (!athleteId || saving) return false; setSaving(true); try { const result = await updateAthlete(athleteId, next, profileRevision); clearServerValidation(); setProfile(result.athlete_profile); setProfileRevision(result.profile_revision); setConflict(false); showSaveSuccess(`${message} Plan needs update.`); return true; } catch (error: any) { if (String(error?.message ?? "").includes("409")) { setConflict(true); showSaveError("This profile was updated in another tab or session. Reload the latest version before saving these changes."); } else if (showServerValidation(error)) showSaveError("Please review the profile details shown below."); else if (error?.status===422) showSaveError(apiErrorMessage(error,"Couldn’t save your changes. Your changes are still here.")); else showSaveError("Couldn’t save your changes. Your changes are still here."); return false; } finally { setSaving(false); } };
+  const [profile, setProfile] = useState<Profile | null>(null),
+    [athleteId, setAthleteId] = useState<string | null>(null),
+    [profileRevision, setProfileRevision] = useState(0),
+    [error, setError] = useState(""),
+    [activityDraft, setActivityDraft] = useState<Activity | null>(null),
+    [raceDraft, setRaceDraft] = useState<Draft | null>(null),
+    [saving, setSaving] = useState(false),
+    [conflict, setConflict] = useState(false);
+  const saved = useMemo(() => getSavedSession(), []),
+    { showSaveSuccess, showSaveError } = useSaveFeedback();
+  const loadLatest = async () => {
+    const result = saved?.athleteId
+      ? await getAthlete(saved.athleteId)
+      : await getCurrentAthlete();
+    setAthleteId(result.athlete_id);
+    setProfile(result.athlete_profile);
+    setProfileRevision(result.profile_revision);
+    if ((result as any).plan_id)
+      saveSession({
+        athleteId: result.athlete_id,
+        planId: (result as any).plan_id,
+      });
+    setConflict(false);
+  };
+  useEffect(() => {
+    loadLatest().catch(() => {
+      if (saved?.athleteId) clearSavedSession();
+      setError(
+        saved?.athleteId
+          ? "Your selected profile is no longer available. Choose one of your account profiles."
+          : "Create your athlete profile to begin.",
+      );
+    });
+  }, [saved]);
+  useEffect(() => {
+    document
+      .querySelector<HTMLSelectElement>('select[name="strength_priority"]')
+      ?.setAttribute("aria-label", "Strength-training focus");
+  }, [profileRevision]);
+  if (error)
+    return (
+      <AppShell title="Athlete Profile">
+        <section className="empty">
+          <p>{error}</p>
+          <Link href="/onboarding">Create Athlete Profile</Link>
+        </section>
+      </AppShell>
+    );
+  if (!profile)
+    return (
+      <AppShell title="Athlete Profile">
+        <p>Loading Athlete Profile…</p>
+      </AppShell>
+    );
+  const athlete = profile.athlete ?? {},
+    season = profile.season ?? {},
+    tests = profile.tests ?? {},
+    trainingContext = profile.training_context ?? {},
+    crossTraining = profile.cross_training?.modalities ?? {},
+    activities = legacyActivities(profile),
+    persistedRaces = profile.races ?? [],
+    races = [...persistedRaces].sort((a, b) =>
+      (a.start_date ?? "").localeCompare(b.start_date ?? ""),
+    ),
+    blocks = tests.testing_blocks ?? [],
+    latest = blocks.at(-1) ?? { id: uid(), performance_tests: [] };
+  const persist = async (next: Profile, message: string) => {
+    if (!athleteId || saving) return false;
+    setSaving(true);
+    try {
+      const result = await updateAthlete(athleteId, next, profileRevision);
+      clearServerValidation();
+      setProfile(result.athlete_profile);
+      setProfileRevision(result.profile_revision);
+      setConflict(false);
+      showSaveSuccess(`${message} Plan needs update.`);
+      return true;
+    } catch (error: any) {
+      if (String(error?.message ?? "").includes("409")) {
+        setConflict(true);
+        showSaveError(
+          "This profile was updated in another tab or session. Reload the latest version before saving these changes.",
+        );
+      } else if (showServerValidation(error))
+        showSaveError("Please review the profile details shown below.");
+      else if (error?.status === 422)
+        showSaveError(
+          apiErrorMessage(
+            error,
+            "Couldn’t save your changes. Your changes are still here.",
+          ),
+        );
+      else
+        showSaveError(
+          "Couldn’t save your changes. Your changes are still here.",
+        );
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
   const saveProfile = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!event.currentTarget.reportValidity()) return Promise.resolve(false);
     const form = new FormData(event.currentTarget);
-    return persist({
-      ...profile,
-      athlete: {
-        ...athlete,
-        display_name: String(form.get("display_name") ?? ""),
-        birth_year: form.get("birth_year") ? Number(form.get("birth_year")) : null,
-        boat_classes: String(form.get("boat_classes") ?? "").split(",").map((item) => item.trim()).filter(Boolean),
-        training_environment: String(form.get("training_environment") ?? "mixed"),
-        current_rowing_sessions_per_week: form.get("current_rowing_sessions_per_week") === "" ? null : Number(form.get("current_rowing_sessions_per_week")),
-        current_approx_weekly_rowing_minutes: form.get("current_approx_weekly_rowing_minutes") === "" ? null : Number(form.get("current_approx_weekly_rowing_minutes")),
+    return persist(
+      {
+        ...profile,
+        athlete: {
+          ...athlete,
+          display_name: String(form.get("display_name") ?? ""),
+          birth_year: form.get("birth_year")
+            ? Number(form.get("birth_year"))
+            : null,
+          boat_classes: String(form.get("boat_classes") ?? "")
+            .split(",")
+            .map((item) => item.trim())
+            .filter(Boolean),
+          training_environment: String(
+            form.get("training_environment") ?? "mixed",
+          ),
+          current_rowing_sessions_per_week:
+            form.get("current_rowing_sessions_per_week") === ""
+              ? null
+              : Number(form.get("current_rowing_sessions_per_week")),
+          current_weekly_training_minutes:
+            form.get("current_weekly_training_minutes") === ""
+              ? null
+              : Number(form.get("current_weekly_training_minutes")),
+          current_approx_weekly_rowing_minutes:
+            form.get("current_approx_weekly_rowing_minutes") === ""
+              ? null
+              : Number(form.get("current_approx_weekly_rowing_minutes")),
+        },
+        preferences: {
+          ...(profile.preferences ?? {}),
+          workout_structure_preference: String(
+            form.get("workout_structure_preference") ?? "varied",
+          ),
+          readiness_checkins_enabled:
+            form.get("readiness_checkins_enabled") === "on",
+        },
+        training_context: {
+          ...trainingContext,
+          strength_experience:
+            String(form.get("strength_experience") ?? "") || null,
+          current_strength_sessions_per_week:
+            form.get("current_strength_sessions_per_week") === ""
+              ? null
+              : Number(form.get("current_strength_sessions_per_week")),
+          strength_equipment_access: form
+            .getAll("strength_equipment_access")
+            .map(String),
+          strength_priority:
+            String(form.get("strength_priority") ?? "") || null,
+          strength_limitations: String(form.get("strength_limitations") ?? ""),
+          training_restriction_source: String(
+            form.get("training_restriction_source") ?? "none",
+          ),
+          training_restriction_summary: String(
+            form.get("training_restriction_summary") ?? "",
+          ),
+        },
+        cross_training: {
+          modalities: Object.fromEntries(
+            CROSS_TRAINING_MODALITIES.map(([mode]) => [
+              mode,
+              {
+                enabled: form.get(`cross-training-${mode}-enabled`) === "on",
+                familiarity:
+                  String(
+                    form.get(`cross-training-${mode}-familiarity`) ?? "",
+                  ) || null,
+                preference: String(
+                  form.get(`cross-training-${mode}-preference`) ?? "neutral",
+                ),
+              },
+            ]),
+          ),
+        },
+        season: {
+          ...season,
+          season_name: String(form.get("season_name") ?? ""),
+          start_date: String(form.get("start_date") ?? season.start_date),
+          end_date: String(form.get("end_date") ?? season.end_date),
+          seasonal_goal: String(form.get("seasonal_goal") ?? ""),
+        },
       },
-      preferences: {
-        ...(profile.preferences ?? {}),
-        workout_structure_preference: String(form.get("workout_structure_preference") ?? "varied"),
-        readiness_checkins_enabled: form.get("readiness_checkins_enabled") === "on",
-      },
-      training_context: {
-        ...trainingContext,
-        strength_experience: String(form.get("strength_experience") ?? "") || null,
-        current_strength_sessions_per_week: form.get("current_strength_sessions_per_week") === "" ? null : Number(form.get("current_strength_sessions_per_week")),
-        strength_equipment_access: form.getAll("strength_equipment_access").map(String),
-        strength_priority: String(form.get("strength_priority") ?? "") || null,
-        strength_limitations: String(form.get("strength_limitations") ?? ""),
-        training_restriction_source: String(form.get("training_restriction_source") ?? "none"),
-        training_restriction_summary: String(form.get("training_restriction_summary") ?? ""),
-      },
-      cross_training: { modalities: Object.fromEntries(CROSS_TRAINING_MODALITIES.map(([mode]) => [mode, {
-        enabled: form.get(`cross-training-${mode}-enabled`) === "on",
-        familiarity: String(form.get(`cross-training-${mode}-familiarity`) ?? "") || null,
-        preference: String(form.get(`cross-training-${mode}-preference`) ?? "neutral"),
-      }])) },
-      season: {
-        ...season,
-        season_name: String(form.get("season_name") ?? ""),
-        start_date: String(form.get("start_date") ?? season.start_date),
-        end_date: String(form.get("end_date") ?? season.end_date),
-        seasonal_goal: String(form.get("seasonal_goal") ?? ""),
-      },
-    }, "Profile updated.");
+      "Profile updated.",
+    );
   };
-  const saveRace = async () => { if (!raceDraft) return; const next = raceDraft.index === null ? [...persistedRaces, raceDraft.value] : persistedRaces.map((race: any, index: number) => index === raceDraft.index ? raceDraft.value : race); if (await persist({ ...profile, races: next }, "Race saved.")) setRaceDraft(null); };
-  const deleteRace = async () => { if (!raceDraft || raceDraft.index === null) return; if (await persist({ ...profile, races: persistedRaces.filter((_: any, index: number) => index !== raceDraft.index) }, "Race removed.")) setRaceDraft(null); };
-  const saveActivity = async (activity: Activity) => { const updated = activities.some((item) => item.activity_id === activity.activity_id) ? activities.map((item) => item.activity_id === activity.activity_id ? activity : item) : [...activities, activity]; if (await persist(normalizeModernSchedulingProfile(profile, updated), "Training schedule saved.")) setActivityDraft(null); };
+  const saveRace = async () => {
+    if (!raceDraft) return;
+    const next =
+      raceDraft.index === null
+        ? [...persistedRaces, raceDraft.value]
+        : persistedRaces.map((race: any, index: number) =>
+            index === raceDraft.index ? raceDraft.value : race,
+          );
+    if (await persist({ ...profile, races: next }, "Race saved."))
+      setRaceDraft(null);
+  };
+  const deleteRace = async () => {
+    if (!raceDraft || raceDraft.index === null) return;
+    if (
+      await persist(
+        {
+          ...profile,
+          races: persistedRaces.filter(
+            (_: any, index: number) => index !== raceDraft.index,
+          ),
+        },
+        "Race removed.",
+      )
+    )
+      setRaceDraft(null);
+  };
+  const saveActivity = async (activity: Activity) => {
+    const updated = activities.some(
+      (item) => item.activity_id === activity.activity_id,
+    )
+      ? activities.map((item) =>
+          item.activity_id === activity.activity_id ? activity : item,
+        )
+      : [...activities, activity];
+    if (
+      await persist(
+        normalizeModernSchedulingProfile(profile, updated),
+        "Training schedule saved.",
+      )
+    )
+      setActivityDraft(null);
+  };
   const onCancel = () => setActivityDraft(null);
-  const saveSchedulingPreferences = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const form = new FormData(event.currentTarget); const preferredLong = DAYS.filter((day) => form.get(`preferred-long-${day}`)); const availability = (profile.weekly_availability ?? []).map((entry: any) => ({ ...entry, max_training_minutes: Number(form.get(`minutes-${entry.weekday}`) ?? entry.max_training_minutes ?? 60) })); return persist({ ...profile, weekly_availability: availability, preferences: { ...(profile.preferences ?? {}), preferred_long_session_days: preferredLong } }, "Scheduling preferences saved."); };
-  const saveTests = () => { const rows = TESTS.map((test) => { const input = (document.getElementById(`test-${test.protocol}`) as HTMLInputElement)?.value ?? "", testDate = (document.getElementById(`test-date-${test.protocol}`) as HTMLInputElement)?.value ?? ""; if (!input) return null; return { id: uid(), protocol: test.protocol, test_date: testDate || null, valid_for_profile: true, source: "manual", ...(test.watts ? test.protocol === "seven_stroke_peak" ? { peak_watts: Number(input) } : { average_watts: Number(input) } : { time_seconds: timeToSeconds(input) }) }; }).filter(Boolean); const unrelated = (latest.performance_tests ?? []).filter((test: any) => !TESTS.some((known) => known.protocol === test.protocol)); return persist({ ...profile, tests: { ...tests, testing_blocks: [...blocks.slice(0, -1), { ...latest, id: latest.id || uid(), performance_tests: [...rows, ...unrelated] }] } }, "Testing history saved."); };
-  const refresh = async () => { if (!athleteId || saving) return; setSaving(true); try { const next = await generateAthletePlan(athleteId); saveSession({ athleteId, planId: next.plan_id }); cachePlan(next.plan_id, next.plan); showSaveSuccess("Plan updated."); } catch (error) { showSaveError(planGenerationError(error)); } finally { setSaving(false); } };
-  return <AppShell title="Athlete Profile"><section className="session-card"><span className="band">TRAINING PROFILE</span><h2>{athlete.display_name || "Rower"}</h2></section>{conflict && <section className="notice"><p><b>This profile was updated in another tab or session.</b> Your unsaved changes are still on this page. Reloading replaces them with the latest saved profile.</p><button type="button" className="quiet" onClick={() => loadLatest().catch(() => showSaveError("Couldn’t reload the latest profile."))}>Reload latest profile</button></section>}<form key={profileRevision} className="profile-form session-card" onSubmit={saveProfile}><h2>Profile & season</h2><div className="two-col"><label>Name<input name="display_name" defaultValue={athlete.display_name ?? ""} /></label><label>Birth year<input name="birth_year" type="number" defaultValue={athlete.birth_year ?? ""} /></label></div><div className="two-col"><label>Boat classes<input name="boat_classes" defaultValue={(athlete.boat_classes ?? []).join(", ")} /></label><label>Training environment<select name="training_environment" defaultValue={athlete.training_environment ?? "mixed"}><option value="mixed">Mixed</option><option value="erg">Erg</option><option value="on_water">On water</option></select></label></div><fieldset><legend>Current training capacity</legend><p className="field-help">These describe what you are regularly completing now; the plan can build gradually from them.</p><div className="two-col"><label>Current rowing sessions/week<input name="current_rowing_sessions_per_week" type="number" min="0" max="7" defaultValue={athlete.current_rowing_sessions_per_week ?? ""} /><span className="field-help">How many rowing sessions are you regularly completing now?</span></label><label>Current rowing minutes/week<input name="current_approx_weekly_rowing_minutes" type="number" min="0" max="2000" defaultValue={athlete.current_approx_weekly_rowing_minutes ?? ""} /><span className="field-help">About how many total rowing minutes are you completing in a normal week?</span></label></div></fieldset><fieldset><legend>Training &amp; Health Context</legend><p className="field-help">Optional context for you and your coach. It does not provide medical advice or automatically change your plan.</p><div className="two-col"><label>Strength experience<select name="strength_experience" defaultValue={trainingContext.strength_experience ?? ""}><option value="">Prefer not to say</option><option value="none">New to strength training</option><option value="beginner">Some experience</option><option value="intermediate">Regular / experienced</option><option value="advanced">Highly experienced</option></select></label><label>Typical strength sessions/week<input name="current_strength_sessions_per_week" type="number" min="0" max="7" defaultValue={trainingContext.current_strength_sessions_per_week ?? ""} /></label></div><fieldset><legend>Strength equipment/access</legend><div className="day-choice-grid">{STRENGTH_EQUIPMENT.map(([value, text]) => <label className="check" key={value}><input name="strength_equipment_access" type="checkbox" value={value} defaultChecked={(trainingContext.strength_equipment_access ?? []).includes(value)} /> {text}</label>)}</div></fieldset><label>Strength priority<select name="strength_priority" defaultValue={trainingContext.strength_priority ?? ""}><option value="">No preference</option><option value="maintenance">Maintain strength</option><option value="support_rowing">Support rowing performance</option><option value="develop_strength">Build strength</option><option value="not_a_current_priority">Not a current focus</option></select></label><label>Anything that currently limits your strength training?<textarea name="strength_limitations" maxLength={1000} defaultValue={trainingContext.strength_limitations ?? ""} placeholder="Equipment limits, movements you avoid, or other practical restrictions." /></label><div className="two-col"><label>Training restriction source<select name="training_restriction_source" defaultValue={trainingContext.training_restriction_source ?? "none"}><option value="none">None</option><option value="athlete">Athlete</option><option value="coach">Coach</option><option value="clinician">Clinician</option></select></label><label>Training restrictions / return-to-training guidance<textarea name="training_restriction_summary" maxLength={1000} defaultValue={trainingContext.training_restriction_summary ?? ""} placeholder="For example: avoid high-impact work, or limit sessions to 45 minutes." /></label></div><label className="check"><input name="readiness_checkins_enabled" type="checkbox" defaultChecked={profile.preferences?.readiness_checkins_enabled === true} /> Use optional readiness check-ins</label><p className="field-help">Check-ins can record sleep, fatigue, soreness, stress, or symptoms. They are optional and are not medical screening. <Link href="/check-in">Open a private check-in</Link>.</p></fieldset><fieldset><legend>Cross-training options</legend><p className="field-help">Choose activities that are available to you for aerobic cross-training. Selecting an activity does not schedule it on a fixed day.</p><div className="stack-actions">{CROSS_TRAINING_MODALITIES.map(([mode,text]) => { const current=crossTraining[mode] ?? {}; return <fieldset key={mode}><legend><label className="check"><input name={`cross-training-${mode}-enabled`} type="checkbox" defaultChecked={current.enabled === true} /> {text}</label></legend><div className="two-col"><label>Familiarity<select name={`cross-training-${mode}-familiarity`} defaultValue={current.familiarity ?? ""}><option value="">New / rarely use</option><option value="new">New / rarely use</option><option value="some_experience">Some experience</option><option value="regular">Regular</option></select></label><label>Preference<select name={`cross-training-${mode}-preference`} defaultValue={current.preference ?? "neutral"}><option value="prefer">Prefer</option><option value="neutral">Neutral</option><option value="avoid">Avoid</option></select></label></div></fieldset>; })}</div></fieldset><label>Season name<input name="season_name" defaultValue={season.season_name ?? ""} /></label><div className="two-col"><label>Season start<input name="start_date" type="date" defaultValue={season.start_date ?? ""} /></label><label>Season end<input name="end_date" type="date" defaultValue={season.end_date ?? ""} /></label></div><label>Seasonal goal<textarea name="seasonal_goal" defaultValue={season.seasonal_goal ?? ""} /></label><label>Workout structure preference<select name="workout_structure_preference" defaultValue={profile.preferences?.workout_structure_preference ?? "varied"}><option value="varied">Varied</option><option value="long_intervals">Prefer longer pieces</option><option value="short_intervals">Prefer shorter pieces</option></select></label><button disabled={saving}>{saving ? "Saving…" : "Save profile details"}</button></form><section className="session-card"><div className="section-heading"><h2>Races & periodization</h2><button className="quiet" type="button" onClick={() => setRaceDraft({ index: null, value: blankRace(season.start_date ?? "") })}>Add race</button></div><p className="note">Races stay in a local draft until Save is confirmed.</p>{races.length ? races.map((race) => <article className="race-editor" key={`${race.start_date}-${race.event_name}`}><h3>{race.event_name || "Untitled race"}</h3><p>{race.start_date || "Date to be set"} · {race.priority || "B"} priority · {race.distance_m ?? race.custom_distance_m ?? "Custom"} m</p><button className="quiet" type="button" onClick={() => setRaceDraft({ index: persistedRaces.indexOf(race), value: { ...race } })}>Edit race</button></article>) : <p>No races added yet.</p>}</section><section className="session-card"><h2>Performance testing</h2>{TESTS.map((test) => { const old = latest.performance_tests?.find((item: any) => item.protocol === test.protocol); return <div className="test-row" key={test.protocol}><b>{test.label}</b><label>Result<input id={`test-${test.protocol}`} defaultValue={test.watts ? old?.peak_watts ?? old?.average_watts ?? "" : secondsToTime(old?.time_seconds)} /></label><label>Date<input id={`test-date-${test.protocol}`} type="date" defaultValue={old?.test_date ?? ""} /></label></div>; })}<button type="button" onClick={saveTests} disabled={saving}>{saving ? "Saving…" : "Save testing history"}</button></section><section className="session-card"><h2>Weekly schedule & flexibility</h2>{activities.map((activity) => <article className="activity-card" key={activity.activity_id}><span className="band">{label(activity.activity_type).toUpperCase()}</span><b>{activity.sessions_per_week} per week · {label(activity.scheduling_status)}</b><p>{dayValues(activity.allowed_days ?? activity.preferred_days ?? activity.fixed_days).map(label).join(", ") || (activity.scheduling_status === "flexible" ? "Planner chooses from available days" : "Choose days when editing")}</p><button className="quiet" type="button" onClick={() => setActivityDraft(activity)}>Edit scheduling</button></article>)}<form className="profile-form" onSubmit={saveSchedulingPreferences}><h3>Training time & long-session opportunity</h3><fieldset><legend>Preferred longer-training days</legend><p className="field-help">Convenient days for a longer independent row; this is a preference, not a fixed commitment.</p>{DAYS.map((day) => <label className="check" key={day}><input name={`preferred-long-${day}`} type="checkbox" defaultChecked={(profile.preferences?.preferred_long_session_days ?? []).includes(day)} /> {label(day)}</label>)}</fieldset>{(profile.weekly_availability ?? []).map((entry: any) => <label key={entry.weekday}>Typical available training time — {label(entry.weekday)}<input name={`minutes-${entry.weekday}`} type="number" min="0" max="360" defaultValue={entry.max_training_minutes ?? 60} /></label>)}<button disabled={saving}>{saving ? "Saving…" : "Save scheduling preferences"}</button></form><div className="stack-actions"><button className="quiet" type="button" onClick={() => setActivityDraft({ activity_id: uid(), activity_type: "coached_row", sessions_per_week: 1, scheduling_status: "flexible", fixed_days: [], preferred_days: [], allowed_days: [], prohibited_days: [], planner_may_choose_day: true })}>Add recurring activity</button><button type="button" onClick={refresh} disabled={saving}>{saving ? "Updating…" : "Update plan with these choices"}</button></div></section>{activityDraft && <ActivityEditor activity={activityDraft} onSave={saveActivity} onCancel={onCancel} saving={saving} />}{raceDraft && <RaceEditor draft={raceDraft} onChange={(value) => setRaceDraft((current) => current ? { ...current, value } : current)} onSave={saveRace} onCancel={() => setRaceDraft(null)} onDelete={raceDraft.index === null ? undefined : deleteRace} saving={saving} />}</AppShell>;
+  const saveSchedulingPreferences = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const preferredLong = DAYS.filter((day) =>
+      form.get(`preferred-long-${day}`),
+    );
+    const availability = (profile.weekly_availability ?? []).map(
+      (entry: any) => ({
+        ...entry,
+        max_training_minutes: Number(
+          form.get(`minutes-${entry.weekday}`) ??
+            entry.max_training_minutes ??
+            60,
+        ),
+      }),
+    );
+    return persist(
+      {
+        ...profile,
+        weekly_availability: availability,
+        preferences: {
+          ...(profile.preferences ?? {}),
+          preferred_long_session_days: preferredLong,
+        },
+      },
+      "Scheduling preferences saved.",
+    );
+  };
+  const saveTests = () => {
+    const rows = TESTS.map((test) => {
+      const input =
+          (document.getElementById(`test-${test.protocol}`) as HTMLInputElement)
+            ?.value ?? "",
+        testDate =
+          (
+            document.getElementById(
+              `test-date-${test.protocol}`,
+            ) as HTMLInputElement
+          )?.value ?? "";
+      if (!input) return null;
+      return {
+        id: uid(),
+        protocol: test.protocol,
+        test_date: testDate || null,
+        valid_for_profile: true,
+        source: "manual",
+        ...(test.watts
+          ? test.protocol === "seven_stroke_peak"
+            ? { peak_watts: Number(input) }
+            : { average_watts: Number(input) }
+          : { time_seconds: timeToSeconds(input) }),
+      };
+    }).filter(Boolean);
+    const unrelated = (latest.performance_tests ?? []).filter(
+      (test: any) => !TESTS.some((known) => known.protocol === test.protocol),
+    );
+    return persist(
+      {
+        ...profile,
+        tests: {
+          ...tests,
+          testing_blocks: [
+            ...blocks.slice(0, -1),
+            {
+              ...latest,
+              id: latest.id || uid(),
+              performance_tests: [...rows, ...unrelated],
+            },
+          ],
+        },
+      },
+      "Testing history saved.",
+    );
+  };
+  const refresh = async () => {
+    if (!athleteId || saving) return;
+    setSaving(true);
+    try {
+      const next = await generateAthletePlan(athleteId);
+      saveSession({ athleteId, planId: next.plan_id });
+      cachePlan(next.plan_id, next.plan);
+      showSaveSuccess("Plan updated.");
+    } catch (error) {
+      showSaveError(planGenerationError(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <AppShell title="Athlete Profile">
+      <section className="session-card">
+        <span className="band">TRAINING PROFILE</span>
+        <h2>{athlete.display_name || "Rower"}</h2>
+      </section>
+      {conflict && (
+        <section className="notice">
+          <p>
+            <b>This profile was updated in another tab or session.</b> Your
+            unsaved changes are still on this page. Reloading replaces them with
+            the latest saved profile.
+          </p>
+          <button
+            type="button"
+            className="quiet"
+            onClick={() =>
+              loadLatest().catch(() =>
+                showSaveError("Couldn’t reload the latest profile."),
+              )
+            }
+          >
+            Reload latest profile
+          </button>
+        </section>
+      )}
+      <form
+        key={profileRevision}
+        className="profile-form session-card"
+        onSubmit={saveProfile}
+      >
+        <h2>Profile & season</h2>
+        <div className="two-col">
+          <label>
+            Name
+            <input
+              name="display_name"
+              defaultValue={athlete.display_name ?? ""}
+            />
+          </label>
+          <label>
+            Birth year
+            <input
+              name="birth_year"
+              type="number"
+              defaultValue={athlete.birth_year ?? ""}
+            />
+          </label>
+        </div>
+        <div className="two-col">
+          <label>
+            Boat classes
+            <input
+              name="boat_classes"
+              defaultValue={(athlete.boat_classes ?? []).join(", ")}
+            />
+          </label>
+          <label>
+            Training environment
+            <select
+              name="training_environment"
+              defaultValue={athlete.training_environment ?? "mixed"}
+            >
+              <option value="mixed">Mixed</option>
+              <option value="erg">Erg</option>
+              <option value="on_water">On water</option>
+            </select>
+          </label>
+        </div>
+        <fieldset>
+          <legend>Current training capacity</legend>
+          <p className="field-help">
+            These describe what you are regularly completing now; the plan can
+            build gradually from them.
+          </p>
+          <div className="two-col">
+            <label>
+              Current rowing sessions/week
+              <input
+                name="current_rowing_sessions_per_week"
+                type="number"
+                min="0"
+                max="7"
+                defaultValue={athlete.current_rowing_sessions_per_week ?? ""}
+              />
+              <span className="field-help">
+                How many rowing sessions are you regularly completing now?
+              </span>
+            </label>
+            <label>
+              Total training minutes/week
+              <input
+                name="current_weekly_training_minutes"
+                type="number"
+                min="0"
+                max="2000"
+                defaultValue={athlete.current_weekly_training_minutes ?? ""}
+              />
+              <span className="field-help">
+                About how many total minutes do you currently train in a typical
+                week? Include rowing/erg, strength, and aerobic cross-training.
+              </span>
+            </label>
+            <label>
+              Current rowing or erg minutes/week
+              <input
+                name="current_approx_weekly_rowing_minutes"
+                type="number"
+                min="0"
+                max="2000"
+                defaultValue={
+                  athlete.current_approx_weekly_rowing_minutes ?? ""
+                }
+              />
+              <span className="field-help">
+                About how many of those minutes are currently rowing or erg?
+              </span>
+            </label>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Training &amp; Health Context</legend>
+          <p className="field-help">
+            Optional context for you and your coach. It does not provide medical
+            advice or automatically change your plan.
+          </p>
+          <div className="two-col">
+            <label>
+              Strength experience
+              <select
+                name="strength_experience"
+                defaultValue={trainingContext.strength_experience ?? ""}
+              >
+                <option value="">Prefer not to say</option>
+                <option value="none">New to strength training</option>
+                <option value="beginner">Some experience</option>
+                <option value="intermediate">Regular / experienced</option>
+                <option value="advanced">Highly experienced</option>
+              </select>
+            </label>
+            <label>
+              Typical strength sessions/week
+              <input
+                name="current_strength_sessions_per_week"
+                type="number"
+                min="0"
+                max="7"
+                defaultValue={
+                  trainingContext.current_strength_sessions_per_week ?? ""
+                }
+              />
+            </label>
+          </div>
+          <fieldset>
+            <legend>Strength equipment/access</legend>
+            <div className="day-choice-grid">
+              {STRENGTH_EQUIPMENT.map(([value, text]) => (
+                <label className="check" key={value}>
+                  <input
+                    name="strength_equipment_access"
+                    type="checkbox"
+                    value={value}
+                    defaultChecked={(
+                      trainingContext.strength_equipment_access ?? []
+                    ).includes(value)}
+                  />{" "}
+                  {text}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <label>
+            Strength priority
+            <select
+              name="strength_priority"
+              defaultValue={trainingContext.strength_priority ?? ""}
+            >
+              <option value="">No preference</option>
+              <option value="maintenance">Maintain strength</option>
+              <option value="support_rowing">Support rowing performance</option>
+              <option value="develop_strength">Build strength</option>
+              <option value="not_a_current_priority">
+                Not a current focus
+              </option>
+            </select>
+          </label>
+          <label>
+            Anything that currently limits your strength training?
+            <textarea
+              name="strength_limitations"
+              maxLength={1000}
+              defaultValue={trainingContext.strength_limitations ?? ""}
+              placeholder="Equipment limits, movements you avoid, or other practical restrictions."
+            />
+          </label>
+          <div className="two-col">
+            <label>
+              Training restriction source
+              <select
+                name="training_restriction_source"
+                defaultValue={
+                  trainingContext.training_restriction_source ?? "none"
+                }
+              >
+                <option value="none">None</option>
+                <option value="athlete">Athlete</option>
+                <option value="coach">Coach</option>
+                <option value="clinician">Clinician</option>
+              </select>
+            </label>
+            <label>
+              Training restrictions / return-to-training guidance
+              <textarea
+                name="training_restriction_summary"
+                maxLength={1000}
+                defaultValue={
+                  trainingContext.training_restriction_summary ?? ""
+                }
+                placeholder="For example: avoid high-impact work, or limit sessions to 45 minutes."
+              />
+            </label>
+          </div>
+          <label className="check">
+            <input
+              name="readiness_checkins_enabled"
+              type="checkbox"
+              defaultChecked={
+                profile.preferences?.readiness_checkins_enabled === true
+              }
+            />{" "}
+            Use optional readiness check-ins
+          </label>
+          <p className="field-help">
+            Check-ins can record sleep, fatigue, soreness, stress, or symptoms.
+            They are optional and are not medical screening.{" "}
+            <Link href="/check-in">Open a private check-in</Link>.
+          </p>
+        </fieldset>
+        <fieldset>
+          <legend>Cross-training options</legend>
+          <p className="field-help">
+            Choose activities that are available to you for aerobic
+            cross-training. Selecting an activity does not schedule it on a
+            fixed day.
+          </p>
+          <div className="stack-actions">
+            {CROSS_TRAINING_MODALITIES.map(([mode, text]) => {
+              const current = crossTraining[mode] ?? {};
+              return (
+                <fieldset key={mode}>
+                  <legend>
+                    <label className="check">
+                      <input
+                        name={`cross-training-${mode}-enabled`}
+                        type="checkbox"
+                        defaultChecked={current.enabled === true}
+                      />{" "}
+                      {text}
+                    </label>
+                  </legend>
+                  <div className="two-col">
+                    <label>
+                      Familiarity
+                      <select
+                        name={`cross-training-${mode}-familiarity`}
+                        defaultValue={current.familiarity ?? ""}
+                      >
+                        <option value="">New / rarely use</option>
+                        <option value="new">New / rarely use</option>
+                        <option value="some_experience">Some experience</option>
+                        <option value="regular">Regular</option>
+                      </select>
+                    </label>
+                    <label>
+                      Preference
+                      <select
+                        name={`cross-training-${mode}-preference`}
+                        defaultValue={current.preference ?? "neutral"}
+                      >
+                        <option value="prefer">Prefer</option>
+                        <option value="neutral">Neutral</option>
+                        <option value="avoid">Avoid</option>
+                      </select>
+                    </label>
+                  </div>
+                </fieldset>
+              );
+            })}
+          </div>
+        </fieldset>
+        <label>
+          Season name
+          <input name="season_name" defaultValue={season.season_name ?? ""} />
+        </label>
+        <div className="two-col">
+          <label>
+            Season start
+            <input
+              name="start_date"
+              type="date"
+              defaultValue={season.start_date ?? ""}
+            />
+          </label>
+          <label>
+            Season end
+            <input
+              name="end_date"
+              type="date"
+              defaultValue={season.end_date ?? ""}
+            />
+          </label>
+        </div>
+        <label>
+          Seasonal goal
+          <textarea
+            name="seasonal_goal"
+            defaultValue={season.seasonal_goal ?? ""}
+          />
+        </label>
+        <label>
+          Workout structure preference
+          <select
+            name="workout_structure_preference"
+            defaultValue={
+              profile.preferences?.workout_structure_preference ?? "varied"
+            }
+          >
+            <option value="varied">Varied</option>
+            <option value="long_intervals">Prefer longer pieces</option>
+            <option value="short_intervals">Prefer shorter pieces</option>
+          </select>
+        </label>
+        <button disabled={saving}>
+          {saving ? "Saving…" : "Save profile details"}
+        </button>
+      </form>
+      <section className="session-card">
+        <div className="section-heading">
+          <h2>Races & periodization</h2>
+          <button
+            className="quiet"
+            type="button"
+            onClick={() =>
+              setRaceDraft({
+                index: null,
+                value: blankRace(season.start_date ?? ""),
+              })
+            }
+          >
+            Add race
+          </button>
+        </div>
+        <p className="note">
+          Races stay in a local draft until Save is confirmed.
+        </p>
+        {races.length ? (
+          races.map((race) => (
+            <article
+              className="race-editor"
+              key={`${race.start_date}-${race.event_name}`}
+            >
+              <h3>{race.event_name || "Untitled race"}</h3>
+              <p>
+                {race.start_date || "Date to be set"} · {race.priority || "B"}{" "}
+                priority ·{" "}
+                {race.distance_m ?? race.custom_distance_m ?? "Custom"} m
+              </p>
+              <button
+                className="quiet"
+                type="button"
+                onClick={() =>
+                  setRaceDraft({
+                    index: persistedRaces.indexOf(race),
+                    value: { ...race },
+                  })
+                }
+              >
+                Edit race
+              </button>
+            </article>
+          ))
+        ) : (
+          <p>No races added yet.</p>
+        )}
+      </section>
+      <section className="session-card">
+        <h2>Performance testing</h2>
+        {TESTS.map((test) => {
+          const old = latest.performance_tests?.find(
+            (item: any) => item.protocol === test.protocol,
+          );
+          return (
+            <div className="test-row" key={test.protocol}>
+              <b>{test.label}</b>
+              <label>
+                Result
+                <input
+                  id={`test-${test.protocol}`}
+                  defaultValue={
+                    test.watts
+                      ? (old?.peak_watts ?? old?.average_watts ?? "")
+                      : secondsToTime(old?.time_seconds)
+                  }
+                />
+              </label>
+              <label>
+                Date
+                <input
+                  id={`test-date-${test.protocol}`}
+                  type="date"
+                  defaultValue={old?.test_date ?? ""}
+                />
+              </label>
+            </div>
+          );
+        })}
+        <button type="button" onClick={saveTests} disabled={saving}>
+          {saving ? "Saving…" : "Save testing history"}
+        </button>
+      </section>
+      <section className="session-card">
+        <h2>Weekly schedule & flexibility</h2>
+        {activities.map((activity) => (
+          <article className="activity-card" key={activity.activity_id}>
+            <span className="band">
+              {label(activity.activity_type).toUpperCase()}
+            </span>
+            <b>
+              {activity.sessions_per_week} per week ·{" "}
+              {label(activity.scheduling_status)}
+            </b>
+            <p>
+              {dayValues(
+                activity.allowed_days ??
+                  activity.preferred_days ??
+                  activity.fixed_days,
+              )
+                .map(label)
+                .join(", ") ||
+                (activity.scheduling_status === "flexible"
+                  ? "Planner chooses from available days"
+                  : "Choose days when editing")}
+            </p>
+            <button
+              className="quiet"
+              type="button"
+              onClick={() => setActivityDraft(activity)}
+            >
+              Edit scheduling
+            </button>
+          </article>
+        ))}
+        <form className="profile-form" onSubmit={saveSchedulingPreferences}>
+          <h3>Training time & long-session opportunity</h3>
+          <fieldset>
+            <legend>Preferred longer-training days</legend>
+            <p className="field-help">
+              Convenient days for a longer independent row; this is a
+              preference, not a fixed commitment.
+            </p>
+            {DAYS.map((day) => (
+              <label className="check" key={day}>
+                <input
+                  name={`preferred-long-${day}`}
+                  type="checkbox"
+                  defaultChecked={(
+                    profile.preferences?.preferred_long_session_days ?? []
+                  ).includes(day)}
+                />{" "}
+                {label(day)}
+              </label>
+            ))}
+          </fieldset>
+          {(profile.weekly_availability ?? []).map((entry: any) => (
+            <label key={entry.weekday}>
+              Typical available training time — {label(entry.weekday)}
+              <input
+                name={`minutes-${entry.weekday}`}
+                type="number"
+                min="0"
+                max="360"
+                defaultValue={entry.max_training_minutes ?? 60}
+              />
+            </label>
+          ))}
+          <button disabled={saving}>
+            {saving ? "Saving…" : "Save scheduling preferences"}
+          </button>
+        </form>
+        <div className="stack-actions">
+          <button
+            className="quiet"
+            type="button"
+            onClick={() =>
+              setActivityDraft({
+                activity_id: uid(),
+                activity_type: "coached_row",
+                sessions_per_week: 1,
+                scheduling_status: "flexible",
+                fixed_days: [],
+                preferred_days: [],
+                allowed_days: [],
+                prohibited_days: [],
+                planner_may_choose_day: true,
+              })
+            }
+          >
+            Add recurring activity
+          </button>
+          <button type="button" onClick={refresh} disabled={saving}>
+            {saving ? "Updating…" : "Update plan with these choices"}
+          </button>
+        </div>
+      </section>
+      {activityDraft && (
+        <ActivityEditor
+          activity={activityDraft}
+          onSave={saveActivity}
+          onCancel={onCancel}
+          saving={saving}
+        />
+      )}
+      {raceDraft && (
+        <RaceEditor
+          draft={raceDraft}
+          onChange={(value) =>
+            setRaceDraft((current) =>
+              current ? { ...current, value } : current,
+            )
+          }
+          onSave={saveRace}
+          onCancel={() => setRaceDraft(null)}
+          onDelete={raceDraft.index === null ? undefined : deleteRace}
+          saving={saving}
+        />
+      )}
+    </AppShell>
+  );
 }
