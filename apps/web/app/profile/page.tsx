@@ -790,9 +790,14 @@ function RaceEditor({
 }
 
 const TESTS = [
-  { protocol: "two_k", label: "2k time", watts: false },
-  { protocol: "sixty_second", label: "60-second power", watts: true },
-  { protocol: "seven_stroke_peak", label: "7-stroke peak", watts: true },
+  { protocol: "two_k", label: "2k time (optional)", watts: false },
+  {
+    protocol: "thirty_min_rate_capped_optional",
+    label: "30 min @ 20 spm power (optional)",
+    watts: true,
+  },
+  { protocol: "sixty_second", label: "60-second power (optional)", watts: true },
+  { protocol: "seven_stroke_peak", label: "7-stroke peak power (optional)", watts: true },
 ];
 const timeToSeconds = (value: string) => {
   const match = value.match(/^(\d+):(\d{1,2})$/);

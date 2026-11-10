@@ -128,6 +128,26 @@ def _upcoming_race_fact(profile: Mapping[str, Any], day: date) -> Mapping[str, A
     return {**race,"race_dates":tuple(item.isoformat() for item in dates),"days_to_race":(start-day).days}
 
 
+def _active_sequence_start(profile: Mapping[str, Any], requested_planning_date: date) -> date:
+    """Keep the first active V3 horizon inside the configured season.
+
+    A plan may be requested before a future season begins.  In that case the
+    first rolling target must begin on the season start too: otherwise V3 can
+    place work on invisible pre-season dates and consider the visible first
+    week already supplied.  This does not redefine the caller's date for
+    historical-plan merging; it only establishes the first active sequence.
+    """
+    season = profile.get("season") if isinstance(profile.get("season"), Mapping) else {}
+    raw_start = season.get("start_date")
+    if not raw_start:
+        return requested_planning_date
+    try:
+        season_start = date.fromisoformat(str(raw_start))
+    except ValueError:
+        return requested_planning_date
+    return max(requested_planning_date, season_start)
+
+
 def _quality_translation(
     placement: Placement, role: TrainingRole, phase_id: str, phase_type: str,
 ) -> TranslatedTrainingRole:
@@ -361,9 +381,12 @@ def generate_plan_sequence_v3_candidate(
         return elapsed
 
     del config
+    requested_planning_date = planning_date
+    planning_date = _active_sequence_start(profile, requested_planning_date)
     timings: list[tuple[str, float]] = []
     started = stage_start(
         "normalization", planning_date=planning_date.isoformat(),
+        requested_planning_date=requested_planning_date.isoformat(),
         supplied_history_actual_count=len(history_actuals or {}),
         supplied_locked_session_count=len(locked_sessions),
     )
@@ -503,11 +526,11 @@ def generate_plan_sequence_v3_candidate(
         return ReplacementPlanCandidate(False, None, context, state, effective_needs, placed.placements, placed.diagnostics, all_materialization_diagnostics, all_materialization_diagnostics[0].code, tuple(timings))
     historical_calendar = {
         item["date"]: dict(item) for item in (prior_plan or {}).get("calendar_days", ())
-        if isinstance(item, Mapping) and isinstance(item.get("date"), str) and item["date"] < planning_date.isoformat()
+        if isinstance(item, Mapping) and isinstance(item.get("date"), str) and item["date"] < requested_planning_date.isoformat()
     }
     historical_sessions = tuple(
         dict(item) for item in (prior_plan or {}).get("sessions", ())
-        if isinstance(item, Mapping) and isinstance(item.get("date"), str) and item["date"] < planning_date.isoformat()
+        if isinstance(item, Mapping) and isinstance(item.get("date"), str) and item["date"] < requested_planning_date.isoformat()
     )
     repeated_generated: dict[str, int] = {}
     for need in effective_needs:
@@ -515,6 +538,8 @@ def generate_plan_sequence_v3_candidate(
             repeated_generated[need.role.value] = repeated_generated.get(need.role.value, 0) + 1
     diagnostics = {
         "scheduler_version": "replacement-v3-shadow",
+        "requested_planning_date": requested_planning_date.isoformat(),
+        "active_sequence_start": planning_date.isoformat(),
         "athlete_performance_profile": {
             "source_test_ids": performance.source_test_ids, "two_k_seconds": performance.two_k_seconds,
             "two_k_watts": performance.two_k_watts, "thirty_r20_watts": performance.thirty_r20_watts,
