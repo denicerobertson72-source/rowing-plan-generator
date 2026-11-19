@@ -75,6 +75,41 @@ def test_v2_contract_failure_logging_keeps_structured_safe_diagnostics():
     }
 
 
+def test_safe_generation_metadata_counts_persisted_and_legacy_performance_tests():
+    profile = synthetic_profile()
+    profile["tests"] = {
+        "testing_blocks": [{"id": "saved", "performance_tests": [
+            {"id": "2k", "protocol": "two_k", "time_seconds": 480},
+            {"id": "60", "protocol": "sixty_second", "average_watts": 220},
+        ]}],
+    }
+    assert main.safe_generation_metadata(profile)["performance_test_count"] == 2
+    profile["tests"] = {"erg_2k_seconds": 480}
+    assert main.safe_generation_metadata(profile)["performance_test_count"] == 1
+
+
+def test_v3_research_contract_failure_details_are_safe_to_log():
+    error = main.PlannerRoutingError("v3_plan_contract_failed", {
+        "reason_code": "v3_research_contract_failed",
+        "research_contract_failures": ("authority_preserved_or_explicit_conflict",),
+        "research_contract_failure_details": ({
+            "contract": "authority_preserved_or_explicit_conflict",
+            "detail": "missing_active_authority:authority:recurring:private:2026-11-18",
+        },),
+        "promotion_blockers": ("authority_regression",),
+        "profile_payload": "do-not-log",
+    })
+    assert main.safe_planner_failure_diagnostics(error) == {
+        "promotion_blockers": ("authority_regression",),
+        "reason_code": "v3_research_contract_failed",
+        "research_contract_failure_details": ({
+            "contract": "authority_preserved_or_explicit_conflict",
+            "detail": "missing_active_authority:authority:recurring:private:2026-11-18",
+        },),
+        "research_contract_failures": ("authority_preserved_or_explicit_conflict",),
+    }
+
+
 def test_invalid_profile_fails_before_any_planner_is_selected(monkeypatch):
     called = False
 

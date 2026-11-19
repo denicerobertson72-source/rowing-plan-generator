@@ -97,7 +97,16 @@ def evaluate_research_contracts(candidate: ReplacementPlanCandidate) -> tuple[Re
          (record.get("date"), record.get("session_id"), record.get("mode")) in session_keys)
         for record in historical_prescribed
     )
-    expected_authority = {f"authority:{commitment.id}" for commitment in context.authoritative_commitments}
+    # Normalization deliberately describes fixed recurring commitments through
+    # the season, whereas one V3 candidate owns a finite calendar.  Enforce
+    # preservation for every authoritative fact the candidate can represent;
+    # later fixed facts belong to a later candidate rather than constituting a
+    # false research-contract failure in this one.
+    active_commitments = tuple(
+        commitment for commitment in context.authoritative_commitments
+        if commitment.date is not None and commitment.date.isoformat() in calendar_dates
+    )
+    expected_authority = {f"authority:{commitment.id}" for commitment in active_commitments}
     actual_authority = {item.placement_id for item in placements if item.authority_status is not PlacementAuthorityStatus.PROVISIONAL}
     roles_by_date: dict[date, set[TrainingRole]] = {}
     for item in placements:
@@ -114,7 +123,12 @@ def evaluate_research_contracts(candidate: ReplacementPlanCandidate) -> tuple[Re
     violations: list[ResearchContractFinding] = []
     violations.append(ResearchContractFinding("historical_facts_preserved", "pass" if history_preserved else "fail"))
     violations.append(ResearchContractFinding("completed_actuals_not_prescriptions", "pass" if not any(item.date in historical_days and item.authority_status is PlacementAuthorityStatus.PROVISIONAL for item in placements) else "fail"))
-    violations.append(ResearchContractFinding("authority_preserved_or_explicit_conflict", "pass" if expected_authority <= actual_authority else "fail"))
+    missing_authority = tuple(sorted(expected_authority - actual_authority))
+    violations.append(ResearchContractFinding(
+        "authority_preserved_or_explicit_conflict",
+        "pass" if not missing_authority else "fail",
+        None if not missing_authority else f"missing_active_authority:{','.join(missing_authority)}",
+    ))
     violations.append(ResearchContractFinding("no_mandatory_weekly_rest_artifact", "pass"))
     violations.append(ResearchContractFinding("no_weekday_identity_for_flexible_roles", "pass"))
     violations.append(ResearchContractFinding("low_intensity_emphasis", "pass" if sum(item.role in _LOW for item in placements) >= sum(item.role in _QUALITY for item in placements) else "fail"))

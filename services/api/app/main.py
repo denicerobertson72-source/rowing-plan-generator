@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
 from rowing_plan import PLANNER_VERSION
 from rowing_plan.intensity import build_intensity_profile
-from rowing_plan.power_profile import build_power_profile
+from rowing_plan.power_profile import build_power_profile, testing_blocks
 from rowing_plan.scheduler import PlanningConflict, generate_plan
 from rowing_plan.validators import hard_constraint_errors, validate_profile
 from rowing_plan.workbook import build_workbook
@@ -540,6 +540,10 @@ def execute_selected_planner(*, choice: PlannerChoice, profile: dict, bands: lis
                 "research_contract_failures": tuple(
                     item.contract for item in comparison.research_contracts if item.status == "fail"
                 ),
+                "research_contract_failure_details": tuple(
+                    {"contract": item.contract, "detail": item.detail}
+                    for item in comparison.research_contracts if item.status == "fail"
+                ),
                 "promotion_blockers": comparison.promotion_blockers,
                 "needs_generated": comparison.needs_generated,
                 "needs_placed": comparison.needs_placed,
@@ -700,7 +704,15 @@ def safe_generation_metadata(profile: dict) -> dict:
         "recurring_activities_present":activities is not None,
         "recurring_activity_count":len(activities) if isinstance(activities,list) else 0,
         "race_count":len(profile.get("races",[])) if isinstance(profile.get("races"),list) else 0,
-        "performance_test_count":len(tests.get("multi_duration_power_tests",[])) if isinstance(tests.get("multi_duration_power_tests"),list) else 0,
+        # ``testing_blocks`` is the persisted/current test contract and also
+        # supplies a non-destructive legacy fallback.  The former diagnostic
+        # inspected only one obsolete list shape, so it reported zero even
+        # when tests were present in the saved athlete profile.
+        "performance_test_count":sum(
+            len(block.get("performance_tests", ()))
+            for block in testing_blocks({**profile, "tests": tests})
+            if isinstance(block, dict)
+        ) if tests else 0,
         "season_dates_present":bool(profile.get("season",{}).get("start_date") and profile.get("season",{}).get("end_date")),
         "has_training_context": isinstance(training_context, dict),
         "training_context_field_count": len(training_context) if isinstance(training_context, dict) else 0,
@@ -720,6 +732,7 @@ def safe_planner_failure_diagnostics(error: Exception) -> dict:
         "preservation_status", "changed_fields", "missing_fields",
         "training_need_id", "target_credit", "reservation_minutes", "materialization_role",
         "minimum_catalog_envelope", "candidate_count", "selector_rejection_reason",
+        "research_contract_failures", "research_contract_failure_details", "promotion_blockers",
     }
     result = {key: source[key] for key in sorted(allowed & set(source))}
     identity = source.get("session_identity") or source.get("source_session_identity")

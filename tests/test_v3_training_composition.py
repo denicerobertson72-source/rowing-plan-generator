@@ -8,6 +8,7 @@ from rowing_plan.intensity import build_intensity_profile
 from rowing_plan.power_profile import build_power_profile
 from rowing_plan.performance_profile import build_athlete_performance_profile, derive_performance_limiter
 from rowing_plan.replacement_plan_v3 import generate_plan_sequence_v3_candidate
+from rowing_plan.replacement_shadow import compare_v2_with_v3
 
 AS_OF = date(2026, 11, 16)
 CONFIG = json.load(open("config/defaults.json"))
@@ -126,6 +127,54 @@ def test_missing_optional_tests_preserve_normal_dose_and_strength_without_test_d
         assert any(item["mode"] == "strength" for item in sessions)
         assert sum(item["mode"] == "erg" for item in sessions) >= 2
     assert no_tests.plan["v2_diagnostics"]["total_training_load_targets"] == two_k_only.plan["v2_diagnostics"]["total_training_load_targets"]
+
+
+def test_production_shaped_no_test_winter_plan_keeps_baseline_policy_and_scopes_later_fixed_authority():
+    """No-test winter generation must not require Dec recurrence in a Nov horizon."""
+    profile = _profile([], race_date="")
+    profile["races"] = []
+    profile["athlete"].update({
+        "current_rowing_sessions_per_week": 4,
+        "current_approx_weekly_rowing_minutes": 240,
+        "current_weekly_training_minutes": 350,
+        "strength_priority": "build_strength",
+        "strength_experience": "regular",
+    })
+    profile["season"] = {
+        "start_date": "2026-11-16", "end_date": "2026-12-31",
+        "season_name": "Early Winter Training",
+    }
+    profile["training_context"] = {"current_strength_sessions_per_week": 3}
+    profile["recurring_activities"] = [
+        {"activity_id": "private", "activity_type": "private_coaching", "sessions_per_week": 1, "scheduling_status": "fixed", "fixed_days": ["wednesday"]},
+        {"activity_id": "coach", "activity_type": "coached_row", "sessions_per_week": 1, "scheduling_status": "flexible", "allowed_days": ["tuesday", "thursday"]},
+        {"activity_id": "strength", "activity_type": "strength", "sessions_per_week": 2, "scheduling_status": "preferred", "preferred_days": ["monday", "friday"]},
+        {"activity_id": "rest", "activity_type": "rest", "sessions_per_week": 1, "scheduling_status": "fixed", "fixed_days": ["sunday"]},
+    ]
+    profile["weekly_availability"] = [
+        {"weekday": day, "available": True, "max_training_minutes": 90 if day in ("saturday", "sunday") else 70, "rowing_modes": ["erg"]}
+        for day in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    ]
+    candidate = generate_plan_sequence_v3_candidate(
+        profile, CONFIG, build_intensity_profile(profile, CONFIG), build_power_profile(profile, CONFIG),
+        planning_date=date(2026, 11, 10),
+    )
+    assert candidate.success
+    diagnostics = candidate.plan["v2_diagnostics"]
+    composition = diagnostics["training_composition_target"]
+    assert composition["limiter_mode"] == "unknown"
+    assert composition["desired_development_roles"] == []
+    assert any(item["mode"] == "strength" for item in candidate.plan["sessions"])
+    assert sum(item["mode"] == "erg" for item in candidate.plan["sessions"]) >= 2
+    assert diagnostics["total_training_load_targets"][0]["total_training_target"] == 350
+    comparison = compare_v2_with_v3(
+        v2_plan=None, candidate=candidate, planning_date=date(2026, 11, 10),
+        v2_failure_reason="v2_not_executed_for_live_v3",
+    )
+    assert not comparison.promotion_blockers
+    assert all(item.status != "fail" for item in comparison.research_contracts)
+    calendar_dates = {item["date"] for item in candidate.plan["calendar_days"]}
+    assert any(item.date.isoformat() not in calendar_dates for item in candidate.context.authoritative_commitments)
 
 
 def test_each_supported_two_k_component_pair_reaches_only_its_compatible_composition_role():
