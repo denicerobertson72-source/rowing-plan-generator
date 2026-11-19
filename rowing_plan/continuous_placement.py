@@ -220,8 +220,22 @@ def _availability(
     projected = ProjectedSequenceState()
     authority_conflicts: list[str] = []
     priorities = {item[0]: item[1] for item in context.race_context}
+    commitments_by_date: dict[date, tuple] = {}
+    for commitment in context.authoritative_commitments:
+        if commitment.date is not None:
+            commitments_by_date.setdefault(commitment.date, ())
+            commitments_by_date[commitment.date] = (*commitments_by_date[commitment.date], commitment)
     for commitment in context.authoritative_commitments:
         if commitment.date is None or commitment.date not in dates:
+            continue
+        # A designated recurring rest day cannot coexist with a fixed race.
+        # The race is the authoritative calendar fact; suppressing the
+        # impossible rest avoids treating an expanded season horizon as a
+        # plan-contract failure.
+        if commitment.type is AuthorityType.FIXED_REST and any(
+            other.type is AuthorityType.RACE
+            for other in commitments_by_date.get(commitment.date, ())
+        ):
             continue
         role = {
             AuthorityType.RACE: TrainingRole.RACE,

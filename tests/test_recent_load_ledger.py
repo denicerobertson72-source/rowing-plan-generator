@@ -138,4 +138,7 @@ def test_v3_candidate_exposes_non_sensitive_rolling_load_and_repeat_diagnostics(
     assert candidate.success
     diagnostics = candidate.plan["v2_diagnostics"]
     assert set(diagnostics["recent_completed_load"]) == {"7d", "14d"}
-    assert diagnostics["repeated_exposure_needs"]["generated_by_role"] == {"strength": 3}
+    # The explicit season now creates chronological 14-day strength needs
+    # through its active end; the first block remains the established three
+    # exposure minimum and later blocks are visible rather than truncated.
+    assert diagnostics["repeated_exposure_needs"]["generated_by_role"]["strength"] >= 3

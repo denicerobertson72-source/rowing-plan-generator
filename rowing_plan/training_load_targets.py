@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from math import ceil
 from datetime import date, timedelta
 from typing import Any, Iterable, Mapping
 
@@ -195,11 +196,49 @@ def _authoritative_rowing(context: NormalizedPlanningContext, start: date, days:
     )
 
 
+def _continuous_horizons(planning_date: date, planning_end: date | None) -> tuple[tuple[date, int, int], ...]:
+    """Return chronological 7/14-day target windows through an explicit end.
+
+    The default retains the original single pair exactly.  An explicit end
+    emits weekly *anchors*, not calendar-week obligations: each 14-day window
+    overlaps its successor by seven days and a terminal window is clipped to
+    the real remaining calendar.
+    """
+    if planning_end is None:
+        return ((planning_date, 7, 7), (planning_date, 14, 14))
+    if planning_end < planning_date:
+        raise ValueError("training_load_target_end_before_start")
+    values = []
+    anchor = planning_date
+    while anchor <= planning_end:
+        remaining = (planning_end - anchor).days + 1
+        for nominal_days in (7, 14):
+            values.append((anchor, min(nominal_days, remaining), nominal_days))
+        anchor += timedelta(days=7)
+    return tuple(values)
+
+
+def _recent_load_for_target(state: PhysiologicalState, *, anchor: date, actual_days: int) -> tuple[int, int, int, int]:
+    """Completed history belongs only to the target beginning on ``as_of``."""
+    if anchor != state.as_of_date:
+        return 0, 0, 0, 0
+    recent = state.recent_7d_load if actual_days <= 7 else state.recent_14d_load
+    if recent is None:
+        return 0, 0, 0, 0
+    return (
+        recent.rowing_minutes,
+        recent.low_intensity_rowing_minutes,
+        recent.quality_exposures,
+        recent.strength_exposures,
+    )
+
+
 def derive_training_load_targets(
     context: NormalizedPlanningContext,
     state: PhysiologicalState,
     policy: TrainingPolicy = DEFAULT_TRAINING_POLICY,
     *, profile: Mapping[str, Any], planning_date: date | None = None,
+    planning_end: date | None = None,
 ) -> tuple[TrainingLoadTarget, ...]:
     """Derive future 7/14-day target ranges without reading provisional plans."""
     planning_date = planning_date or context.planning_date
@@ -219,9 +258,12 @@ def derive_training_load_targets(
     progression = rules["load_progression_guard"].value
     strength = rules["rolling_strength_target_14d"].value
     targets = []
-    for days, recent in ((7, state.recent_7d_load), (14, state.recent_14d_load)):
+    for anchor, days, nominal_days in _continuous_horizons(planning_date, planning_end):
+        completed_rowing, completed_low, completed_quality, completed_strength = _recent_load_for_target(
+            state, anchor=anchor, actual_days=days,
+        )
         raw = baseline * (days / 7)
-        recent_average = recent.rowing_minutes if days == 7 else round(recent.rowing_minutes / 2)
+        recent_average = completed_rowing if days <= 7 else round(completed_rowing / 2)
         # A modest cap applies only when there is meaningful recent evidence;
         # one unusually light week cannot reset established baseline below floor.
         guard = max(raw * float(progression["baseline_floor"]), recent_average * (1 + float(progression["maximum_increase"])))
@@ -233,27 +275,30 @@ def derive_training_load_targets(
         target = max(0, round(guarded * min(taper, recovery)))
         minimum = min(target, round(target * float(fractions["minimum"])))
         maximum = max(target, round(target * float(fractions["maximum"])))
-        authoritative = _authoritative_rowing(context, planning_date, days)
-        availability = _availability_ceiling(profile, planning_date, days)
-        completed_strength = recent.strength_exposures
+        authoritative = _authoritative_rowing(context, anchor, days)
+        availability = _availability_ceiling(profile, anchor, days)
         future_strength = 0  # No current authoritative commitment type safely identifies a lift.
+        strength_fraction = days / 14
+        strength_target = max(0, ceil(int(strength["target"]) * strength_fraction))
+        strength_minimum = max(0, ceil(int(strength["minimum"]) * strength_fraction))
         targets.append(TrainingLoadTarget(
-            id=f"load:{policy.version}:{days}d", horizon_start=planning_date,
-            horizon_end=planning_date + timedelta(days=days - 1), horizon_days=days, phase=phase,
+            id=(f"load:{policy.version}:{days}d" if planning_end is None
+                else f"load:{policy.version}:{anchor.isoformat()}:{nominal_days}d"),
+            horizon_start=anchor, horizon_end=anchor + timedelta(days=days - 1), horizon_days=days, phase=phase,
             total_rowing_target_minutes=target, minimum_rowing_minutes=minimum,
             maximum_rowing_minutes=maximum,
             low_intensity_minimum_minutes=round(target * float(rules["low_intensity_minimum_fraction"].value)),
-            quality_allowance_exposures=1, strength_target_exposures=int(strength["target"]),
-            strength_minimum_exposures=int(strength["minimum"]),
-            completed_rowing_minutes=recent.rowing_minutes,
-            completed_low_intensity_minutes=recent.low_intensity_rowing_minutes,
-            completed_quality_exposures=recent.quality_exposures,
+            quality_allowance_exposures=1, strength_target_exposures=strength_target,
+            strength_minimum_exposures=strength_minimum,
+            completed_rowing_minutes=completed_rowing,
+            completed_low_intensity_minutes=completed_low,
+            completed_quality_exposures=completed_quality,
             completed_strength_exposures=completed_strength,
             authoritative_future_rowing_minutes=authoritative,
             provisional_planned_rowing_minutes=0, planned_low_intensity_minutes=0,
-            remaining_rowing_minutes=max(0, target - recent.rowing_minutes - authoritative),
-            remaining_low_intensity_minutes=max(0, round(target * float(rules["low_intensity_minimum_fraction"].value)) - recent.low_intensity_rowing_minutes),
-            remaining_strength_exposures=max(0, int(strength["minimum"]) - completed_strength - future_strength),
+            remaining_rowing_minutes=max(0, target - completed_rowing - authoritative),
+            remaining_low_intensity_minutes=max(0, round(target * float(rules["low_intensity_minimum_fraction"].value)) - completed_low),
+            remaining_strength_exposures=max(0, strength_minimum - completed_strength - future_strength),
             taper_modifier=taper, recovery_modifier=recovery, availability_ceiling_minutes=availability,
             source_policy_ids=("load_target_range_fractions", "low_intensity_minimum_fraction", "load_progression_guard", "taper_volume_multiplier", "rolling_strength_target_14d"),
             rationale=(f"baseline_source:{baseline_source}", "combined_recent_completed_and_future_decision_budget", "taper_and_recovery_modifiers_do_not_compound"),
@@ -275,6 +320,7 @@ def derive_total_training_load_targets(
     state: PhysiologicalState,
     policy: TrainingPolicy = DEFAULT_TRAINING_POLICY,
     *, profile: Mapping[str, Any], planning_date: date | None = None,
+    planning_end: date | None = None,
 ) -> tuple[TotalTrainingLoadTarget, ...]:
     """Derive the opt-in top-level physical-duration envelope.
 
@@ -293,21 +339,24 @@ def derive_total_training_load_targets(
     progression = rules["load_progression_guard"].value
     taper, recovery, phase = _modifiers(context, state, rules)
     targets: list[TotalTrainingLoadTarget] = []
-    for days, recent in ((7, state.recent_7d_load), (14, state.recent_14d_load)):
+    for anchor, days, nominal_days in _continuous_horizons(planning_date, planning_end):
+        recent = state.recent_7d_load if anchor == state.as_of_date and days <= 7 else state.recent_14d_load if anchor == state.as_of_date else None
         raw = baseline * (days / 7)
-        recent_average = recent.physical_training_minutes if days == 7 else round(recent.physical_training_minutes / 2)
+        completed = recent.physical_training_minutes if recent is not None else 0
+        recent_average = completed if days <= 7 else round(completed / 2)
         guard = max(raw * float(progression["baseline_floor"]), recent_average * (1 + float(progression["maximum_increase"])))
         guarded = min(raw, guard) if recent_average else raw
         target = max(0, round(guarded * min(taper, recovery)))
         targets.append(TotalTrainingLoadTarget(
-            id=f"total-training:{policy.version}:{days}d",
-            horizon_start=planning_date, horizon_end=planning_date + timedelta(days=days - 1),
+            id=(f"total-training:{policy.version}:{days}d" if planning_end is None
+                else f"total-training:{policy.version}:{anchor.isoformat()}:{nominal_days}d"),
+            horizon_start=anchor, horizon_end=anchor + timedelta(days=days - 1),
             horizon_days=days, phase=phase,
             minimum_minutes=min(target, round(target * float(fractions["minimum"]))),
             target_minutes=target,
             maximum_minutes=max(target, round(target * float(fractions["maximum"]))),
-            completed_physical_training_minutes=recent.physical_training_minutes,
-            authoritative_future_physical_training_minutes=_authoritative_physical_training(context, planning_date, days),
+            completed_physical_training_minutes=completed,
+            authoritative_future_physical_training_minutes=_authoritative_physical_training(context, anchor, days),
             source_policy_ids=("load_target_range_fractions", "load_progression_guard", "taper_volume_multiplier"),
             rationale=(
                 f"baseline_source:{source}",
@@ -379,13 +428,13 @@ def derive_endurance_demand_targets(
     comes from the identity-reconciled physical ledger, rather than adding the
     overlapping rowing and general-aerobic descriptive dimensions.
     """
-    recent_by_days = {7: state.recent_7d_load, 14: state.recent_14d_load}
     values = []
     for target in targets:
-        recent = recent_by_days.get(target.horizon_days)
-        if recent is None:
-            raise ValueError(f"endurance_demand_recent_load_missing:{target.horizon_days}")
-        completed = recent.physical_endurance_minutes
+        recent = (
+            state.recent_7d_load if target.horizon_days <= 7
+            else state.recent_14d_load
+        ) if target.horizon_start == state.as_of_date else None
+        completed = recent.physical_endurance_minutes if recent is not None else 0
         authority = target.authoritative_future_rowing_minutes
         protected = authority
         eligible = max(0, min(
@@ -401,7 +450,7 @@ def derive_endurance_demand_targets(
             total_maximum_minutes=target.maximum_rowing_minutes,
             completed_physical_endurance_minutes=completed,
             authoritative_future_physical_endurance_minutes=authority,
-            completed_rowing_specific_minutes=recent.rowing_specific_minutes,
+            completed_rowing_specific_minutes=recent.rowing_specific_minutes if recent is not None else 0,
             authoritative_future_rowing_specific_minutes=authority,
             protected_rowing_specific_minutes=protected,
             eligible_general_aerobic_residual_minutes=eligible,

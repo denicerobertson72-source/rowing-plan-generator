@@ -31,6 +31,7 @@ from .planning_domain import AuthorityType, Placement, PlacementAuthorityStatus,
 from .physical_exposure_planning import plan_physical_exposures
 from .training_load_targets import derive_endurance_demand_targets, derive_total_training_load_targets, derive_training_distribution_targets, derive_training_load_targets, reconcile_endurance_demand_targets, reconcile_total_training_load_targets, reconcile_training_load_targets
 from .training_needs import (
+    generate_continuous_strength_needs,
     generate_residual_aerobic_needs,
     generate_training_need_plan,
 )
@@ -146,6 +147,26 @@ def _active_sequence_start(profile: Mapping[str, Any], requested_planning_date: 
     except ValueError:
         return requested_planning_date
     return max(requested_planning_date, season_start)
+
+
+def _active_sequence_end(
+    profile: Mapping[str, Any], planning_date: date,
+) -> date | None:
+    """Return the explicit active-season end, without inventing one.
+
+    The placement config remains the fallback horizon when a profile has no
+    usable season end.  A real season end is an input contract: V3 must retain
+    its sparse calendar through that date even if its last session is earlier.
+    """
+    season = profile.get("season") if isinstance(profile.get("season"), Mapping) else {}
+    raw_end = season.get("end_date")
+    if not raw_end:
+        return None
+    try:
+        season_end = date.fromisoformat(str(raw_end))
+    except ValueError:
+        return None
+    return season_end if season_end >= planning_date else None
 
 
 def _quality_translation(
@@ -383,6 +404,18 @@ def generate_plan_sequence_v3_candidate(
     del config
     requested_planning_date = planning_date
     planning_date = _active_sequence_start(profile, requested_planning_date)
+    explicit_calendar_end = _active_sequence_end(profile, planning_date)
+    if explicit_calendar_end is not None:
+        placement_config = replace(
+            placement_config,
+            horizon_days=(explicit_calendar_end - planning_date).days + 1,
+            # Beam breadth is a search-quality knob, not a planning input.
+            # A finite three-week search used 24 branches; retaining that
+            # breadth across an entire season grows combinatorially without
+            # adding a new physiological choice.  The chronological rolling
+            # targets already keep all future dates eligible.
+            beam_width=min(placement_config.beam_width, 8),
+        )
     timings: list[tuple[str, float]] = []
     started = stage_start(
         "normalization", planning_date=planning_date.isoformat(),
@@ -413,7 +446,10 @@ def generate_plan_sequence_v3_candidate(
     focus = derive_training_focus(limiter, phase=str(state.phase_context.get("phase_type") or "general_preparation"), race_type=str(next_race.get("race_type", "general")), days_to_race=next_race.get("days_to_race"), recovery_active=bool(state.recovery_constraints))
     prior_diagnostics = (prior_plan or {}).get("v2_diagnostics", {}) if isinstance(prior_plan, Mapping) else {}
     development_block = derive_development_block(focus, planning_date=planning_date, prior_diagnostics=prior_diagnostics)
-    load_targets = derive_training_load_targets(context, state, policy, profile=profile, planning_date=planning_date)
+    load_targets = derive_training_load_targets(
+        context, state, policy, profile=profile, planning_date=planning_date,
+        planning_end=explicit_calendar_end,
+    )
     composition_target = derive_training_composition_target(
         planning_date=planning_date, state=state, load_targets=load_targets,
         performance=performance, limiter=limiter, focus=focus,
@@ -422,10 +458,28 @@ def generate_plan_sequence_v3_candidate(
     need_plan = generate_training_need_plan(
         context, state, policy, profile=profile, composition_target=composition_target,
     )
-    total_training_targets = derive_total_training_load_targets(context, state, policy, profile=profile, planning_date=planning_date)
+    total_training_targets = derive_total_training_load_targets(
+        context, state, policy, profile=profile, planning_date=planning_date,
+        planning_end=explicit_calendar_end,
+    )
     endurance_demand_targets = derive_endurance_demand_targets(load_targets, state)
     distribution_targets = derive_training_distribution_targets(load_targets, policy)
-    categorical_needs = tuple(needs) if needs is not None else need_plan.needs
+    if needs is not None:
+        categorical_needs = tuple(needs)
+    elif explicit_calendar_end is None:
+        categorical_needs = need_plan.needs
+    else:
+        # The initial need generator establishes the first ordinary horizon.
+        # Strength is the recurrent categorical target, so append later
+        # chronological rolling windows without restarting its first block.
+        # Other phase/development needs retain their existing block identity.
+        categorical_needs = need_plan.needs + generate_continuous_strength_needs(
+            load_targets, policy,
+            # The established first 14-day strength minimum remains the
+            # sequence's initial state.  Anchors after it keep strength alive
+            # through the season without resetting that block every week.
+            after=planning_date + timedelta(days=14),
+        )
     timings.append(("need_generation", stage_complete(
         "need_generation", started,
         need_count=len(categorical_needs), load_target_count=len(load_targets),
@@ -540,6 +594,8 @@ def generate_plan_sequence_v3_candidate(
         "scheduler_version": "replacement-v3-shadow",
         "requested_planning_date": requested_planning_date.isoformat(),
         "active_sequence_start": planning_date.isoformat(),
+        "active_sequence_end": explicit_calendar_end.isoformat() if explicit_calendar_end else None,
+        "calendar_horizon_days": placement_config.horizon_days,
         "athlete_performance_profile": {
             "source_test_ids": performance.source_test_ids, "two_k_seconds": performance.two_k_seconds,
             "two_k_watts": performance.two_k_watts, "thirty_r20_watts": performance.thirty_r20_watts,
@@ -613,7 +669,8 @@ def generate_plan_sequence_v3_candidate(
             "unplaced_by_role": dict(placed.diagnostics.repeated_needs_unplaced_by_role),
         },
         "training_load_targets": tuple({
-            "id": item.id, "horizon_days": item.horizon_days, "phase": item.phase,
+            "id": item.id, "horizon_start": item.horizon_start.isoformat(),
+            "horizon_end": item.horizon_end.isoformat(), "horizon_days": item.horizon_days, "phase": item.phase,
             "minimum_rowing_minutes": item.minimum_rowing_minutes,
             "target_rowing_minutes": item.total_rowing_target_minutes,
             "maximum_rowing_minutes": item.maximum_rowing_minutes,
@@ -629,7 +686,16 @@ def generate_plan_sequence_v3_candidate(
             "total_selected_low_intensity_minutes": item.planned_low_intensity_minutes,
             "planned_low_intensity_minutes": item.planned_low_intensity_minutes,
             "quality_exposures": item.completed_quality_exposures,
-            "strength_exposures": item.completed_strength_exposures,
+            "strength_target_exposures": item.strength_target_exposures,
+            "strength_minimum_exposures": item.strength_minimum_exposures,
+            "completed_strength_exposures": item.completed_strength_exposures,
+            "planned_strength_exposures": max(
+                0,
+                item.strength_minimum_exposures
+                - item.completed_strength_exposures
+                - item.remaining_strength_exposures,
+            ),
+            "remaining_strength_exposures": item.remaining_strength_exposures,
             "remaining_rowing_minutes": item.remaining_rowing_minutes,
             "remaining_low_intensity_minutes": item.remaining_low_intensity_minutes,
             "availability_ceiling_minutes": item.availability_ceiling_minutes,
@@ -646,7 +712,7 @@ def generate_plan_sequence_v3_candidate(
             ),
         } for item in final_load_targets),
         "training_distribution_targets": tuple({
-            "horizon_days": item.horizon_days,
+            "horizon_start": item.horizon_start.isoformat(), "horizon_end": item.horizon_end.isoformat(), "horizon_days": item.horizon_days,
             "minimum_rowing_exposures": item.minimum_rowing_exposures,
             "target_rowing_exposures": item.target_rowing_exposures,
             "minimum_low_intensity_exposures": item.minimum_low_intensity_exposures,
@@ -655,7 +721,7 @@ def generate_plan_sequence_v3_candidate(
         } for item in distribution_targets),
         "endurance_demand_targets": tuple({
             "id": item.id, "source_load_target_id": item.source_load_target_id,
-            "horizon_days": item.horizon_days, "phase": item.phase,
+            "horizon_start": item.horizon_start.isoformat(), "horizon_end": item.horizon_end.isoformat(), "horizon_days": item.horizon_days, "phase": item.phase,
             "total_endurance_minimum": item.total_minimum_minutes,
             "total_endurance_target": item.total_target_minutes,
             "total_endurance_maximum": item.total_maximum_minutes,
@@ -667,7 +733,8 @@ def generate_plan_sequence_v3_candidate(
             "eligible_general_aerobic_residual": item.eligible_general_aerobic_residual_minutes,
         } for item in final_endurance_demand_targets),
         "total_training_load_targets": tuple({
-            "id": item.id, "horizon_days": item.horizon_days, "phase": item.phase,
+            "id": item.id, "horizon_start": item.horizon_start.isoformat(),
+            "horizon_end": item.horizon_end.isoformat(), "horizon_days": item.horizon_days, "phase": item.phase,
             "total_training_minimum": item.minimum_minutes,
             "total_training_target": item.target_minutes,
             "total_training_maximum": item.maximum_minutes,

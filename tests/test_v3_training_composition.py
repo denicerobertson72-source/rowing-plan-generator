@@ -174,7 +174,10 @@ def test_production_shaped_no_test_winter_plan_keeps_baseline_policy_and_scopes_
     assert not comparison.promotion_blockers
     assert all(item.status != "fail" for item in comparison.research_contracts)
     calendar_dates = {item["date"] for item in candidate.plan["calendar_days"]}
-    assert any(item.date.isoformat() not in calendar_dates for item in candidate.context.authoritative_commitments)
+    # The explicit season is now the active V3 calendar, so recurring
+    # commitments through Dec 31 are represented rather than scoped out by a
+    # legacy three-week search horizon.
+    assert all(item.date.isoformat() in calendar_dates for item in candidate.context.authoritative_commitments)
 
 
 def test_each_supported_two_k_component_pair_reaches_only_its_compatible_composition_role():

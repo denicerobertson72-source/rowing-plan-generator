@@ -155,7 +155,10 @@ def test_v3_candidate_reports_load_targets_and_deterministically_places_low_inte
     assert first.success and second.success
     assert first.placements == second.placements
     diagnostics = first.plan["v2_diagnostics"]["training_load_targets"]
-    assert {item["horizon_days"] for item in diagnostics} == {7, 14}
+    # An explicit season now produces chronological overlapping 7/14-day
+    # targets through its end.  The final target is safely clipped to the
+    # remaining calendar rather than represented as a fictional full week.
+    assert {7, 14} <= {item["horizon_days"] for item in diagnostics}
     seven = next(item for item in diagnostics if item["horizon_days"] == 7)
     assert seven["planned_rowing_minutes"] == seven["target_rowing_minutes"]
     assert seven["planned_low_intensity_minutes"] >= seven["low_intensity_minimum_minutes"]
@@ -311,5 +314,5 @@ def test_production_shaped_double_race_sequence_uses_one_shared_dose_ledger_dete
     # constraint correctly does not require a post-race strength top-up.
     assert any(item.role is TrainingRole.STRENGTH and item.date < date(2026, 11, 7) for item in first.placements)
     targets = first.plan["v2_diagnostics"]["training_load_targets"]
-    assert {item["horizon_days"] for item in targets} == {7, 14}
+    assert {7, 14} <= {item["horizon_days"] for item in targets}
     assert all(item["selected_categorical_rowing_minutes"] + item["selected_residual_rowing_minutes"] == item["planned_rowing_minutes"] for item in targets)

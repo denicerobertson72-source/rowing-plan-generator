@@ -175,5 +175,10 @@ def test_m2_general_aerobic_accounting_is_diagnostic_only_and_does_not_change_v3
     assert baseline.plan["sessions"] == with_bike.plan["sessions"]
     assert baseline.plan["calendar_days"] == with_bike.plan["calendar_days"]
     endurance = with_bike.plan["v2_diagnostics"]["endurance_demand_targets"]
-    assert endurance and all(item["completed_physical_endurance"] >= 45 for item in endurance)
+    assert endurance
+    # Completed history is relevant to the current anchored rolling target;
+    # later chronological targets do not inherit one completed activity as
+    # perpetual future credit.
+    assert all(item["completed_physical_endurance"] >= 45 for item in endurance if item["horizon_start"] == AS_OF.isoformat())
+    assert all(item["completed_physical_endurance"] == 0 for item in endurance if item["horizon_start"] != AS_OF.isoformat())
     assert not any(session.get("mode") in {"bike", "elliptical", "stair_climber", "running"} for session in with_bike.plan["sessions"])

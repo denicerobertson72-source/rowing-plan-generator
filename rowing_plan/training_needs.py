@@ -444,7 +444,14 @@ def generate_residual_aerobic_needs(
     # later target receives that same physical credit, so it emits only the
     # additional dose it still needs.  The later residual remains eligible on
     # all of its real dates; no calendar partition is reintroduced here.
-    ordered_targets = tuple(sorted(targets, key=lambda item: (item.horizon_days, item.id)))
+    # Process by target end rather than by duration.  A 14-day target ending
+    # on a Sunday can then receive the physical credit already emitted for
+    # both seven-day anchors inside it.  This is overlapping-horizon credit
+    # accounting, not a return to calendar-week quotas.
+    ordered_targets = tuple(sorted(
+        targets,
+        key=lambda item: (item.horizon_end, item.horizon_days, item.horizon_start, item.id),
+    ))
     for target in ordered_targets:
         reconciled = selected_by_id[target.id]
         already_credited = credited_to_later_targets.get(target.id, 0)
@@ -477,6 +484,48 @@ def generate_residual_aerobic_needs(
             if later.horizon_start <= target.horizon_start and target.horizon_end <= later.horizon_end:
                 credited_to_later_targets[later.id] = credited_to_later_targets.get(later.id, 0) + residual
     return expand_repeated_exposure_needs(tuple(generated))
+
+
+def generate_continuous_strength_needs(
+    targets: Iterable[TrainingLoadTarget], policy: TrainingPolicy, *, after: date | None = None,
+) -> tuple[TrainingNeed, ...]:
+    """Generate chronological strength opportunities from rolling targets.
+
+    The target windows are anchored every seven days but are physiologically
+    rolling 14-day targets.  Each emitted need carries an anchor-specific
+    source id and broad target window; placement remains date-flexible and
+    every physical lift is reconciled against every target window containing
+    its selected date.
+    """
+    values: list[TrainingNeed] = []
+    anchors = tuple(sorted(targets, key=lambda item: (item.horizon_start, item.horizon_end, item.id)))
+    first_anchor = after or (anchors[0].horizon_start if anchors else None)
+    for target in anchors:
+        # Strength has a rolling 14-day minimum.  We intentionally emit one
+        # flexible 14-day opportunity bundle at a time, rather than two hard
+        # seven-day duties.  Stable target ids retain the nominal horizon even
+        # when the final window is clipped to the actual season tail.
+        if target.id.rsplit(":", 1)[-1] != "14d":
+            continue
+        if first_anchor is not None and target.horizon_start < first_anchor:
+            continue
+        if first_anchor is not None and (target.horizon_start - first_anchor).days % 14:
+            continue
+        count = max(0, target.remaining_strength_exposures)
+        if not count:
+            continue
+        values.append(_need(
+            policy,
+            TrainingRole.STRENGTH,
+            PhysiologicalCredit(TrainingRole.STRENGTH, count, 0, True),
+            (target.horizon_start, target.horizon_end),
+            recovery_cost="hard",
+            priority="required_strength_minimum",
+            policy_keys=("rolling_strength_target_14d", "concurrent_strength_endurance_is_individualized"),
+            progression_relation=f"continuous_rolling_strength:{target.id}",
+            provenance=("training_load_target", target.id, "continuous_horizon"),
+        ))
+    return expand_repeated_exposure_needs(tuple(values))
 
 
 def _active_recovery_roles(state: PhysiologicalState, planning_date: date) -> set[TrainingRole]:
