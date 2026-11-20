@@ -798,6 +798,16 @@
       },
       "additionalProperties": false
     },
+    "planning_dose_override": {
+      "type": "object",
+      "properties": {
+        "preferred_physical_minutes": {"type": ["integer", "null"], "minimum": 0},
+        "minimum_physical_minutes": {"type": ["integer", "null"], "minimum": 0},
+        "maximum_physical_minutes": {"type": ["integer", "null"], "minimum": 0},
+        "fixed_physical_minutes": {"type": ["integer", "null"], "minimum": 0}
+      },
+      "additionalProperties": false
+    },
     "locked_weeks": {
       "type": "array",
       "items": {

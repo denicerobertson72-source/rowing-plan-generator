@@ -27,7 +27,7 @@ from .models import (
 from .periodization import build_season_phases
 from .physiological_state import reduce_physiological_state
 from .plan_assembly_v2 import _sort_key, _totals, build_plan_version_from_v2
-from .planning_domain import AuthorityType, Placement, PlacementAuthorityStatus, PhysiologicalState, TotalTrainingLoadTarget, TrainingNeed, TrainingRole
+from .planning_domain import AuthorityType, Placement, PlacementAuthorityStatus, PhysiologicalState, RecommendedTrainingDose, TotalTrainingLoadTarget, TrainingNeed, TrainingRole
 from .physical_exposure_planning import plan_physical_exposures
 from .training_load_targets import derive_endurance_demand_targets, derive_total_training_load_targets, derive_training_distribution_targets, derive_training_load_targets, reconcile_endurance_demand_targets, reconcile_total_training_load_targets, reconcile_training_load_targets
 from .training_needs import (
@@ -40,6 +40,7 @@ from .planning_normalization import NormalizedPlanningContext, normalize_plannin
 from .scheduler_v2 import finalize_translated_quality_sequence, translate_quality_role
 from .training_policy import DEFAULT_TRAINING_POLICY, TrainingPolicy
 from .performance_profile import build_athlete_performance_profile, derive_development_block, derive_performance_limiter, derive_training_focus
+from .recommended_training_dose import derive_recommended_training_dose
 
 
 @dataclass(frozen=True)
@@ -167,6 +168,35 @@ def _active_sequence_end(
     except ValueError:
         return None
     return season_end if season_end >= planning_date else None
+
+
+def generate_recommended_training_dose_v3(
+    profile: Mapping[str, Any], *, planning_date: date,
+    prior_plan: Mapping[str, Any] | None = None,
+    history_actuals: Mapping[str, Mapping[str, Any]] | None = None,
+    locked_sessions=(), future_placements=(), policy: TrainingPolicy = DEFAULT_TRAINING_POLICY,
+) -> RecommendedTrainingDose:
+    """Return R2's authoritative future physical-dose contract.
+
+    This is intentionally separate from the legacy placement candidate below:
+    that candidate still owns the retained rollback implementation and its
+    overlapping target ledgers.  New R3 allocation must consume this result,
+    not reconcile it with those ledgers as another prescription authority.
+    """
+    requested_start = planning_date
+    active_start = _active_sequence_start(profile, requested_start)
+    active_end = _active_sequence_end(profile, active_start)
+    if active_end is None:
+        raise ValueError("recommended_dose_requires_active_block_end")
+    context = normalize_planning_inputs(
+        profile, planning_date=active_start, prior_plan=prior_plan,
+        history_actuals=history_actuals, locked_sessions=locked_sessions,
+        future_placements=future_placements,
+    )
+    return derive_recommended_training_dose(
+        profile, context, planning_start=active_start, planning_end=active_end,
+        policy=policy,
+    )
 
 
 def _quality_translation(

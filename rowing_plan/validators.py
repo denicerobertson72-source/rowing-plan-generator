@@ -98,6 +98,15 @@ def validate_profile(profile: dict) -> list[str]:
             maximum=preferences.get("maximum_combined_days_per_week")
             if maximum is not None and (not isinstance(maximum, int) or not 0 <= maximum <= 7):
                 errors.append("Maximum combined days per week must be a whole number from 0 to 7.")
+    dose_override=profile.get("planning_dose_override")
+    if dose_override is not None:
+        keys=("preferred_physical_minutes", "minimum_physical_minutes", "maximum_physical_minutes", "fixed_physical_minutes")
+        if not isinstance(dose_override, dict):
+            errors.append("Planning dose override must be an object.")
+        else:
+            supplied=[key for key in keys if dose_override.get(key) is not None]
+            if len(supplied) != 1 or not isinstance(dose_override.get(supplied[0]), int) or dose_override[supplied[0]] < 0:
+                errors.append("Planning dose override must provide exactly one non-negative physical-minute value.")
     errors.extend(validate_recurring_activities(profile))
     return errors
 

@@ -174,6 +174,106 @@ class CurrentTrainingState:
         object.__setattr__(self, "completed_history_ids", tuple(sorted(set(self.completed_history_ids))))
 
 
+@dataclass(frozen=True)
+class RecommendedDoseSegment:
+    """One non-overlapping future physical-dose recommendation.
+
+    This is deliberately about *materialized physical minutes*, not target
+    credit, physiological credit, or a provisional reservation.  Segments are
+    chronological pieces of one coherent planning block; they are never
+    overlapping rolling prescriptions.
+    """
+
+    start_date: date
+    end_date: date
+    recommended_physical_minutes: int
+    minimum_acceptable_physical_minutes: int
+    maximum_reasonable_physical_minutes: int
+    available_capacity_minutes: int
+    committed_physical_minutes: int = 0
+    recommendation_status: str = "ordinary"
+    rationale_codes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        values = (
+            self.recommended_physical_minutes,
+            self.minimum_acceptable_physical_minutes,
+            self.maximum_reasonable_physical_minutes,
+            self.available_capacity_minutes,
+            self.committed_physical_minutes,
+        )
+        if self.end_date < self.start_date or any(value < 0 for value in values):
+            raise ValueError("recommended_dose_segment_values_are_invalid")
+        if not (
+            self.minimum_acceptable_physical_minutes
+            <= self.recommended_physical_minutes
+            <= self.maximum_reasonable_physical_minutes
+            <= self.available_capacity_minutes
+        ):
+            raise ValueError("recommended_dose_segment_range_is_invalid")
+        if self.committed_physical_minutes > self.recommended_physical_minutes:
+            raise ValueError("recommended_dose_segment_commitment_exceeds_recommendation")
+        object.__setattr__(self, "rationale_codes", tuple(sorted(set(self.rationale_codes))))
+
+
+@dataclass(frozen=True)
+class RecommendedTrainingDose:
+    """The sole future physical-dose authority for replacement V3.
+
+    Block totals are derived from ``segments`` and are validated rather than
+    independently authored.  Later allocation must partition each segment's
+    recommended physical minutes exactly once into materialized components.
+    """
+
+    planning_start: date
+    planning_end: date
+    segments: tuple[RecommendedDoseSegment, ...]
+    recommended_physical_minutes: int
+    minimum_acceptable_physical_minutes: int
+    maximum_reasonable_physical_minutes: int
+    available_capacity_minutes: int
+    committed_physical_minutes: int
+    recommendation_status: str
+    progression_state: str
+    confidence: str
+    rationale_codes: tuple[str, ...] = ()
+    evidence_sources: tuple[str, ...] = ()
+    constraints: tuple[str, ...] = ()
+    policy_version: str = "recommended-dose-v1"
+
+    def __post_init__(self) -> None:
+        if self.planning_end < self.planning_start or not self.segments:
+            raise ValueError("recommended_training_dose_horizon_is_invalid")
+        ordered = tuple(sorted(self.segments, key=lambda item: (item.start_date, item.end_date)))
+        if ordered != self.segments:
+            raise ValueError("recommended_training_dose_segments_must_be_ordered")
+        if ordered[0].start_date != self.planning_start or ordered[-1].end_date != self.planning_end:
+            raise ValueError("recommended_training_dose_segments_do_not_cover_block")
+        if any(right.start_date != left.end_date + timedelta(days=1) for left, right in zip(ordered, ordered[1:])):
+            raise ValueError("recommended_training_dose_segments_must_be_contiguous")
+        derived = (
+            sum(item.recommended_physical_minutes for item in ordered),
+            sum(item.minimum_acceptable_physical_minutes for item in ordered),
+            sum(item.maximum_reasonable_physical_minutes for item in ordered),
+            sum(item.available_capacity_minutes for item in ordered),
+            sum(item.committed_physical_minutes for item in ordered),
+        )
+        supplied = (
+            self.recommended_physical_minutes,
+            self.minimum_acceptable_physical_minutes,
+            self.maximum_reasonable_physical_minutes,
+            self.available_capacity_minutes,
+            self.committed_physical_minutes,
+        )
+        if any(value < 0 for value in supplied) or supplied != derived:
+            raise ValueError("recommended_training_dose_block_totals_must_be_derived")
+        if self.confidence not in {"low", "moderate", "high"}:
+            raise ValueError("recommended_training_dose_confidence_is_invalid")
+        object.__setattr__(self, "rationale_codes", tuple(sorted(set(self.rationale_codes))))
+        object.__setattr__(self, "evidence_sources", tuple(sorted(set(self.evidence_sources))))
+        object.__setattr__(self, "constraints", tuple(sorted(set(self.constraints))))
+
+
 _MODALITY_ALIASES = {
     "rowing": TrainingModality.ERG, "row": TrainingModality.ERG,
     "bike_erg": TrainingModality.BIKE, "stationary_bike": TrainingModality.BIKE,
