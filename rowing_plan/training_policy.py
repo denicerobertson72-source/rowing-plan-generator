@@ -186,6 +186,9 @@ DEFAULT_TRAINING_POLICY = TrainingPolicy(
         _rule("deterministic_lexical_tie_break", True, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "Determinism is an execution property, not physiology.", "not_applicable"),
         _rule("beam_search_width", "implementation_config", RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "Search width belongs to solver configuration, not training policy.", "not_applicable"),
         _rule("serialization_is_deterministic", True, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "Stable serialization supports auditability without making physiological claims.", "not_applicable"),
+        _rule("component_materialization_requires_exact_integer_duration", True, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "A concrete workout must exactly preserve its component's integer physical duration; no materialization-only tolerance is applied.", "not_applicable"),
+        _rule("catalog_duration_envelopes_are_app_heuristics", True, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "Catalog minimums, maximums, parameter ranges, and warm-up/cooldown defaults are versioned implementation choices rather than externally derived formulas.", "coach_override"),
+        _rule("materialization_variety_is_subordinate_to_compatibility", True, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "History-aware variety ranks only compatible category, purpose, modality, phase, race, and exact-duration candidates.", "not_applicable"),
     ),
 )
 

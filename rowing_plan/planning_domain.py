@@ -573,6 +573,112 @@ class TrainingDayPlanResult:
 
 
 @dataclass(frozen=True)
+class PhysiologicalWorkSummary:
+    """Descriptive work inside a materialized component, never physical dose.
+
+    ``work_minutes`` is intentionally separate from a component's physical
+    duration: it can describe AT/TR/AN/PP work (or an aerobic band) but cannot
+    satisfy, reserve, or replace calendar time.
+    """
+
+    band: str | None = None
+    work_minutes: int = 0
+    rationale_codes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.work_minutes < 0:
+            raise ValueError("physiological_work_minutes_must_be_nonnegative")
+        if self.work_minutes and not self.band:
+            raise ValueError("physiological_work_band_is_required")
+        object.__setattr__(self, "rationale_codes", tuple(sorted(set(self.rationale_codes))))
+
+
+@dataclass(frozen=True)
+class MaterializedTrainingComponent:
+    """Immutable exact-duration expression of one R4 ``TrainingComponent``."""
+
+    component_id: str
+    source_lineage_id: str
+    catalog_archetype_id: str | None
+    catalog_version: str | None
+    materializer_policy_version: str
+    modality: TrainingModality
+    purpose: TrainingComponentPurpose
+    physical_duration_minutes: int
+    prescribed_work_minutes: int = 0
+    warmup_minutes: int = 0
+    recovery_minutes: int = 0
+    cooldown_minutes: int = 0
+    easy_extension_minutes: int = 0
+    interval_structure: Mapping[str, Any] = field(default_factory=dict)
+    physiological_work: PhysiologicalWorkSummary | None = None
+    selection_rationale_codes: tuple[str, ...] = ()
+    constraint_codes: tuple[str, ...] = ()
+    adaptation_metadata: Mapping[str, Any] = field(default_factory=dict)
+    final_fingerprint: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.component_id or not self.source_lineage_id or not self.materializer_policy_version:
+            raise ValueError("materialized_component_identity_is_required")
+        values = (
+            self.physical_duration_minutes, self.prescribed_work_minutes,
+            self.warmup_minutes, self.recovery_minutes, self.cooldown_minutes,
+            self.easy_extension_minutes,
+        )
+        if any(value < 0 for value in values) or self.physical_duration_minutes <= 0:
+            raise ValueError("materialized_component_minutes_are_invalid")
+        if sum(values[1:]) != self.physical_duration_minutes:
+            raise ValueError("materialized_component_duration_breakdown_mismatch")
+        if self.physiological_work and self.physiological_work.work_minutes > self.prescribed_work_minutes:
+            raise ValueError("physiological_work_cannot_exceed_prescribed_work")
+        object.__setattr__(self, "interval_structure", _freeze(self.interval_structure))
+        object.__setattr__(self, "adaptation_metadata", _freeze(self.adaptation_metadata))
+        object.__setattr__(self, "final_fingerprint", _freeze(self.final_fingerprint))
+        object.__setattr__(self, "selection_rationale_codes", tuple(sorted(set(self.selection_rationale_codes))))
+        object.__setattr__(self, "constraint_codes", tuple(sorted(set(self.constraint_codes))))
+
+
+@dataclass(frozen=True)
+class MaterializationFailure:
+    """Deterministic diagnostics for an unsatisfied component requirement."""
+
+    component_id: str
+    reason_code: str
+    requested_duration_minutes: int
+    purpose: TrainingComponentPurpose
+    modality_constraint: tuple[TrainingModality, ...] = ()
+    catalog_version: str | None = None
+    compatible_envelopes: tuple[tuple[str, int, int], ...] = ()
+    detail: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.component_id or not self.reason_code or self.requested_duration_minutes <= 0:
+            raise ValueError("materialization_failure_values_are_invalid")
+        object.__setattr__(self, "modality_constraint", tuple(sorted(set(self.modality_constraint), key=lambda item: item.value)))
+        object.__setattr__(self, "compatible_envelopes", tuple(sorted(set(self.compatible_envelopes))))
+        object.__setattr__(self, "detail", _freeze(self.detail))
+
+
+@dataclass(frozen=True)
+class MaterializedTrainingComponentResult:
+    component_id: str
+    materialized: MaterializedTrainingComponent | None = None
+    failure: MaterializationFailure | None = None
+
+    def __post_init__(self) -> None:
+        if bool(self.materialized) == bool(self.failure):
+            raise ValueError("materialized_component_result_requires_exactly_one_outcome")
+        if self.materialized and self.materialized.component_id != self.component_id:
+            raise ValueError("materialized_component_result_identity_mismatch")
+        if self.failure and self.failure.component_id != self.component_id:
+            raise ValueError("materialization_failure_identity_mismatch")
+
+    @property
+    def success(self) -> bool:
+        return self.materialized is not None
+
+
+@dataclass(frozen=True)
 class TrainingAllocationInfeasibility:
     code: str
     segment_start: date
