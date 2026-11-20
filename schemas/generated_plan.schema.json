@@ -42,6 +42,60 @@
         "type": "object"
       }
     },
+    "component_calendar_version": {
+      "type": "string"
+    },
+    "training_days": {
+      "description": "Additive component-aware calendar foundation. Existing sessions remain the legacy projection during migration.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "date",
+          "available_minutes",
+          "total_physical_minutes",
+          "remaining_capacity_minutes",
+          "combined_day",
+          "state",
+          "components"
+        ],
+        "properties": {
+          "date": {"type": "string", "format": "date"},
+          "available_minutes": {"type": "integer", "minimum": 0},
+          "total_physical_minutes": {"type": "integer", "minimum": 0},
+          "remaining_capacity_minutes": {"type": "integer", "minimum": 0},
+          "combined_day": {"type": "boolean"},
+          "state": {"enum": ["designated_rest", "unused_available", "unavailable", "planned_training"]},
+          "authority_ids": {"type": "array", "items": {"type": "string"}},
+          "compatibility_diagnostics": {"type": "array", "items": {"type": "string"}},
+          "components": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["component_id", "source_lineage_id", "allocation_segment_id", "physical_category", "duration_minutes", "purpose", "sequence", "authority"],
+              "properties": {
+                "component_id": {"type": "string"},
+                "source_lineage_id": {"type": "string"},
+                "allocation_segment_id": {"type": "string"},
+                "physical_category": {"enum": ["rowing_specific", "strength", "general_aerobic", "other"]},
+                "duration_minutes": {"type": "integer", "minimum": 1},
+                "purpose": {"type": "string"},
+                "sequence": {"type": "integer", "minimum": 1},
+                "modality": {"type": ["string", "null"]},
+                "permitted_modalities": {"type": "array", "items": {"type": "string"}},
+                "authority": {"enum": ["generated", "authoritative"]},
+                "primary": {"type": ["boolean", "null"]},
+                "materialization_requirements": {"type": "array", "items": {"type": "string"}},
+                "rationale_codes": {"type": "array", "items": {"type": "string"}},
+                "constraint_codes": {"type": "array", "items": {"type": "string"}}
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "weekly_totals": {
       "type": "array",
       "items": {

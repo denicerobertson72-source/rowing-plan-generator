@@ -88,6 +88,42 @@ class TrainingModality(_TextEnum):
     OTHER = "other"
 
 
+class PhysicalCategory(_TextEnum):
+    """One and only one physical allocation category for a component."""
+
+    ROWING_SPECIFIC = "rowing_specific"
+    STRENGTH = "strength"
+    GENERAL_AEROBIC = "general_aerobic"
+    OTHER = "other"
+
+
+class TrainingComponentPurpose(_TextEnum):
+    """Small, pre-composition purpose vocabulary for R4 calendar facts."""
+
+    EASY_AEROBIC = "easy_aerobic"
+    TECHNICAL = "technical"
+    STRENGTH = "strength"
+    THRESHOLD = "threshold"
+    RACE_SPECIFIC = "race_specific"
+    POWER = "power"
+    RACE = "race"
+    RECOVERY = "recovery"
+    COACHED = "coached"
+    PRIVATE_COACHING = "private_coaching"
+
+
+class TrainingDayState(_TextEnum):
+    DESIGNATED_REST = "designated_rest"
+    UNUSED_AVAILABLE = "unused_available"
+    UNAVAILABLE = "unavailable"
+    PLANNED_TRAINING = "planned_training"
+
+
+class ComponentAuthority(_TextEnum):
+    GENERATED = "generated"
+    AUTHORITATIVE = "authoritative"
+
+
 class CurrentTrainingSource(_TextEnum):
     """Provenance for baseline evidence; never a future-dose instruction."""
 
@@ -372,6 +408,168 @@ class TrainingAllocation:
         object.__setattr__(self, "rationale_codes", tuple(sorted(set(self.rationale_codes))))
         object.__setattr__(self, "evidence_sources", tuple(sorted(set(self.evidence_sources))))
         object.__setattr__(self, "constraints", tuple(sorted(set(self.constraints))))
+
+
+@dataclass(frozen=True)
+class TrainingComponent:
+    """One physical activity on a component-aware R4 training day.
+
+    ``duration_minutes`` is physical truth.  It intentionally has no
+    reservation or physiological-credit companion: R3 allocation is the
+    upstream accounting authority and a component owns exactly one category
+    of that allocation.
+    """
+
+    component_id: str
+    source_lineage_id: str
+    allocation_segment_id: str
+    physical_category: PhysicalCategory
+    duration_minutes: int
+    purpose: TrainingComponentPurpose
+    sequence: int = 1
+    modality: TrainingModality | None = None
+    permitted_modalities: tuple[TrainingModality, ...] = ()
+    authority: ComponentAuthority = ComponentAuthority.GENERATED
+    primary: bool | None = None
+    materialization_requirements: tuple[str, ...] = ()
+    rationale_codes: tuple[str, ...] = ()
+    constraint_codes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.component_id or not self.source_lineage_id or not self.allocation_segment_id:
+            raise ValueError("training_component_identity_is_required")
+        if self.duration_minutes <= 0 or self.sequence < 1:
+            raise ValueError("training_component_duration_or_sequence_is_invalid")
+        if self.physical_category is PhysicalCategory.OTHER and not self.rationale_codes:
+            raise ValueError("training_component_other_requires_rationale")
+        permitted = tuple(sorted(set(self.permitted_modalities), key=lambda item: item.value))
+        if self.modality is not None and permitted and self.modality not in permitted:
+            raise ValueError("training_component_modality_violates_constraint")
+        object.__setattr__(self, "permitted_modalities", permitted)
+        object.__setattr__(self, "materialization_requirements", tuple(sorted(set(self.materialization_requirements))))
+        object.__setattr__(self, "rationale_codes", tuple(sorted(set(self.rationale_codes))))
+        object.__setattr__(self, "constraint_codes", tuple(sorted(set(self.constraint_codes))))
+
+
+@dataclass(frozen=True)
+class TrainingDay:
+    """A dated physical-capacity container whose totals are always derived."""
+
+    date: date
+    available_minutes: int
+    components: tuple[TrainingComponent, ...] = ()
+    state: TrainingDayState = TrainingDayState.UNUSED_AVAILABLE
+    authority_ids: tuple[str, ...] = ()
+    compatibility_diagnostics: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.available_minutes < 0:
+            raise ValueError("training_day_available_minutes_must_be_nonnegative")
+        ordered = tuple(sorted(self.components, key=lambda item: (item.sequence, item.component_id)))
+        if ordered != self.components:
+            raise ValueError("training_day_components_must_be_in_sequence_order")
+        sequences = tuple(item.sequence for item in ordered)
+        if len(set(sequences)) != len(sequences):
+            raise ValueError("training_day_component_sequences_must_be_unique")
+        component_ids = tuple(item.component_id for item in ordered)
+        if len(set(component_ids)) != len(component_ids):
+            raise ValueError("training_day_component_ids_must_be_unique")
+        if self.state in {TrainingDayState.DESIGNATED_REST, TrainingDayState.UNAVAILABLE} and ordered:
+            raise ValueError("training_day_rest_or_unavailable_cannot_have_components")
+        if self.state is TrainingDayState.PLANNED_TRAINING and not ordered:
+            raise ValueError("training_day_planned_training_requires_component")
+        if self.state is TrainingDayState.UNUSED_AVAILABLE and ordered:
+            raise ValueError("training_day_unused_available_cannot_have_components")
+        total = sum(item.duration_minutes for item in ordered)
+        if total > self.available_minutes and any(item.authority is ComponentAuthority.GENERATED for item in ordered):
+            raise ValueError("training_day_generated_component_exceeds_capacity")
+        object.__setattr__(self, "authority_ids", tuple(sorted(set(self.authority_ids))))
+        object.__setattr__(self, "compatibility_diagnostics", tuple(sorted(set(self.compatibility_diagnostics))))
+
+    @property
+    def total_physical_minutes(self) -> int:
+        return sum(item.duration_minutes for item in self.components)
+
+    @property
+    def remaining_capacity_minutes(self) -> int:
+        return max(0, self.available_minutes - self.total_physical_minutes)
+
+    @property
+    def combined_day(self) -> bool:
+        return len(self.components) > 1
+
+    @property
+    def authoritative_capacity_conflict(self) -> bool:
+        return self.total_physical_minutes > self.available_minutes
+
+
+@dataclass(frozen=True)
+class TrainingDayDiagnostic:
+    code: str
+    date: date | None = None
+    source_lineage_id: str | None = None
+    detail: str | None = None
+
+
+@dataclass(frozen=True)
+class TrainingDayInfeasibility:
+    code: str
+    allocation_segment_id: str | None = None
+    physical_category: PhysicalCategory | None = None
+    remaining_minutes: int = 0
+    detail: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.remaining_minutes < 0:
+            raise ValueError("training_day_infeasibility_minutes_must_be_nonnegative")
+
+
+@dataclass(frozen=True)
+class RaceEvent:
+    """Authoritative race context, deliberately outside minute conservation when unknown."""
+
+    race_id: str
+    date: date
+    planned_duration_minutes: int | None = None
+    authority_source: str = "race_profile"
+    rationale_codes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.race_id or self.planned_duration_minutes is not None and self.planned_duration_minutes < 0:
+            raise ValueError("race_event_values_are_invalid")
+        object.__setattr__(self, "rationale_codes", tuple(sorted(set(self.rationale_codes))))
+
+
+@dataclass(frozen=True)
+class TrainingDayPlanResult:
+    """Pure R4 result: physical days plus explicit diagnostics/infeasibility."""
+
+    days: tuple[TrainingDay, ...]
+    diagnostics: tuple[TrainingDayDiagnostic, ...] = ()
+    infeasibilities: tuple[TrainingDayInfeasibility, ...] = ()
+    race_events: tuple[RaceEvent, ...] = ()
+    preference_context: Mapping[str, Any] = field(default_factory=dict)
+    schema_version: str = "training-days-v1"
+
+    def __post_init__(self) -> None:
+        dates = tuple(item.date for item in self.days)
+        if len(set(dates)) != len(dates) or tuple(sorted(self.days, key=lambda item: item.date)) != self.days:
+            raise ValueError("training_day_plan_days_must_be_unique_and_ordered")
+        component_ids = tuple(component.component_id for day in self.days for component in day.components)
+        if len(set(component_ids)) != len(component_ids):
+            raise ValueError("training_day_plan_component_ids_must_be_unique")
+        object.__setattr__(self, "diagnostics", tuple(sorted(set(self.diagnostics), key=lambda item: (item.date or date.min, item.code, item.source_lineage_id or ""))))
+        object.__setattr__(self, "infeasibilities", tuple(sorted(set(self.infeasibilities), key=lambda item: (item.allocation_segment_id or "", item.code, item.physical_category.value if item.physical_category else ""))))
+        object.__setattr__(self, "race_events", tuple(sorted(set(self.race_events), key=lambda item: (item.date, item.race_id))))
+        object.__setattr__(self, "preference_context", _freeze(self.preference_context))
+
+    @property
+    def success(self) -> bool:
+        return not self.infeasibilities
+
+    @property
+    def components(self) -> tuple[TrainingComponent, ...]:
+        return tuple(component for day in self.days for component in day.components)
 
 
 @dataclass(frozen=True)
