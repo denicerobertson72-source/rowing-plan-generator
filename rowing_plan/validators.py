@@ -37,6 +37,17 @@ def validate_profile(profile: dict) -> list[str]:
             errors.append("Strength experience must be none, beginner, intermediate, or advanced.")
         if context.get("strength_priority") not in (None,"maintenance","support_rowing","develop_strength","not_a_current_priority"):
             errors.append("Strength priority is invalid.")
+        if context.get("current_strength_state") not in (None,"none","occasional","regular"):
+            errors.append("Current strength state is invalid.")
+        duration=context.get("typical_strength_duration_minutes")
+        if duration is not None and (not isinstance(duration, int) or duration < 0 or duration > 360):
+            errors.append("Typical strength workout duration must be a whole number from 0 to 360.")
+        override=context.get("strength_override")
+        if override is not None:
+            if not isinstance(override, dict) or override.get("mode", "none") not in ("none","preferred_target","minimum","fixed_commitment"):
+                errors.append("Strength override is invalid.")
+            elif override.get("sessions_per_week") is not None and (not isinstance(override["sessions_per_week"], int) or not 0 <= override["sessions_per_week"] <= 7):
+                errors.append("Strength override sessions per week must be a whole number from 0 to 7.")
         if context.get("training_restriction_source", "none") not in ("none","athlete","coach","clinician"):
             errors.append("Training restriction source must be none, athlete, coach, or clinician.")
         equipment=context.get("strength_equipment_access", [])
@@ -57,6 +68,36 @@ def validate_profile(profile: dict) -> list[str]:
                 if not isinstance(value.get("enabled"), bool): errors.append(f"Cross-training {mode} enabled must be true or false.")
                 if value.get("familiarity") not in (None,"new","some_experience","regular"): errors.append(f"Cross-training {mode} familiarity is invalid.")
                 if value.get("preference", "neutral") not in ("prefer","neutral","avoid"): errors.append(f"Cross-training {mode} preference is invalid.")
+    current=profile.get("current_training_state")
+    if current is not None:
+        if not isinstance(current, dict):
+            errors.append("Current training state must be an object.")
+        else:
+            if current.get("consistency") not in (None,"returning","building","regular","variable"):
+                errors.append("Current training consistency is invalid.")
+            for key in ("approximate_total_physical_minutes","approximate_rowing_minutes","rowing_exposures","strength_exposures","typical_strength_duration_minutes","longest_comfortable_row_minutes"):
+                if current.get(key) is not None and (not isinstance(current[key], int) or current[key] < 0):
+                    errors.append(f"Current training state {key.replace('_',' ')} must be a non-negative whole number.")
+    goals=profile.get("planning_goals")
+    if goals is not None:
+        valid_goals={"build_endurance","develop_strength","improve_2k","improve_sprint_power","technical_development","race_preparation","build_consistency"}
+        if not isinstance(goals, dict) or goals.get("primary_goal") not in valid_goals or (goals.get("secondary_goal") is not None and goals.get("secondary_goal") not in valid_goals):
+            errors.append("Planning goals are invalid.")
+        elif goals.get("context_note") is not None and (not isinstance(goals["context_note"], str) or len(goals["context_note"]) > 1000):
+            errors.append("Planning goal context must be text of 1000 characters or fewer.")
+    preferences=profile.get("training_preferences")
+    if preferences is not None:
+        if not isinstance(preferences, dict):
+            errors.append("Training preferences must be an object.")
+        else:
+            for key in ("combined_days","strength_plus_easy_aerobic"):
+                if preferences.get(key, "allowed") not in ("avoid","allowed","preferred"):
+                    errors.append(f"Training preference {key.replace('_',' ')} is invalid.")
+            if preferences.get("strength_plus_hard_rowing", "avoid") not in ("avoid","allowed"):
+                errors.append("Training preference strength plus hard rowing is invalid.")
+            maximum=preferences.get("maximum_combined_days_per_week")
+            if maximum is not None and (not isinstance(maximum, int) or not 0 <= maximum <= 7):
+                errors.append("Maximum combined days per week must be a whole number from 0 to 7.")
     errors.extend(validate_recurring_activities(profile))
     return errors
 

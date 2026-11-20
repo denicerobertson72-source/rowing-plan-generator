@@ -88,6 +88,92 @@ class TrainingModality(_TextEnum):
     OTHER = "other"
 
 
+class CurrentTrainingSource(_TextEnum):
+    """Provenance for baseline evidence; never a future-dose instruction."""
+
+    RECENT_ACTUALS = "recent_actuals"
+    ATHLETE_ESTIMATE = "athlete_estimate"
+    MIXED = "mixed"
+    LEGACY_PROFILE_ESTIMATE = "legacy_profile_estimate"
+
+
+@dataclass(frozen=True)
+class AvailableTrainingDay:
+    """One recurring or date-specific opportunity in the future capacity model."""
+
+    day_key: str
+    available_minutes: int
+    available: bool = True
+    fixed_rest: bool = False
+    allowed_modalities: tuple[TrainingModality, ...] = ()
+    fixed_commitment_ids: tuple[str, ...] = ()
+    prohibited_role_families: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.available_minutes < 0:
+            raise ValueError("available_training_day_minutes_must_be_nonnegative")
+        object.__setattr__(self, "allowed_modalities", tuple(sorted(set(self.allowed_modalities), key=lambda item: item.value)))
+        object.__setattr__(self, "fixed_commitment_ids", tuple(sorted(set(self.fixed_commitment_ids))))
+        object.__setattr__(self, "prohibited_role_families", tuple(sorted(set(self.prohibited_role_families))))
+
+    @property
+    def usable_minutes(self) -> int:
+        return self.available_minutes if self.available and not self.fixed_rest else 0
+
+
+@dataclass(frozen=True)
+class AvailableTrainingCapacity:
+    """Normalized weekly/date capacity; a ceiling, never a prescription."""
+
+    days: tuple[AvailableTrainingDay, ...]
+    source: str = "weekly_recurrence"
+
+    def __post_init__(self) -> None:
+        keys = tuple(item.day_key for item in self.days)
+        if len(set(keys)) != len(keys):
+            raise ValueError("available_training_capacity_day_keys_must_be_unique")
+        object.__setattr__(self, "days", tuple(sorted(self.days, key=lambda item: item.day_key)))
+
+    @property
+    def total_available_minutes(self) -> int:
+        return sum(item.usable_minutes for item in self.days)
+
+
+@dataclass(frozen=True)
+class CurrentTrainingState:
+    """Immutable evidence about current training, deliberately not a target."""
+
+    source: CurrentTrainingSource
+    observation_window_days: int | None = None
+    approximate_total_physical_minutes: int | None = None
+    approximate_rowing_minutes: int | None = None
+    rowing_exposures: int | None = None
+    strength_exposures: int | None = None
+    typical_strength_duration_minutes: int | None = None
+    consistency: str | None = None
+    longest_comfortable_row_minutes: int | None = None
+    confidence: str = "low"
+    missing_evidence: tuple[str, ...] = ()
+    completed_history_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.observation_window_days is not None and self.observation_window_days < 1:
+            raise ValueError("current_training_state_window_must_be_positive")
+        for value in (
+            self.approximate_total_physical_minutes, self.approximate_rowing_minutes,
+            self.rowing_exposures, self.strength_exposures,
+            self.typical_strength_duration_minutes, self.longest_comfortable_row_minutes,
+        ):
+            if value is not None and value < 0:
+                raise ValueError("current_training_state_values_must_be_nonnegative")
+        if self.consistency not in {None, "returning", "building", "regular", "variable"}:
+            raise ValueError("current_training_state_consistency_is_invalid")
+        if self.confidence not in {"low", "moderate", "high"}:
+            raise ValueError("current_training_state_confidence_is_invalid")
+        object.__setattr__(self, "missing_evidence", tuple(sorted(set(self.missing_evidence))))
+        object.__setattr__(self, "completed_history_ids", tuple(sorted(set(self.completed_history_ids))))
+
+
 _MODALITY_ALIASES = {
     "rowing": TrainingModality.ERG, "row": TrainingModality.ERG,
     "bike_erg": TrainingModality.BIKE, "stationary_bike": TrainingModality.BIKE,

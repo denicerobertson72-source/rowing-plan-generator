@@ -77,6 +77,37 @@ def test_cross_training_capability_round_trips_without_affecting_legacy_profiles
     assert reloaded.json()["athlete_profile"]["cross_training"] == updated["cross_training"]
 
 
+def test_r1b_current_state_goals_strength_override_and_combined_preferences_round_trip():
+    with TemporaryDirectory() as directory:
+        client, previous = _client(Path(directory) / "r1b-profile.sqlite3")
+        try:
+            created = client.post("/api/v1/athletes", json={"athlete_profile": synthetic_profile()})
+            athlete_id = created.json()["athlete_id"]
+            updated = client.get(f"/api/v1/athletes/{athlete_id}").json()
+            profile = updated["athlete_profile"]
+            profile["current_training_state"] = {
+                "approximate_total_physical_minutes": 350,
+                "approximate_rowing_minutes": 240,
+                "rowing_exposures": 4,
+                "strength_exposures": 3,
+                "typical_strength_duration_minutes": 45,
+                "consistency": "regular",
+            }
+            profile["planning_goals"] = {"primary_goal": "develop_strength", "secondary_goal": "build_endurance", "context_note": "Winter development"}
+            profile["training_preferences"] = {"combined_days": "preferred", "strength_plus_easy_aerobic": "preferred", "strength_plus_hard_rowing": "avoid", "maximum_combined_days_per_week": 2}
+            profile["training_context"] = {"current_strength_state": "regular", "typical_strength_duration_minutes": 45, "strength_override": {"mode": "preferred_target", "sessions_per_week": 3}}
+            saved = client.put(f"/api/v1/athletes/{athlete_id}", json={"athlete_profile": profile, "expected_revision": updated["profile_revision"]})
+            reloaded = client.get(f"/api/v1/athletes/{athlete_id}")
+        finally:
+            REPOSITORIES._instance = previous
+    assert created.status_code == saved.status_code == reloaded.status_code == 200
+    stored = reloaded.json()["athlete_profile"]
+    assert stored["current_training_state"]["consistency"] == "regular"
+    assert stored["planning_goals"]["primary_goal"] == "develop_strength"
+    assert stored["training_context"]["strength_override"] == {"mode": "preferred_target", "sessions_per_week": 3}
+    assert stored["training_preferences"]["maximum_combined_days_per_week"] == 2
+
+
 def test_invalid_review_only_strength_frequency_is_rejected_without_creating_context_data():
     with TemporaryDirectory() as directory:
         client, previous = _client(Path(directory) / "invalid-profile-context.sqlite3")

@@ -48,6 +48,15 @@ const CROSS_TRAINING_MODALITIES = [
   ["stair_climber", "Stair climber"],
   ["running", "Running"],
 ] as const;
+const PLANNING_GOALS = [
+  ["build_endurance", "Build endurance"],
+  ["develop_strength", "Get stronger"],
+  ["improve_2k", "Improve 2K performance"],
+  ["improve_sprint_power", "Improve sprint speed / power"],
+  ["technical_development", "Improve technique"],
+  ["race_preparation", "Prepare for racing"],
+  ["build_consistency", "Build consistency"],
+] as const;
 const uid = () => crypto.randomUUID?.() ?? `item-${Date.now()}`;
 const label = (value: string) =>
   value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -816,7 +825,8 @@ export default function ProfilePage() {
     [activityDraft, setActivityDraft] = useState<Activity | null>(null),
     [raceDraft, setRaceDraft] = useState<Draft | null>(null),
     [saving, setSaving] = useState(false),
-    [conflict, setConflict] = useState(false);
+    [conflict, setConflict] = useState(false),
+    [capacityPreview, setCapacityPreview] = useState<Record<string, number>>({});
   const saved = useMemo(() => getSavedSession(), []),
     { showSaveSuccess, showSaveError } = useSaveFeedback();
   const loadLatest = async () => {
@@ -844,6 +854,7 @@ export default function ProfilePage() {
     });
   }, [saved]);
   useEffect(() => {
+    setCapacityPreview({});
     document
       .querySelector<HTMLSelectElement>('select[name="strength_priority"]')
       ?.setAttribute("aria-label", "Strength-training focus");
@@ -867,6 +878,9 @@ export default function ProfilePage() {
     season = profile.season ?? {},
     tests = profile.tests ?? {},
     trainingContext = profile.training_context ?? {},
+    currentTrainingState = profile.current_training_state ?? {},
+    planningGoals = profile.planning_goals ?? {},
+    trainingPreferences = profile.training_preferences ?? {},
     crossTraining = profile.cross_training?.modalities ?? {},
     activities = legacyActivities(profile),
     persistedRaces = profile.races ?? [],
@@ -875,6 +889,13 @@ export default function ProfilePage() {
     ),
     blocks = tests.testing_blocks ?? [],
     latest = blocks.at(-1) ?? { id: uid(), performance_tests: [] };
+  const totalAvailableMinutes = (profile.weekly_availability ?? []).reduce(
+    (total: number, entry: any) =>
+      total + (entry.available !== false && entry.fixed_rest !== true
+        ? Number(capacityPreview[entry.weekday] ?? entry.max_training_minutes ?? 0)
+        : 0),
+    0,
+  );
   const persist = async (next: Profile, message: string) => {
     if (!athleteId || saving) return false;
     setSaving(true);
@@ -959,11 +980,24 @@ export default function ProfilePage() {
             form.get("current_strength_sessions_per_week") === ""
               ? null
               : Number(form.get("current_strength_sessions_per_week")),
+          current_strength_state:
+            String(form.get("current_strength_state") ?? "") || null,
+          typical_strength_duration_minutes:
+            form.get("typical_strength_duration_minutes") === ""
+              ? null
+              : Number(form.get("typical_strength_duration_minutes")),
           strength_equipment_access: form
             .getAll("strength_equipment_access")
             .map(String),
           strength_priority:
             String(form.get("strength_priority") ?? "") || null,
+          strength_override: {
+            mode: String(form.get("strength_override_mode") ?? "none"),
+            sessions_per_week:
+              form.get("strength_override_sessions_per_week") === ""
+                ? null
+                : Number(form.get("strength_override_sessions_per_week")),
+          },
           strength_limitations: String(form.get("strength_limitations") ?? ""),
           training_restriction_source: String(
             form.get("training_restriction_source") ?? "none",
@@ -988,6 +1022,47 @@ export default function ProfilePage() {
               },
             ]),
           ),
+        },
+        current_training_state: {
+          approximate_total_physical_minutes:
+            form.get("current_weekly_training_minutes") === ""
+              ? null
+              : Number(form.get("current_weekly_training_minutes")),
+          approximate_rowing_minutes:
+            form.get("current_approx_weekly_rowing_minutes") === ""
+              ? null
+              : Number(form.get("current_approx_weekly_rowing_minutes")),
+          rowing_exposures:
+            form.get("current_rowing_sessions_per_week") === ""
+              ? null
+              : Number(form.get("current_rowing_sessions_per_week")),
+          strength_exposures:
+            form.get("current_strength_sessions_per_week") === ""
+              ? null
+              : Number(form.get("current_strength_sessions_per_week")),
+          typical_strength_duration_minutes:
+            form.get("typical_strength_duration_minutes") === ""
+              ? null
+              : Number(form.get("typical_strength_duration_minutes")),
+          consistency: String(form.get("recent_training_consistency") ?? "") || null,
+          longest_comfortable_row_minutes:
+            form.get("longest_comfortable_continuous_row_minutes") === ""
+              ? null
+              : Number(form.get("longest_comfortable_continuous_row_minutes")),
+        },
+        planning_goals: {
+          primary_goal: String(form.get("primary_goal") ?? "build_consistency"),
+          secondary_goal: String(form.get("secondary_goal") ?? "") || null,
+          context_note: String(form.get("goal_context_note") ?? ""),
+        },
+        training_preferences: {
+          combined_days: String(form.get("combined_days") ?? "allowed"),
+          strength_plus_easy_aerobic: String(form.get("strength_plus_easy_aerobic") ?? "allowed"),
+          strength_plus_hard_rowing: String(form.get("strength_plus_hard_rowing") ?? "avoid"),
+          maximum_combined_days_per_week:
+            form.get("maximum_combined_days_per_week") === ""
+              ? null
+              : Number(form.get("maximum_combined_days_per_week")),
         },
         season: {
           ...season,
@@ -1203,12 +1278,12 @@ export default function ProfilePage() {
         <fieldset>
           <legend>Current training capacity</legend>
           <p className="field-help">
-            These describe what you are regularly completing now; the plan can
-            build gradually from them.
+            These describe what you are regularly completing now. They help
+            estimate your current training load; they are not future targets.
           </p>
           <div className="two-col">
             <label>
-              Current rowing sessions/week
+              About how many rowing/erg sessions do you currently do in a typical week?
               <input
                 name="current_rowing_sessions_per_week"
                 type="number"
@@ -1221,7 +1296,7 @@ export default function ProfilePage() {
               </span>
             </label>
             <label>
-              Total training minutes/week
+              About how many total minutes do you currently train in a typical week?
               <input
                 name="current_weekly_training_minutes"
                 type="number"
@@ -1230,12 +1305,12 @@ export default function ProfilePage() {
                 defaultValue={athlete.current_weekly_training_minutes ?? ""}
               />
               <span className="field-help">
-                About how many total minutes do you currently train in a typical
-                week? Include rowing/erg, strength, and aerobic cross-training.
+                Include rowing/erg, strength, and aerobic cross-training. This
+                helps estimate your current training load; it is not a target.
               </span>
             </label>
             <label>
-              Current rowing or erg minutes/week
+              Current rowing or erg minutes/week (optional)
               <input
                 name="current_approx_weekly_rowing_minutes"
                 type="number"
@@ -1249,6 +1324,23 @@ export default function ProfilePage() {
                 About how many of those minutes are currently rowing or erg?
               </span>
             </label>
+            <label>
+              Current training consistency
+              <select
+                name="recent_training_consistency"
+                defaultValue={
+                  currentTrainingState.consistency ??
+                  ({ consistent: "regular", inconsistent: "variable" } as any)[athlete.recent_training_consistency] ??
+                  athlete.recent_training_consistency ?? ""
+                }
+              >
+                <option value="">Prefer not to say</option>
+                <option value="returning">Returning</option>
+                <option value="building">Building</option>
+                <option value="regular">Regular</option>
+                <option value="variable">Variable</option>
+              </select>
+            </label>
           </div>
         </fieldset>
         <fieldset>
@@ -1258,6 +1350,15 @@ export default function ProfilePage() {
             advice or automatically change your plan.
           </p>
           <div className="two-col">
+            <label>
+              Current strength practice
+              <select name="current_strength_state" defaultValue={trainingContext.current_strength_state ?? ""}>
+                <option value="">Prefer not to say</option>
+                <option value="none">None currently</option>
+                <option value="occasional">Occasional</option>
+                <option value="regular">Regular</option>
+              </select>
+            </label>
             <label>
               Strength experience
               <select
@@ -1282,6 +1383,10 @@ export default function ProfilePage() {
                   trainingContext.current_strength_sessions_per_week ?? ""
                 }
               />
+            </label>
+            <label>
+              Typical strength workout duration (minutes)
+              <input name="typical_strength_duration_minutes" type="number" min="0" max="360" defaultValue={trainingContext.typical_strength_duration_minutes ?? ""} />
             </label>
           </div>
           <fieldset>
@@ -1317,6 +1422,23 @@ export default function ProfilePage() {
               </option>
             </select>
           </label>
+          <details>
+            <summary>Advanced strength scheduling override</summary>
+            <p className="field-help">This is separate from your strength preference. It is saved for future planning and does not change the current plan yet.</p>
+            <div className="two-col">
+              <label>Override type
+                <select name="strength_override_mode" defaultValue={trainingContext.strength_override?.mode ?? "none"}>
+                  <option value="none">No override</option>
+                  <option value="preferred_target">Preferred target</option>
+                  <option value="minimum">Minimum</option>
+                  <option value="fixed_commitment">Fixed commitment</option>
+                </select>
+              </label>
+              <label>Sessions/week
+                <input name="strength_override_sessions_per_week" type="number" min="0" max="7" defaultValue={trainingContext.strength_override?.sessions_per_week ?? ""} />
+              </label>
+            </div>
+          </details>
           <label>
             Anything that currently limits your strength training?
             <textarea
@@ -1450,6 +1572,50 @@ export default function ProfilePage() {
             defaultValue={season.seasonal_goal ?? ""}
           />
         </label>
+        <fieldset>
+          <legend>Training goals</legend>
+          <p className="field-help">These guide future planning context. Your race calendar supplies race-preparation context automatically.</p>
+          <div className="two-col">
+            <label>Primary goal
+              <select name="primary_goal" defaultValue={planningGoals.primary_goal ?? "build_consistency"}>
+                {PLANNING_GOALS.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
+              </select>
+            </label>
+            <label>Secondary goal (optional)
+              <select name="secondary_goal" defaultValue={planningGoals.secondary_goal ?? ""}>
+                <option value="">None</option>
+                {PLANNING_GOALS.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
+              </select>
+            </label>
+          </div>
+          <label>Goal context (optional)
+            <textarea name="goal_context_note" maxLength={1000} defaultValue={planningGoals.context_note ?? ""} />
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend>Combined training days</legend>
+          <p className="field-help">These are preferences for future planning, not fixed commitments.</p>
+          <div className="two-col">
+            <label>Combined days
+              <select name="combined_days" defaultValue={trainingPreferences.combined_days ?? "allowed"}>
+                <option value="avoid">Avoid</option><option value="allowed">Allowed</option><option value="preferred">Preferred</option>
+              </select>
+            </label>
+            <label>Strength + easy aerobic
+              <select name="strength_plus_easy_aerobic" defaultValue={trainingPreferences.strength_plus_easy_aerobic ?? "allowed"}>
+                <option value="avoid">Avoid</option><option value="allowed">Allowed</option><option value="preferred">Preferred</option>
+              </select>
+            </label>
+            <label>Strength + hard rowing
+              <select name="strength_plus_hard_rowing" defaultValue={trainingPreferences.strength_plus_hard_rowing ?? "avoid"}>
+                <option value="avoid">Avoid</option><option value="allowed">Allowed</option>
+              </select>
+            </label>
+            <label>Maximum combined days/week (optional)
+              <input name="maximum_combined_days_per_week" type="number" min="0" max="7" defaultValue={trainingPreferences.maximum_combined_days_per_week ?? ""} />
+            </label>
+          </div>
+        </fieldset>
         <label>
           Workout structure preference
           <select
@@ -1585,6 +1751,7 @@ export default function ProfilePage() {
         ))}
         <form className="profile-form" onSubmit={saveSchedulingPreferences}>
           <h3>Training time & long-session opportunity</h3>
+          <p className="field-help">Enter the maximum time you could usually train on each day. The planner may recommend less.</p>
           <fieldset>
             <legend>Preferred longer-training days</legend>
             <p className="field-help">
@@ -1609,13 +1776,15 @@ export default function ProfilePage() {
               Typical available training time — {label(entry.weekday)}
               <input
                 name={`minutes-${entry.weekday}`}
-                type="number"
-                min="0"
-                max="360"
-                defaultValue={entry.max_training_minutes ?? 60}
-              />
+              type="number"
+              min="0"
+              max="360"
+              defaultValue={entry.max_training_minutes ?? 60}
+              onChange={(event) => setCapacityPreview((current) => ({ ...current, [entry.weekday]: Number(event.target.value || 0) }))}
+            />
             </label>
           ))}
+          <p className="status"><b>Total time available: {totalAvailableMinutes} min/week</b> <span className="field-help">Capacity ceiling, not a training target.</span></p>
           <button disabled={saving}>
             {saving ? "Saving…" : "Save scheduling preferences"}
           </button>

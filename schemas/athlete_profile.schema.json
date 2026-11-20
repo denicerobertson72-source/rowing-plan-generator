@@ -70,6 +70,11 @@
           "type": ["integer", "null"],
           "minimum": 0
         },
+        "current_weekly_training_minutes": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Legacy current-training estimate; never a prescription target."
+        },
         "sex_for_optional_reference_equations": {
           "enum": [
             "female",
@@ -714,6 +719,22 @@
         "strength_priority": {
           "enum": ["maintenance", "support_rowing", "develop_strength", "not_a_current_priority", null]
         },
+        "current_strength_state": {
+          "enum": ["none", "occasional", "regular", null]
+        },
+        "typical_strength_duration_minutes": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 360
+        },
+        "strength_override": {
+          "type": ["object", "null"],
+          "properties": {
+            "mode": {"enum": ["none", "preferred_target", "minimum", "fixed_commitment"]},
+            "sessions_per_week": {"type": ["integer", "null"], "minimum": 0, "maximum": 7}
+          },
+          "additionalProperties": false
+        },
         "strength_limitations": {
           "type": "string",
           "maxLength": 1000
@@ -741,6 +762,39 @@
           },
           "additionalProperties": false
         }
+      },
+      "additionalProperties": false
+    },
+    "current_training_state": {
+      "type": "object",
+      "properties": {
+        "approximate_total_physical_minutes": {"type": ["integer", "null"], "minimum": 0},
+        "approximate_rowing_minutes": {"type": ["integer", "null"], "minimum": 0},
+        "rowing_exposures": {"type": ["integer", "null"], "minimum": 0},
+        "strength_exposures": {"type": ["integer", "null"], "minimum": 0},
+        "typical_strength_duration_minutes": {"type": ["integer", "null"], "minimum": 0},
+        "consistency": {"enum": ["returning", "building", "regular", "variable", null]},
+        "longest_comfortable_row_minutes": {"type": ["integer", "null"], "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "planning_goals": {
+      "type": "object",
+      "required": ["primary_goal"],
+      "properties": {
+        "primary_goal": {"enum": ["build_endurance", "develop_strength", "improve_2k", "improve_sprint_power", "technical_development", "race_preparation", "build_consistency"]},
+        "secondary_goal": {"enum": ["build_endurance", "develop_strength", "improve_2k", "improve_sprint_power", "technical_development", "race_preparation", "build_consistency", null]},
+        "context_note": {"type": "string", "maxLength": 1000}
+      },
+      "additionalProperties": false
+    },
+    "training_preferences": {
+      "type": "object",
+      "properties": {
+        "combined_days": {"enum": ["avoid", "allowed", "preferred"]},
+        "strength_plus_easy_aerobic": {"enum": ["avoid", "allowed", "preferred"]},
+        "strength_plus_hard_rowing": {"enum": ["avoid", "allowed"]},
+        "maximum_combined_days_per_week": {"type": ["integer", "null"], "minimum": 0, "maximum": 7}
       },
       "additionalProperties": false
     },
