@@ -731,7 +731,8 @@
           "type": ["object", "null"],
           "properties": {
             "mode": {"enum": ["none", "preferred_target", "minimum", "fixed_commitment"]},
-            "sessions_per_week": {"type": ["integer", "null"], "minimum": 0, "maximum": 7}
+            "sessions_per_week": {"type": ["integer", "null"], "minimum": 0, "maximum": 7},
+            "expected_duration_minutes": {"type": ["integer", "null"], "minimum": 1, "maximum": 360}
           },
           "additionalProperties": false
         },

@@ -60,6 +60,11 @@ research citation.
 | fixed dose override feasibility | coach or athlete preference | reject fixed requests above usable capacity or hard restrictions | athlete or coach input | a fixed request is never silently capped and represented as honoured | athlete or coach | R2 dose derivation |
 | rowing-specific work is protected before substitution | research constrained | no universal rowing/cross-training percentage | S033-S036 | sport specificity, technique, racing, and categorical work remain distinct from general aerobic support | coach | future cross-training substitution policy |
 | athlete-relative composition emphasis | evidence-informed heuristic | one phase-compatible development role within existing load ceilings | S030, S032 | valid 2K/30R20/60-second/7-stroke relationships may alter compatible role emphasis; no published dose formula is claimed | coach | M2.8 TrainingNeeds |
+| allocation conserves R2 physical dose | software implementation choice | rowing-specific + strength + general aerobic + explicit other equals each R2 segment | R2/R3 contract | categories partition one approved physical dose; no category creates a second budget | no | R3 allocation |
+| strength allocation is individualized | research constrained | demonstrated tolerance, goals, restrictions, and season context inform strength allocation | S017, S031, S032 | concurrent strength/endurance prescription is individualized rather than a universal count | coach | R3 allocation |
+| rowing-specific protection before substitution | research constrained | retain sport-specific work before discretionary cross-training | S033-S036 | cross-training is not rowing-equivalent | coach | R3 allocation |
+| allocation exposure/floor/transition defaults | evidence-informed heuristic | discrete strength exposure, rowing floor, general-aerobic latitude, and transition rationale are versioned app rules | S009, S010, S017, S032-S036 | no source establishes universal category ratios or change limits | coach | R3 allocation |
+| fixed/minimum strength conflict is explicit | software implementation choice | fixed/minimum exposure × duration cannot silently exceed R2 or protected rowing floor | athlete or coach input | impossible allocation is returned before placement | no | R3 allocation |
 
 ## Deliberate boundaries
 

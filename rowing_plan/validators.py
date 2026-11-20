@@ -48,6 +48,10 @@ def validate_profile(profile: dict) -> list[str]:
                 errors.append("Strength override is invalid.")
             elif override.get("sessions_per_week") is not None and (not isinstance(override["sessions_per_week"], int) or not 0 <= override["sessions_per_week"] <= 7):
                 errors.append("Strength override sessions per week must be a whole number from 0 to 7.")
+            elif override.get("expected_duration_minutes") is not None and (not isinstance(override["expected_duration_minutes"], int) or not 1 <= override["expected_duration_minutes"] <= 360):
+                errors.append("Strength override expected duration must be a whole number from 1 to 360.")
+            elif override.get("mode") in ("minimum", "fixed_commitment") and override.get("sessions_per_week") is None:
+                errors.append("Minimum or fixed strength override requires sessions per week.")
         if context.get("training_restriction_source", "none") not in ("none","athlete","coach","clinician"):
             errors.append("Training restriction source must be none, athlete, coach, or clinician.")
         equipment=context.get("strength_equipment_access", [])

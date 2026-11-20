@@ -274,6 +274,140 @@ class RecommendedTrainingDose:
         object.__setattr__(self, "constraints", tuple(sorted(set(self.constraints))))
 
 
+@dataclass(frozen=True)
+class TrainingAllocationSegment:
+    """One exact physical-category partition of an R2 dose segment."""
+
+    start_date: date
+    end_date: date
+    recommended_physical_minutes: int
+    rowing_specific_minutes: int
+    strength_minutes: int
+    general_aerobic_minutes: int
+    other_physical_minutes: int
+    rowing_specific_floor_minutes: int
+    recommended_strength_exposures: int
+    minimum_strength_exposures: int
+    maximum_strength_exposures: int
+    expected_strength_duration_minutes: int
+    rationale_codes: tuple[str, ...] = ()
+    constraints: tuple[str, ...] = ()
+    other_provenance: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        values = (
+            self.recommended_physical_minutes, self.rowing_specific_minutes,
+            self.strength_minutes, self.general_aerobic_minutes,
+            self.other_physical_minutes, self.rowing_specific_floor_minutes,
+            self.recommended_strength_exposures, self.minimum_strength_exposures,
+            self.maximum_strength_exposures, self.expected_strength_duration_minutes,
+        )
+        if self.end_date < self.start_date or any(value < 0 for value in values):
+            raise ValueError("training_allocation_segment_values_are_invalid")
+        if self.rowing_specific_minutes < self.rowing_specific_floor_minutes:
+            raise ValueError("training_allocation_segment_rowing_floor_is_unmet")
+        if not self.minimum_strength_exposures <= self.recommended_strength_exposures <= self.maximum_strength_exposures:
+            raise ValueError("training_allocation_segment_strength_range_is_invalid")
+        if self.strength_minutes != self.recommended_strength_exposures * self.expected_strength_duration_minutes:
+            raise ValueError("training_allocation_segment_strength_minutes_must_match_exposures")
+        if self.other_physical_minutes and (not self.other_provenance or not self.rationale_codes):
+            raise ValueError("training_allocation_segment_other_requires_provenance_and_rationale")
+        if (
+            self.rowing_specific_minutes + self.strength_minutes
+            + self.general_aerobic_minutes + self.other_physical_minutes
+            != self.recommended_physical_minutes
+        ):
+            raise ValueError("training_allocation_segment_physical_conservation_mismatch")
+        object.__setattr__(self, "rationale_codes", tuple(sorted(set(self.rationale_codes))))
+        object.__setattr__(self, "constraints", tuple(sorted(set(self.constraints))))
+        object.__setattr__(self, "other_provenance", tuple(sorted(set(self.other_provenance))))
+
+
+@dataclass(frozen=True)
+class TrainingAllocation:
+    """Derived block allocation; never a second physical-dose authority."""
+
+    planning_start: date
+    planning_end: date
+    segments: tuple[TrainingAllocationSegment, ...]
+    recommended_physical_minutes: int
+    rowing_specific_minutes: int
+    strength_minutes: int
+    general_aerobic_minutes: int
+    other_physical_minutes: int
+    recommended_strength_exposures: int
+    rationale_codes: tuple[str, ...] = ()
+    evidence_sources: tuple[str, ...] = ()
+    constraints: tuple[str, ...] = ()
+    confidence: str = "low"
+    policy_version: str = "training-allocation-v1"
+
+    def __post_init__(self) -> None:
+        if self.planning_end < self.planning_start or not self.segments:
+            raise ValueError("training_allocation_horizon_is_invalid")
+        ordered = tuple(sorted(self.segments, key=lambda item: (item.start_date, item.end_date)))
+        if ordered != self.segments:
+            raise ValueError("training_allocation_segments_must_be_ordered")
+        if ordered[0].start_date != self.planning_start or ordered[-1].end_date != self.planning_end:
+            raise ValueError("training_allocation_segments_do_not_cover_block")
+        if any(right.start_date != left.end_date + timedelta(days=1) for left, right in zip(ordered, ordered[1:])):
+            raise ValueError("training_allocation_segments_must_be_contiguous")
+        derived = (
+            sum(item.recommended_physical_minutes for item in ordered),
+            sum(item.rowing_specific_minutes for item in ordered),
+            sum(item.strength_minutes for item in ordered),
+            sum(item.general_aerobic_minutes for item in ordered),
+            sum(item.other_physical_minutes for item in ordered),
+            sum(item.recommended_strength_exposures for item in ordered),
+        )
+        supplied = (
+            self.recommended_physical_minutes, self.rowing_specific_minutes,
+            self.strength_minutes, self.general_aerobic_minutes,
+            self.other_physical_minutes, self.recommended_strength_exposures,
+        )
+        if any(value < 0 for value in supplied) or supplied != derived:
+            raise ValueError("training_allocation_block_totals_must_be_derived")
+        if self.confidence not in {"low", "moderate", "high"}:
+            raise ValueError("training_allocation_confidence_is_invalid")
+        object.__setattr__(self, "rationale_codes", tuple(sorted(set(self.rationale_codes))))
+        object.__setattr__(self, "evidence_sources", tuple(sorted(set(self.evidence_sources))))
+        object.__setattr__(self, "constraints", tuple(sorted(set(self.constraints))))
+
+
+@dataclass(frozen=True)
+class TrainingAllocationInfeasibility:
+    code: str
+    segment_start: date
+    segment_end: date
+    required_strength_minutes: int
+    rowing_specific_floor_minutes: int
+    recommended_physical_minutes: int
+    shortfall_minutes: int
+    conflicting_constraint_provenance: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if min(
+            self.required_strength_minutes, self.rowing_specific_floor_minutes,
+            self.recommended_physical_minutes, self.shortfall_minutes,
+        ) < 0 or self.shortfall_minutes == 0:
+            raise ValueError("training_allocation_infeasibility_values_are_invalid")
+        object.__setattr__(self, "conflicting_constraint_provenance", tuple(sorted(set(self.conflicting_constraint_provenance))))
+
+
+@dataclass(frozen=True)
+class TrainingAllocationResult:
+    allocation: TrainingAllocation | None = None
+    infeasibility: TrainingAllocationInfeasibility | None = None
+
+    def __post_init__(self) -> None:
+        if (self.allocation is None) == (self.infeasibility is None):
+            raise ValueError("training_allocation_result_must_have_exactly_one_outcome")
+
+    @property
+    def success(self) -> bool:
+        return self.allocation is not None
+
+
 _MODALITY_ALIASES = {
     "rowing": TrainingModality.ERG, "row": TrainingModality.ERG,
     "bike_erg": TrainingModality.BIKE, "stationary_bike": TrainingModality.BIKE,

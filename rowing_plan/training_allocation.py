@@ -1,0 +1,298 @@
+"""R3 authoritative partition of an R2 physical-dose recommendation.
+
+No calendar placement, rowing intensity composition, or cross-training
+modality selection belongs here.  This module only divides the exact physical
+minutes already authorized by :mod:`recommended_training_dose`.
+"""
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import date
+from typing import Any, Mapping
+
+from .planning_domain import (
+    CurrentTrainingState,
+    RecommendedTrainingDose,
+    TrainingAllocation,
+    TrainingAllocationInfeasibility,
+    TrainingAllocationResult,
+    TrainingAllocationSegment,
+)
+from .planning_normalization import NormalizedPlanningContext, normalize_planning_inputs
+from .planning_profile import normalize_current_training_state
+from .physiological_state import reduce_physiological_state
+from .recommended_training_dose import recent_actual_history_is_sufficient
+
+
+POLICY_VERSION = "training-allocation-v1"
+DEFAULT_STRENGTH_DURATION_MINUTES = 45
+GENERAL_PREP_CROSS_TRAINING_LATITUDE_MINUTES_PER_7D = 30
+
+
+def _positive_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _discrete_exposures(per_week: int, days: int) -> int:
+    """Scale a weekly evidence/override discretely, never fractionally."""
+    if per_week <= 0 or days <= 0:
+        return 0
+    whole_weeks, remainder = divmod(days, 7)
+    interval = max(1, (7 + per_week - 1) // per_week)
+    return whole_weeks * per_week + min(per_week, remainder // interval)
+
+
+def _strength_inputs(profile: Mapping[str, Any], current: CurrentTrainingState) -> tuple[int, int, str, str | None]:
+    context = profile.get("training_context", {}) if isinstance(profile.get("training_context"), Mapping) else {}
+    override = context.get("strength_override", {}) if isinstance(context.get("strength_override"), Mapping) else {}
+    mode = str(override.get("mode", "none"))
+    requested = _positive_int(override.get("sessions_per_week"))
+    current_sessions = _positive_int(context.get("current_strength_sessions_per_week"))
+    if current_sessions is None:
+        current_sessions = current.strength_exposures or 0
+    duration = _positive_int(override.get("expected_duration_minutes"))
+    if duration is not None:
+        duration_source = "strength_override_expected_duration"
+    elif current.typical_strength_duration_minutes is not None:
+        duration = current.typical_strength_duration_minutes
+        duration_source = "current_training_state_strength_duration"
+    elif _positive_int(context.get("typical_strength_duration_minutes")) is not None:
+        duration = _positive_int(context.get("typical_strength_duration_minutes"))
+        duration_source = "training_context_strength_duration"
+    else:
+        duration = DEFAULT_STRENGTH_DURATION_MINUTES
+        duration_source = "policy_default_strength_duration"
+    if mode in {"minimum", "fixed_commitment"} and requested is None:
+        raise ValueError("strength_override_requires_exposure_count")
+    return current_sessions, duration, duration_source, mode if mode != "none" else None
+
+
+def _goal(profile: Mapping[str, Any]) -> str | None:
+    goals = profile.get("planning_goals", {}) if isinstance(profile.get("planning_goals"), Mapping) else {}
+    return goals.get("primary_goal") if isinstance(goals.get("primary_goal"), str) else None
+
+
+def _phase_and_race_context(profile: Mapping[str, Any], start: date, end: date) -> tuple[str, bool]:
+    season = profile.get("season", {}) if isinstance(profile.get("season"), Mapping) else {}
+    phase = str(season.get("phase") or season.get("phase_type") or "general_preparation")
+    race_near = False
+    for race in profile.get("races", ()):
+        if not isinstance(race, Mapping):
+            continue
+        for raw in race.get("race_dates") or (race.get("end_date"),):
+            try:
+                race_day = date.fromisoformat(str(raw))
+            except (TypeError, ValueError):
+                continue
+            if -1 <= (race_day - start).days <= 14:
+                race_near = True
+    race_specific = phase in {"race_specific_preparation", "taper", "race"} or race_near
+    return phase, race_specific
+
+
+def _rowing_weekly_evidence(profile: Mapping[str, Any], current: CurrentTrainingState) -> int:
+    athlete = profile.get("athlete", {}) if isinstance(profile.get("athlete"), Mapping) else {}
+    return (
+        current.approximate_rowing_minutes
+        or _positive_int(athlete.get("current_approx_weekly_rowing_minutes"))
+        or ((_positive_int(athlete.get("current_rowing_sessions_per_week")) or 0) * 45)
+    )
+
+
+def _cross_training_eligible(profile: Mapping[str, Any]) -> bool:
+    cross = profile.get("cross_training", {}) if isinstance(profile.get("cross_training"), Mapping) else {}
+    modes = cross.get("modalities", {}) if isinstance(cross.get("modalities"), Mapping) else {}
+    return any(
+        isinstance(item, Mapping) and item.get("enabled") is True and item.get("preference", "neutral") != "avoid"
+        for item in modes.values()
+    )
+
+
+def _strength_desired_per_week(
+    profile: Mapping[str, Any], current_sessions: int, override_mode: str | None,
+) -> int:
+    context = profile.get("training_context", {}) if isinstance(profile.get("training_context"), Mapping) else {}
+    override = context.get("strength_override", {}) if isinstance(context.get("strength_override"), Mapping) else {}
+    requested = _positive_int(override.get("sessions_per_week"))
+    if override_mode == "fixed_commitment":
+        return requested or 0
+    if override_mode == "minimum":
+        return max(current_sessions, requested or 0)
+    if override_mode == "preferred_target" and requested is not None:
+        return requested
+    if current_sessions:
+        return current_sessions
+    if _goal(profile) == "develop_strength" or context.get("strength_priority") == "develop_strength":
+        return 1
+    return 0
+
+
+def _segment_context_codes(segment, profile: Mapping[str, Any], state) -> tuple[str, ...]:
+    codes = []
+    if segment.recommendation_status in {"recovery", "taper", "capacity_constrained", "override_fixed"}:
+        codes.append(f"r2_status:{segment.recommendation_status}")
+    if any(item.start_date <= segment.end_date and item.end_date >= segment.start_date for item in state.recovery_constraints):
+        codes.append("recovery_constraint")
+    phase, race_specific = _phase_and_race_context(profile, segment.start_date, segment.end_date)
+    if phase != "general_preparation":
+        codes.append(f"season_phase:{phase}")
+    if race_specific:
+        codes.append("race_specific_context")
+    return tuple(codes)
+
+
+def allocate_training_dose(
+    recommended_dose: RecommendedTrainingDose, *, profile: Mapping[str, Any],
+    current_state: CurrentTrainingState, state,
+) -> TrainingAllocationResult:
+    """Partition an R2 dose without importing any legacy future target."""
+    current_strength, duration, duration_source, override_mode = _strength_inputs(profile, current_state)
+    desired_per_week = _strength_desired_per_week(profile, current_strength, override_mode)
+    strength_experience = str((profile.get("training_context") or {}).get("strength_experience") or "none")
+    current_strength_state = str((profile.get("training_context") or {}).get("current_strength_state") or "none")
+    goal = _goal(profile)
+    cross_eligible = _cross_training_eligible(profile)
+    rowing_weekly = _rowing_weekly_evidence(profile, current_state)
+    raw_segments: list[TrainingAllocationSegment] = []
+
+    for segment in recommended_dose.segments:
+        days = (segment.end_date - segment.start_date).days + 1
+        phase, race_specific = _phase_and_race_context(profile, segment.start_date, segment.end_date)
+        recovery = segment.recommendation_status == "recovery" or any(
+            item.start_date <= segment.end_date and item.end_date >= segment.start_date
+            for item in state.recovery_constraints
+        )
+        taper = segment.recommendation_status == "taper" or phase == "taper"
+        exposures = _discrete_exposures(desired_per_week, days)
+        rationale = ["allocation_from_recommended_training_dose", f"strength_duration:{duration_source}"]
+        constraints = list(_segment_context_codes(segment, profile, state))
+        if recovery:
+            exposures = 0
+            rationale.append("strength_zero:recovery")
+        elif taper:
+            exposures = min(exposures, _discrete_exposures(1, days))
+            rationale.append("strength_maintenance:taper")
+        elif goal == "develop_strength":
+            rationale.append("strength_goal:development")
+        strength_minutes = exposures * duration
+
+        rowing_floor = round(rowing_weekly * days / 7)
+        if not race_specific and phase in {"general_preparation", "foundation_orientation", "aerobic_development"} and goal == "develop_strength":
+            # Explicit policy latitude, not a percentage or second target.
+            rowing_floor = max(0, rowing_floor - round(GENERAL_PREP_CROSS_TRAINING_LATITUDE_MINUTES_PER_7D * days / 7))
+            rationale.append("rowing_floor:general_preparation_strength_latitude")
+        if recovery:
+            rowing_floor = min(rowing_floor, segment.recommended_physical_minutes)
+            rationale.append("rowing_floor:recovery_context")
+        else:
+            rationale.append("rowing_floor:history_and_specificity")
+
+        hard_strength = override_mode in {"minimum", "fixed_commitment"}
+        if strength_minutes + rowing_floor > segment.recommended_physical_minutes:
+            if hard_strength:
+                return TrainingAllocationResult(infeasibility=TrainingAllocationInfeasibility(
+                    code="allocation_infeasible",
+                    segment_start=segment.start_date, segment_end=segment.end_date,
+                    required_strength_minutes=strength_minutes,
+                    rowing_specific_floor_minutes=rowing_floor,
+                    recommended_physical_minutes=segment.recommended_physical_minutes,
+                    shortfall_minutes=strength_minutes + rowing_floor - segment.recommended_physical_minutes,
+                    conflicting_constraint_provenance=(f"strength_override:{override_mode}", "rowing_specific_floor"),
+                ))
+            while exposures and strength_minutes + rowing_floor > segment.recommended_physical_minutes:
+                exposures -= 1
+                strength_minutes = exposures * duration
+            rationale.append("strength_reduced_for_rowing_specific_protection")
+
+        if exposures == 0 and current_strength_state == "regular" and strength_experience in {"intermediate", "advanced"} and not any(code.startswith("strength_zero:") for code in rationale):
+            rationale.append("strength_zero:hard_capacity_constraint")
+        general_desired = 0
+        if cross_eligible and not race_specific and not recovery and phase in {"general_preparation", "foundation_orientation", "aerobic_development"} and goal == "develop_strength":
+            general_desired = round(GENERAL_PREP_CROSS_TRAINING_LATITUDE_MINUTES_PER_7D * days / 7)
+            rationale.append("general_aerobic:eligible_general_preparation")
+        elif not cross_eligible:
+            rationale.append("general_aerobic:zero_no_eligible_preference")
+        elif race_specific:
+            rationale.append("general_aerobic:zero_race_specificity")
+        general = min(general_desired, max(0, segment.recommended_physical_minutes - strength_minutes - rowing_floor))
+        rowing = segment.recommended_physical_minutes - strength_minutes - general
+        min_strength = exposures if hard_strength else 0
+        max_strength = exposures
+        raw_segments.append(TrainingAllocationSegment(
+            start_date=segment.start_date, end_date=segment.end_date,
+            recommended_physical_minutes=segment.recommended_physical_minutes,
+            rowing_specific_minutes=rowing, strength_minutes=strength_minutes,
+            general_aerobic_minutes=general, other_physical_minutes=0,
+            rowing_specific_floor_minutes=rowing_floor,
+            recommended_strength_exposures=exposures,
+            minimum_strength_exposures=min_strength, maximum_strength_exposures=max_strength,
+            expected_strength_duration_minutes=duration,
+            rationale_codes=tuple(rationale), constraints=tuple(constraints),
+        ))
+
+    segments = []
+    for previous, current in zip((None, *raw_segments[:-1]), raw_segments):
+        rationale = set(current.rationale_codes)
+        if previous is not None:
+            changed = (
+                previous.rowing_specific_minutes != current.rowing_specific_minutes
+                or previous.general_aerobic_minutes != current.general_aerobic_minutes
+                or previous.recommended_strength_exposures != current.recommended_strength_exposures
+            )
+            if changed:
+                rationale.add("composition_transition:segment_context_or_duration_change")
+            if abs(previous.recommended_strength_exposures - current.recommended_strength_exposures) > 1:
+                rationale.add("composition_transition:strength_exposure_change")
+        segments.append(replace(current, rationale_codes=tuple(rationale)))
+    ordered = tuple(segments)
+    allocation = TrainingAllocation(
+        planning_start=recommended_dose.planning_start, planning_end=recommended_dose.planning_end,
+        segments=ordered,
+        recommended_physical_minutes=sum(item.recommended_physical_minutes for item in ordered),
+        rowing_specific_minutes=sum(item.rowing_specific_minutes for item in ordered),
+        strength_minutes=sum(item.strength_minutes for item in ordered),
+        general_aerobic_minutes=sum(item.general_aerobic_minutes for item in ordered),
+        other_physical_minutes=sum(item.other_physical_minutes for item in ordered),
+        recommended_strength_exposures=sum(item.recommended_strength_exposures for item in ordered),
+        rationale_codes=tuple(code for item in ordered for code in item.rationale_codes),
+        evidence_sources=(current_state.source.value, "recommended_training_dose"),
+        constraints=tuple(code for item in ordered for code in item.constraints),
+        confidence=recommended_dose.confidence,
+        policy_version=POLICY_VERSION,
+    )
+    return TrainingAllocationResult(allocation=allocation)
+
+
+def generate_training_allocation_v3(
+    profile: Mapping[str, Any], *, planning_date: date,
+    recommended_dose: RecommendedTrainingDose | None = None,
+    prior_plan: Mapping[str, Any] | None = None,
+    history_actuals: Mapping[str, Mapping[str, Any]] | None = None,
+    locked_sessions=(), future_placements=(),
+) -> TrainingAllocationResult:
+    """Clear R3 entry point; it consumes R2 directly and no legacy targets."""
+    if recommended_dose is None:
+        from .replacement_plan_v3 import generate_recommended_training_dose_v3
+        recommended_dose = generate_recommended_training_dose_v3(
+            profile, planning_date=planning_date, prior_plan=prior_plan,
+            history_actuals=history_actuals, locked_sessions=locked_sessions,
+            future_placements=future_placements,
+        )
+    context = normalize_planning_inputs(
+        profile, planning_date=recommended_dose.planning_start, prior_plan=prior_plan,
+        history_actuals=history_actuals, locked_sessions=locked_sessions,
+        future_placements=future_placements,
+    )
+    sufficient = recent_actual_history_is_sufficient(context.historical_facts, planning_start=recommended_dose.planning_start)
+    current = normalize_current_training_state(
+        profile, historical_facts=context.historical_facts,
+        recent_actuals_sufficient=sufficient, observation_window_days=21,
+    )
+    state = reduce_physiological_state(context, profile=profile)
+    return allocate_training_dose(recommended_dose, profile=profile, current_state=current, state=state)
