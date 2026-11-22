@@ -16,6 +16,7 @@ from typing import Iterable
 from .materialization_v3 import MaterializationContext, quality_catalog_capabilities_v3
 from .performance_profile import AthletePerformanceProfile, PerformanceLimiterProfile, TrainingFocus
 from .planning_domain import (
+    QualityRequirementPriority,
     RowingQualityFamily,
     RowingQualityInfeasibility,
     RowingQualityPlan,
@@ -61,6 +62,7 @@ class CoachQualityOverride:
     target_exposures: int = 1
     rationale: str = "coach_quality_override"
     force_repeat: bool = False
+    must_complete: bool = False
 
     def __post_init__(self) -> None:
         if self.desired_work_minutes is not None and self.desired_work_minutes < 0:
@@ -103,7 +105,7 @@ def _fingerprint(*, segment: TrainingAllocationSegment, allocation_segment_id: s
         "focus": [focus.primary, focus.secondary, focus.phase, focus.race_type, focus.days_to_race, focus.recovery_active],
         "context": [context.phase_id, context.race_type, context.days_to_race, context.race_count, context.recovery_active, context.hard_restriction_codes, context.goals, context.experience, tuple(item.value for item in context.available_rowing_modalities)],
         "completed": [(item.completed_date.isoformat(), item.physiological_band, item.work_minutes, item.completed, item.is_race) for item in sorted(completed, key=lambda item: (item.completed_date, item.physiological_band, item.work_minutes))],
-        "override": None if override is None else [override.family.value, override.desired_work_minutes, override.target_exposures, override.rationale, override.force_repeat],
+        "override": None if override is None else [override.family.value, override.desired_work_minutes, override.target_exposures, override.rationale, override.force_repeat, override.must_complete],
         "versions": [ROWING_QUALITY_PLAN_VERSION, POLICY_VERSION],
     }
     return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -174,6 +176,7 @@ def _requirement(family: RowingQualityFamily, *, context: RowingQualityPlanningC
         (f"minimum_{spacing}_hour_spacing",) if spacing else (),
         ("r6_physiological_requirement", "catalog_envelope_verified"),
         ("r6", "r5_catalog_capability"),
+        QualityRequirementPriority.HARD if override and override.must_complete else QualityRequirementPriority.PREFERRED,
     )
 
 
@@ -286,6 +289,7 @@ def rowing_quality_plan_planversion_fragment(plans: Iterable[RowingQualityPlan])
             "maximum_exposures": item.maximum_exposures,
             "compatible_envelopes": [list(value) for value in item.compatible_envelopes],
             "minimum_spacing_hours": item.minimum_spacing_hours,
+            "priority": item.priority.value,
             "rationale_codes": list(item.rationale_codes), "provenance": list(item.provenance),
         }
     return {

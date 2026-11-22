@@ -125,6 +125,12 @@ class RowingQualityFamily(_TextEnum):
     POWER = "power"
 
 
+class QualityRequirementPriority(_TextEnum):
+    HARD = "hard"
+    PREFERRED = "preferred"
+    OPTIONAL = "optional"
+
+
 class TrainingDayState(_TextEnum):
     DESIGNATED_REST = "designated_rest"
     UNUSED_AVAILABLE = "unused_available"
@@ -447,6 +453,13 @@ class TrainingComponent:
     materialization_requirements: tuple[str, ...] = ()
     rationale_codes: tuple[str, ...] = ()
     constraint_codes: tuple[str, ...] = ()
+    quality_requirement_id: str | None = None
+    quality_exposure_id: str | None = None
+    physiological_band: str | None = None
+    quality_work_minutes: int | None = None
+    minimum_quality_work_minutes: int | None = None
+    maximum_quality_work_minutes: int | None = None
+    capability_provenance: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.component_id or not self.source_lineage_id or not self.allocation_segment_id:
@@ -455,6 +468,19 @@ class TrainingComponent:
             raise ValueError("training_component_duration_or_sequence_is_invalid")
         if self.physical_category is PhysicalCategory.OTHER and not self.rationale_codes:
             raise ValueError("training_component_other_requires_rationale")
+        quality_values = (self.quality_work_minutes, self.minimum_quality_work_minutes, self.maximum_quality_work_minutes)
+        if any(value is not None and value < 0 for value in quality_values):
+            raise ValueError("training_component_quality_work_values_are_invalid")
+        if self.quality_requirement_id is not None:
+            if not self.quality_exposure_id or not self.physiological_band or self.quality_work_minutes is None:
+                raise ValueError("training_component_quality_link_is_incomplete")
+            if self.physical_category is not PhysicalCategory.ROWING_SPECIFIC:
+                raise ValueError("training_component_quality_link_requires_rowing")
+        if self.minimum_quality_work_minutes is not None and self.maximum_quality_work_minutes is not None:
+            if self.minimum_quality_work_minutes > self.maximum_quality_work_minutes:
+                raise ValueError("training_component_quality_work_range_is_invalid")
+            if self.quality_work_minutes is not None and not self.minimum_quality_work_minutes <= self.quality_work_minutes <= self.maximum_quality_work_minutes:
+                raise ValueError("training_component_quality_work_is_outside_range")
         permitted = tuple(sorted(set(self.permitted_modalities), key=lambda item: item.value))
         if self.modality is not None and permitted and self.modality not in permitted:
             raise ValueError("training_component_modality_violates_constraint")
@@ -462,6 +488,7 @@ class TrainingComponent:
         object.__setattr__(self, "materialization_requirements", tuple(sorted(set(self.materialization_requirements))))
         object.__setattr__(self, "rationale_codes", tuple(sorted(set(self.rationale_codes))))
         object.__setattr__(self, "constraint_codes", tuple(sorted(set(self.constraint_codes))))
+        object.__setattr__(self, "capability_provenance", tuple(sorted(set(self.capability_provenance))))
 
 
 @dataclass(frozen=True)
@@ -714,6 +741,7 @@ class RowingQualityRequirement:
     recovery_constraint_codes: tuple[str, ...] = ()
     rationale_codes: tuple[str, ...] = ()
     provenance: tuple[str, ...] = ()
+    priority: QualityRequirementPriority = QualityRequirementPriority.PREFERRED
 
     def __post_init__(self) -> None:
         if not self.requirement_id or not self.physiological_band:

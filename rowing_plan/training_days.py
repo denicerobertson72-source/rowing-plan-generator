@@ -25,6 +25,14 @@ from .planning_domain import (
     TrainingDayPlanResult,
     TrainingDayState,
     TrainingModality,
+    CurrentTrainingState,
+    QualityRequirementPriority,
+    RowingQualityPlan,
+    RowingQualityRequirement,
+)
+from .materialization_v3 import (
+    MaterializationContext, preflight_quality_duration_v3,
+    preflight_rowing_duration_v3,
 )
 
 
@@ -85,12 +93,37 @@ class AuthoritativeComponentFact:
     purpose: TrainingComponentPurpose | None = None
     rationale_codes: tuple[str, ...] = ()
     constraint_codes: tuple[str, ...] = ()
+    physiological_band: str | None = None
+    quality_work_minutes: int | None = None
+    user_fixed: bool = False
 
     def __post_init__(self) -> None:
         if not self.authority_id or self.duration_minutes <= 0:
             raise ValueError("authoritative_component_fact_values_are_invalid")
+        if self.quality_work_minutes is not None and self.quality_work_minutes < 0:
+            raise ValueError("authoritative_component_fact_quality_work_is_invalid")
+        if self.quality_work_minutes is not None and not self.physiological_band:
+            raise ValueError("authoritative_component_fact_quality_band_is_required")
         object.__setattr__(self, "rationale_codes", tuple(sorted(set(self.rationale_codes))))
         object.__setattr__(self, "constraint_codes", tuple(sorted(set(self.constraint_codes))))
+
+
+@dataclass(frozen=True)
+class RowingComponentRequirement:
+    """Derived R6/R5 placement input; never an independent dose authority."""
+
+    requirement_id: str
+    exposure_id: str
+    family: str
+    purpose: TrainingComponentPurpose
+    physiological_band: str
+    desired_work_minutes: int
+    minimum_work_minutes: int
+    maximum_work_minutes: int
+    minimum_spacing_hours: int
+    priority: QualityRequirementPriority
+    rationale_codes: tuple[str, ...] = ()
+    provenance: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -136,6 +169,32 @@ def _default_purpose(category: PhysicalCategory) -> TrainingComponentPurpose:
         PhysicalCategory.GENERAL_AEROBIC: TrainingComponentPurpose.EASY_AEROBIC,
         PhysicalCategory.OTHER: TrainingComponentPurpose.RECOVERY,
     }[category]
+
+
+_QUALITY_PURPOSE_BY_FAMILY = {
+    "aerobic_strength": TrainingComponentPurpose.AEROBIC_STRENGTH,
+    "threshold": TrainingComponentPurpose.THRESHOLD,
+    "race_specific": TrainingComponentPurpose.RACE_SPECIFIC,
+    "anaerobic": TrainingComponentPurpose.ANAEROBIC,
+    "power": TrainingComponentPurpose.POWER,
+}
+
+
+def _rowing_component_requirements(plan: RowingQualityPlan) -> tuple[RowingComponentRequirement, ...]:
+    result: list[RowingComponentRequirement] = []
+    for item in plan.requirements:
+        purpose = _QUALITY_PURPOSE_BY_FAMILY.get(item.family.value)
+        if purpose is None:
+            continue
+        for ordinal in range(1, item.target_exposures + 1):
+            result.append(RowingComponentRequirement(
+                item.requirement_id, f"{item.requirement_id}:exposure:{ordinal}", item.family.value,
+                purpose, item.physiological_band, item.desired_work_minutes,
+                item.minimum_work_minutes, item.maximum_work_minutes,
+                item.minimum_spacing_hours, item.priority,
+                item.rationale_codes, item.provenance,
+            ))
+    return tuple(result)
 
 
 def _segment_for(day: date, segments: Iterable[TrainingAllocationSegment]) -> TrainingAllocationSegment | None:
@@ -197,7 +256,14 @@ def _make_component(*, lineage: str, segment_id: str, category: PhysicalCategory
                     modality: TrainingModality | None = None,
                     permitted_modalities: tuple[TrainingModality, ...] = (),
                     rationale_codes: tuple[str, ...] = (),
-                    constraint_codes: tuple[str, ...] = ()) -> TrainingComponent:
+                    constraint_codes: tuple[str, ...] = (),
+                    quality_requirement_id: str | None = None,
+                    quality_exposure_id: str | None = None,
+                    physiological_band: str | None = None,
+                    quality_work_minutes: int | None = None,
+                    minimum_quality_work_minutes: int | None = None,
+                    maximum_quality_work_minutes: int | None = None,
+                    capability_provenance: tuple[str, ...] = ()) -> TrainingComponent:
     return TrainingComponent(
         component_id=stable_component_identity(
             source_lineage_id=lineage, allocation_segment_id=segment_id,
@@ -209,6 +275,13 @@ def _make_component(*, lineage: str, segment_id: str, category: PhysicalCategory
         sequence=sequence, modality=modality, permitted_modalities=permitted_modalities,
         authority=authority, rationale_codes=rationale_codes,
         constraint_codes=constraint_codes,
+        quality_requirement_id=quality_requirement_id,
+        quality_exposure_id=quality_exposure_id,
+        physiological_band=physiological_band,
+        quality_work_minutes=quality_work_minutes,
+        minimum_quality_work_minutes=minimum_quality_work_minutes,
+        maximum_quality_work_minutes=maximum_quality_work_minutes,
+        capability_provenance=capability_provenance,
     )
 
 
@@ -218,6 +291,9 @@ def generate_training_days_v3(
     preferences: CombinedDayPreferences = CombinedDayPreferences(),
     restrictions: Mapping[date, tuple[str, ...]] | None = None,
     race_context: Iterable[RaceEvent] = (),
+    rowing_quality_plans: Iterable[RowingQualityPlan] = (),
+    materialization_context: MaterializationContext = MaterializationContext(),
+    current_training_state: CurrentTrainingState | None = None,
 ) -> TrainingDayPlanResult:
     """Create a deterministic component calendar without catalog materialization.
 
@@ -230,6 +306,7 @@ def generate_training_days_v3(
     diagnostics: list[TrainingDayDiagnostic] = []
     infeasibilities: list[TrainingDayInfeasibility] = []
     restrictions = restrictions or {}
+    quality_plan_by_segment = {item.allocation_segment_id: item for item in rowing_quality_plans}
     for day in expected_dates:
         if day not in capacity_by_date:
             capacity_by_date[day] = DailyTrainingCapacity(day, 0, available=False, restriction_codes=("missing_capacity",))
@@ -263,7 +340,9 @@ def generate_training_days_v3(
             authority=ComponentAuthority.AUTHORITATIVE,
             sequence=len(daily_components[fact.date]) + 1, modality=fact.modality,
             rationale_codes=("fixed_authority", *fact.rationale_codes),
-            constraint_codes=fact.constraint_codes,
+            constraint_codes=(*fact.constraint_codes, *(("user_fixed",) if fact.user_fixed else ())),
+            physiological_band=fact.physiological_band,
+            quality_work_minutes=fact.quality_work_minutes,
         )
         daily_components[fact.date].append(component)
         authority_ids[fact.date].add(fact.authority_id)
@@ -297,7 +376,9 @@ def generate_training_days_v3(
         return sorted(result, key=lambda item: _candidate_sort_key(daily_components, item, category, preferences))
 
     def append_generated(day: date, *, lineage: str, segment_id: str, category: PhysicalCategory,
-                         minutes: int, purpose: TrainingComponentPurpose) -> None:
+                         minutes: int, purpose: TrainingComponentPurpose,
+                         quality: RowingComponentRequirement | None = None,
+                         capability_provenance: tuple[str, ...] = ()) -> None:
         permitted = ((TrainingModality.ERG, TrainingModality.ON_WATER) if category is PhysicalCategory.ROWING_SPECIFIC
                      else (TrainingModality.BIKE, TrainingModality.ELLIPTICAL, TrainingModality.STAIR_CLIMBER, TrainingModality.RUNNING)
                      if category is PhysicalCategory.GENERAL_AEROBIC else ())
@@ -306,7 +387,245 @@ def generate_training_days_v3(
             purpose=purpose, authority=ComponentAuthority.GENERATED,
             sequence=len(daily_components[day]) + 1, permitted_modalities=permitted,
             rationale_codes=("r3_allocation_component",),
+            quality_requirement_id=quality.requirement_id if quality else None,
+            quality_exposure_id=quality.exposure_id if quality else None,
+            physiological_band=quality.physiological_band if quality else None,
+            quality_work_minutes=quality.desired_work_minutes if quality else None,
+            minimum_quality_work_minutes=quality.minimum_work_minutes if quality else None,
+            maximum_quality_work_minutes=quality.maximum_work_minutes if quality else None,
+            capability_provenance=capability_provenance,
         ))
+
+    def place_quality_aware_rowing(segment: TrainingAllocationSegment, segment_id: str,
+                                   plan: RowingQualityPlan) -> None:
+        """Replace the legacy generic-rowing fill with an exact R6/R5 partition."""
+        requirements = list(_rowing_component_requirements(plan))
+        satisfied: set[str] = set()
+        quality_dates: list[tuple[date, RowingComponentRequirement]] = []
+        user_fixed_quality_dates: list[tuple[date, RowingComponentRequirement]] = []
+        low_duration_feasibility: dict[tuple[TrainingComponentPurpose, int], bool] = {}
+
+        def low_duration_is_feasible(purpose: TrainingComponentPurpose, duration: int) -> bool:
+            key = (purpose, duration)
+            if key not in low_duration_feasibility:
+                low_duration_feasibility[key] = preflight_rowing_duration_v3(
+                    purpose, duration_minutes=duration,
+                    context=materialization_context,
+                )
+            return low_duration_feasibility[key]
+
+        # Fixed content counts once physically and only satisfies quality when
+        # its purpose, band, and known work amount explicitly match.
+        for current_day in _dates(segment.start_date, segment.end_date):
+            for index, component in enumerate(tuple(daily_components[current_day])):
+                if component.physical_category is not PhysicalCategory.ROWING_SPECIFIC:
+                    continue
+                for requirement in requirements:
+                    if requirement.exposure_id in satisfied:
+                        continue
+                    if (
+                        component.purpose is requirement.purpose
+                        and component.physiological_band == requirement.physiological_band
+                        and component.quality_work_minutes is not None
+                        and requirement.minimum_work_minutes <= component.quality_work_minutes <= requirement.maximum_work_minutes
+                    ):
+                        daily_components[current_day][index] = replace(
+                            component,
+                            quality_requirement_id=requirement.requirement_id,
+                            quality_exposure_id=requirement.exposure_id,
+                            minimum_quality_work_minutes=requirement.minimum_work_minutes,
+                            maximum_quality_work_minutes=requirement.maximum_work_minutes,
+                            capability_provenance=("authoritative_known_content",),
+                        )
+                        satisfied.add(requirement.exposure_id)
+                        quality_dates.append((current_day, requirement))
+                        if "user_fixed" in component.constraint_codes:
+                            user_fixed_quality_dates.append((current_day, requirement))
+                        break
+
+        def spacing_ok(candidate: date, requirement: RowingComponentRequirement) -> bool:
+            for prior_day, prior_requirement in quality_dates:
+                required_hours = max(requirement.minimum_spacing_hours, prior_requirement.minimum_spacing_hours)
+                if abs((candidate - prior_day).days) * 24 < required_hours:
+                    return False
+            return True
+
+        def candidate_key(candidate: date, duration: int) -> tuple[int, int, date, int]:
+            items = daily_components[candidate]
+            has_strength = any(item.physical_category is PhysicalCategory.STRENGTH for item in items)
+            # Hard rowing with strength is a strong soft avoidance, never a
+            # hidden dose mutation.
+            hard_penalty = int(has_strength and preferences.strength_plus_hard_rowing == "avoid")
+            combined_penalty = int(bool(items) and preferences.combined_days == "avoid")
+            typical = current_training_state.longest_comfortable_row_minutes if current_training_state else None
+            duration_penalty = abs(duration - typical) if typical else duration
+            return hard_penalty, combined_penalty, candidate, duration_penalty
+
+        def residual_partition_feasible_after(quality_day: date, quality_duration: int) -> bool:
+            """Prove a quality envelope leaves an exact R3 rowing partition.
+
+            An R6 requirement is physiological only; it must never cause R4
+            to strand a non-materializable physical remainder.  This is a
+            small, local feasibility query, not another dose allocator.
+            """
+            placed_after = sum(
+                component.duration_minutes
+                for current_day in _dates(segment.start_date, segment.end_date)
+                for component in daily_components[current_day]
+                if (
+                    component.allocation_segment_id == segment_id
+                    and component.physical_category is PhysicalCategory.ROWING_SPECIFIC
+                )
+            ) + quality_duration
+            residual_after = segment.rowing_specific_minutes - placed_after
+            if residual_after < 0:
+                return False
+            if residual_after == 0:
+                return True
+            low_purpose = (
+                TrainingComponentPurpose.RECOVERY if plan.recovery_emphasis else
+                TrainingComponentPurpose.TECHNICAL if plan.technical_emphasis else
+                TrainingComponentPurpose.EASY_AEROBIC
+            )
+            totals = {0}
+            for current_day in _dates(segment.start_date, segment.end_date):
+                if current_day == quality_day or any(
+                    item.physical_category is PhysicalCategory.ROWING_SPECIFIC
+                    for item in daily_components[current_day]
+                ):
+                    continue
+                options = [
+                    duration
+                    for duration in range(1, remaining(current_day) + 1)
+                    if low_duration_is_feasible(low_purpose, duration)
+                ]
+                totals |= {
+                    total + duration
+                    for total in tuple(totals)
+                    for duration in options
+                    if total + duration <= residual_after
+                }
+            return residual_after in totals
+
+        for requirement in sorted(requirements, key=lambda item: (item.priority.value != "hard", item.priority.value != "preferred", item.exposure_id)):
+            if requirement.exposure_id in satisfied:
+                continue
+            possibilities: list[tuple[tuple[int, int, date, int], date, int, tuple[str, ...]]] = []
+            for current_day in eligible_days(segment, PhysicalCategory.ROWING_SPECIFIC, 1):
+                if not spacing_ok(current_day, requirement):
+                    continue
+                for duration in range(1, remaining(current_day) + 1):
+                    preflight = preflight_quality_duration_v3(
+                        requirement.purpose, physiological_band=requirement.physiological_band,
+                        work_minutes=requirement.desired_work_minutes, duration_minutes=duration,
+                        context=materialization_context,
+                    )
+                    if preflight.feasible:
+                        possibilities.append((candidate_key(current_day, duration), current_day, duration, preflight.capability_ids))
+            if not possibilities:
+                blocked_by_user_fixed = any(
+                    abs((current_day - fixed_day).days) * 24 < max(
+                        requirement.minimum_spacing_hours,
+                        fixed_requirement.minimum_spacing_hours,
+                    )
+                    for fixed_day, fixed_requirement in user_fixed_quality_dates
+                    for current_day in eligible_days(segment, PhysicalCategory.ROWING_SPECIFIC, 1)
+                )
+                code = "hard_quality_requirement_unplaceable" if requirement.priority is QualityRequirementPriority.HARD else "quality_requirement_deferred"
+                if requirement.priority is QualityRequirementPriority.HARD:
+                    infeasibilities.append(TrainingDayInfeasibility(code, segment_id, PhysicalCategory.ROWING_SPECIFIC, 0, requirement.exposure_id))
+                else:
+                    diagnostics.append(TrainingDayDiagnostic(
+                        "user_fixed_quality_spacing_conflict" if blocked_by_user_fixed else code,
+                        None, requirement.requirement_id,
+                        requirement.exposure_id,
+                    ))
+                continue
+            partition_safe = [
+                item for item in possibilities
+                if residual_partition_feasible_after(item[1], item[2])
+            ]
+            if requirement.priority is QualityRequirementPriority.PREFERRED and not partition_safe:
+                diagnostics.append(TrainingDayDiagnostic(
+                    "quality_requirement_deferred", None, requirement.requirement_id,
+                    "no_exact_r3_partition_after_quality_envelope",
+                ))
+                continue
+            selected = partition_safe or possibilities
+            # A duration that consumes the otherwise tiny remainder is better
+            # than a shorter envelope that would make R3 impossible to honour.
+            _key, selected_day, duration, capability_ids = min(
+                selected,
+                key=lambda item: (item[0], -item[2]),
+            )
+            append_generated(
+                selected_day, lineage=requirement.exposure_id, segment_id=segment_id,
+                category=PhysicalCategory.ROWING_SPECIFIC, minutes=duration,
+                purpose=requirement.purpose, quality=requirement,
+                capability_provenance=tuple(f"r5:{item}" for item in capability_ids),
+            )
+            satisfied.add(requirement.exposure_id)
+            quality_dates.append((selected_day, requirement))
+
+        placed = sum(
+            component.duration_minutes for current_day in _dates(segment.start_date, segment.end_date)
+            for component in daily_components[current_day]
+            if component.allocation_segment_id == segment_id and component.physical_category is PhysicalCategory.ROWING_SPECIFIC
+        )
+        residual = segment.rowing_specific_minutes - placed
+        if residual < 0:
+            infeasibilities.append(TrainingDayInfeasibility("rowing_partition_infeasible", segment_id, PhysicalCategory.ROWING_SPECIFIC, -residual))
+            return
+
+        low_purpose = (TrainingComponentPurpose.RECOVERY if plan.recovery_emphasis else
+                       TrainingComponentPurpose.TECHNICAL if plan.technical_emphasis else
+                       TrainingComponentPurpose.EASY_AEROBIC)
+        low_candidates = [
+            day for day in eligible_days(segment, PhysicalCategory.ROWING_SPECIFIC, 1)
+            if not any(item.physical_category is PhysicalCategory.ROWING_SPECIFIC for item in daily_components[day])
+        ]
+
+        # Bounded deterministic DP. Each date contributes zero or one valid
+        # residual component; all durations are verified through R5 first.
+        states: dict[tuple[int, int], tuple[tuple[date, int], ...]] = {(0, 0): ()}
+        for current_day in low_candidates:
+            options = [duration for duration in range(1, remaining(current_day) + 1)
+                       if low_duration_is_feasible(low_purpose, duration)]
+            next_states = dict(states)
+            for (total, count), placements in states.items():
+                for duration in options:
+                    updated = total + duration
+                    if updated > residual:
+                        continue
+                    proposed = placements + ((current_day, duration),)
+                    key = (updated, count + 1)
+                    existing = next_states.get(key)
+                    if existing is None or (max(value for _day, value in proposed), proposed) < (max(value for _day, value in existing), existing):
+                        next_states[key] = proposed
+            states = next_states
+        partitions = [(count, placements) for (total, count), placements in states.items() if total == residual]
+        target_exposures = current_training_state.rowing_exposures if current_training_state and current_training_state.rowing_exposures is not None else None
+        current_rowing = sum(
+            1 for current_day in _dates(segment.start_date, segment.end_date)
+            for component in daily_components[current_day]
+            if component.allocation_segment_id == segment_id and component.physical_category is PhysicalCategory.ROWING_SPECIFIC
+        )
+        partition = (min(
+            partitions,
+            key=lambda item: (
+                abs(current_rowing + item[0] - target_exposures) if target_exposures is not None else max((value for _day, value in item[1]), default=0),
+                max((value for _day, value in item[1]), default=0), item[0], item[1],
+            ),
+        )[1] if partitions else None)
+        if partition is None:
+            code = "residual_below_component_minimum" if 0 < residual < 25 else "rowing_partition_infeasible"
+            infeasibilities.append(TrainingDayInfeasibility(code, segment_id, PhysicalCategory.ROWING_SPECIFIC, residual))
+            return
+        if current_training_state is None or current_training_state.rowing_exposures is None:
+            diagnostics.append(TrainingDayDiagnostic("frequency_target_low_confidence", None, segment_id))
+        for ordinal, (current_day, duration) in enumerate(partition, 1):
+            append_generated(current_day, lineage=f"{segment_id}:low_intensity:{ordinal}", segment_id=segment_id,
+                             category=PhysicalCategory.ROWING_SPECIFIC, minutes=duration, purpose=low_purpose)
 
     for segment in allocation.segments:
         segment_id = allocation_segment_id(segment)
@@ -354,6 +673,16 @@ def generate_training_days_v3(
                              purpose=TrainingComponentPurpose.STRENGTH)
 
         for category in (PhysicalCategory.ROWING_SPECIFIC, PhysicalCategory.GENERAL_AEROBIC, PhysicalCategory.OTHER):
+            if category is PhysicalCategory.ROWING_SPECIFIC and segment_id in quality_plan_by_segment:
+                quality_plan = quality_plan_by_segment[segment_id]
+                if quality_plan.rowing_specific_minutes != segment.rowing_specific_minutes:
+                    infeasibilities.append(TrainingDayInfeasibility(
+                        "quality_plan_r3_rowing_mismatch", segment_id, category,
+                        abs(quality_plan.rowing_specific_minutes - segment.rowing_specific_minutes),
+                    ))
+                else:
+                    place_quality_aware_rowing(segment, segment_id, quality_plan)
+                continue
             required = max(0, expected[category] - authority_category_minutes.get((segment_id, category), 0))
             if category is PhysicalCategory.OTHER and required:
                 split_allowed = any(code in {"allow_split", "splittable"} for code in segment.other_provenance)
@@ -458,6 +787,13 @@ def component_calendar_planversion_fragment(result: TrainingDayPlanResult) -> di
             "materialization_requirements": list(component.materialization_requirements),
             "rationale_codes": list(component.rationale_codes),
             "constraint_codes": list(component.constraint_codes),
+            "quality_requirement_id": component.quality_requirement_id,
+            "quality_exposure_id": component.quality_exposure_id,
+            "physiological_band": component.physiological_band,
+            "quality_work_minutes": component.quality_work_minutes,
+            "minimum_quality_work_minutes": component.minimum_quality_work_minutes,
+            "maximum_quality_work_minutes": component.maximum_quality_work_minutes,
+            "capability_provenance": list(component.capability_provenance),
         }
 
     return {

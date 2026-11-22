@@ -110,7 +110,14 @@
                 "primary": {"type": ["boolean", "null"]},
                 "materialization_requirements": {"type": "array", "items": {"type": "string"}},
                 "rationale_codes": {"type": "array", "items": {"type": "string"}},
-                "constraint_codes": {"type": "array", "items": {"type": "string"}}
+                "constraint_codes": {"type": "array", "items": {"type": "string"}},
+                "quality_requirement_id": {"type": ["string", "null"]},
+                "quality_exposure_id": {"type": ["string", "null"]},
+                "physiological_band": {"type": ["string", "null"]},
+                "quality_work_minutes": {"type": ["integer", "null"], "minimum": 0},
+                "minimum_quality_work_minutes": {"type": ["integer", "null"], "minimum": 0},
+                "maximum_quality_work_minutes": {"type": ["integer", "null"], "minimum": 0},
+                "capability_provenance": {"type": "array", "items": {"type": "string"}}
               },
               "additionalProperties": false
             }

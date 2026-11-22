@@ -97,6 +97,22 @@ class RowingCatalogCapability:
 
 
 @dataclass(frozen=True)
+class QualityDurationPreflight:
+    """Pure R5 feasibility evidence; it deliberately does not choose a workout."""
+
+    purpose: TrainingComponentPurpose
+    physiological_band: str
+    work_minutes: int
+    duration_minutes: int
+    feasible_modalities: tuple[TrainingModality, ...] = ()
+    capability_ids: tuple[str, ...] = ()
+
+    @property
+    def feasible(self) -> bool:
+        return bool(self.feasible_modalities)
+
+
+@dataclass(frozen=True)
 class MaterializationReconciliationResult:
     success: bool
     violation_codes: tuple[str, ...] = ()
@@ -197,6 +213,79 @@ def quality_catalog_capabilities_v3(
     return tuple(sorted(set(result), key=lambda item: (item.modality.value, item.archetype_id)))
 
 
+def preflight_quality_duration_v3(
+    purpose: TrainingComponentPurpose,
+    *, physiological_band: str, work_minutes: int, duration_minutes: int,
+    context: MaterializationContext = MaterializationContext(),
+    permitted_modalities: tuple[TrainingModality, ...] = (),
+) -> QualityDurationPreflight:
+    """Test exact R5 compatibility without ranking or selecting an archetype."""
+    role = _ROWING_PURPOSE_TO_ROLE.get(purpose)
+    if role is None or work_minutes < 0 or duration_minutes <= 0 or ROLE_BAND.get(role) != physiological_band:
+        return QualityDurationPreflight(purpose, physiological_band, work_minutes, duration_minutes)
+    requested = permitted_modalities or context.available_rowing_modalities
+    modalities: list[TrainingModality] = []
+    identifiers: list[str] = []
+    for modality in requested:
+        if modality not in context.available_rowing_modalities or modality not in _ROWING_MODALITIES:
+            continue
+        pool = candidates(
+            role=role, band=physiological_band, experience=context.experience,
+            phase=context.phase_id, race_type=context.race_type,
+            mode=_mode_name(modality), minutes=duration_minutes,
+        )
+        viable = []
+        for item in pool:
+            envelope = item["duration_range_min"]
+            if not int(envelope["min"]) <= duration_minutes <= int(envelope["max"]):
+                continue
+            # A throwaway component only invokes the existing exact-variant
+            # feasibility math; no identity or catalog choice escapes R5.
+            probe = TrainingComponent(
+                "preflight", "preflight", "preflight", PhysicalCategory.ROWING_SPECIFIC,
+                duration_minutes, purpose, modality=modality,
+            )
+            if _exact_variants(item, component=probe, role=role, desired_work_minutes=work_minutes):
+                viable.append(str(item["archetype_id"]))
+        if viable:
+            modalities.append(modality)
+            identifiers.extend(viable)
+    return QualityDurationPreflight(
+        purpose, physiological_band, work_minutes, duration_minutes,
+        tuple(sorted(set(modalities), key=lambda item: item.value)), tuple(sorted(set(identifiers))),
+    )
+
+
+def preflight_rowing_duration_v3(
+    purpose: TrainingComponentPurpose, *, duration_minutes: int,
+    context: MaterializationContext = MaterializationContext(),
+    permitted_modalities: tuple[TrainingModality, ...] = (),
+) -> tuple[TrainingModality, ...]:
+    """Pure exact-duration feasibility for non-quality residual rowing."""
+    role = _ROWING_PURPOSE_TO_ROLE.get(purpose)
+    if role is None or duration_minutes <= 0:
+        return ()
+    requested = permitted_modalities or context.available_rowing_modalities
+    result: list[TrainingModality] = []
+    for modality in requested:
+        if modality not in context.available_rowing_modalities or modality not in _ROWING_MODALITIES:
+            continue
+        pool = candidates(role=role, band=ROLE_BAND[role], experience=context.experience,
+                          phase=context.phase_id, race_type=context.race_type,
+                          mode=_mode_name(modality), minutes=duration_minutes)
+        if any(
+            int(item["duration_range_min"]["min"]) <= duration_minutes <= int(item["duration_range_min"]["max"])
+            and _exact_variants(
+                item,
+                component=TrainingComponent("preflight", "preflight", "preflight", PhysicalCategory.ROWING_SPECIFIC, duration_minutes, purpose, modality=modality),
+                role=role, desired_work_minutes=None,
+            )
+            for item in pool
+        ):
+            result.append(modality)
+    return tuple(sorted(set(result), key=lambda item: item.value))
+
+
 def _failure(component: TrainingComponent, reason: str, *, context: MaterializationContext,
              capabilities: Iterable[CatalogCapability] = (), detail: Mapping[str, object] | None = None) -> MaterializedTrainingComponentResult:
     modalities = ((component.modality,) if component.modality else component.permitted_modalities)
@@ -261,9 +350,10 @@ def _materialized(component: TrainingComponent, *, context: MaterializationConte
                   modality: TrainingModality, item: Mapping[str, object] | None,
                   variant: Mapping[str, int], rationale: tuple[str, ...],
                   physiological_band: str | None = None,
+                  physiological_work_minutes: int | None = None,
                   adaptation: Mapping[str, object] | None = None) -> MaterializedTrainingComponentResult:
     prescribed = int(variant["prescribed"])
-    physiological = (PhysiologicalWorkSummary(physiological_band, prescribed, ("materialized_work",))
+    physiological = (PhysiologicalWorkSummary(physiological_band, physiological_work_minutes if physiological_work_minutes is not None else prescribed, ("materialized_work",))
                      if physiological_band else None)
     structure = ({
         "repetitions": int(variant["count"]),
@@ -299,6 +389,8 @@ def _generic_authority(component: TrainingComponent, *, context: Materialization
                  "prescribed": component.duration_minutes, "recovery": 0,
                  "warmup": 0, "cooldown": 0, "easy_extension": 0},
         rationale=("authoritative_content_preserved", "catalog_not_applied"),
+        physiological_band=component.physiological_band,
+        physiological_work_minutes=component.quality_work_minutes,
         adaptation={"authority": "generic_known_duration"},
     )
 
@@ -340,9 +432,10 @@ def materialize_training_component_v3(
         )
     if component.physical_category is not PhysicalCategory.ROWING_SPECIFIC:
         return _failure(component, "no_compatible_archetype", context=context)
-    if component.authority is ComponentAuthority.AUTHORITATIVE and component.purpose in {
+    if component.authority is ComponentAuthority.AUTHORITATIVE and (
+        component.quality_requirement_id is not None or component.purpose in {
         TrainingComponentPurpose.COACHED, TrainingComponentPurpose.PRIVATE_COACHING,
-    }:
+    }):
         return _generic_authority(component, context=context)
 
     role = _selector_role(component)
@@ -401,6 +494,7 @@ def materialize_training_component_v3(
         component, context=context, modality=modality, item=item, variant=variant,
         rationale=("exact_duration_materialization", "deterministic_catalog_selection"),
         physiological_band=ROLE_BAND[role], adaptation=adaptation,
+        physiological_work_minutes=quality_work_minutes,
     )
 
 
@@ -430,6 +524,16 @@ def reconcile_materialized_training_days_v3(
         assert materialized is not None
         if materialized.physical_duration_minutes != component.duration_minutes:
             violations.append("materialized_duration_component_mismatch")
+        if component.quality_requirement_id is not None:
+            work = materialized.physiological_work
+            if work is None or work.band != component.physiological_band or work.work_minutes != component.quality_work_minutes:
+                violations.append("materialized_quality_requirement_mismatch")
+            elif (
+                component.minimum_quality_work_minutes is not None
+                and component.maximum_quality_work_minutes is not None
+                and not component.minimum_quality_work_minutes <= work.work_minutes <= component.maximum_quality_work_minutes
+            ):
+                violations.append("materialized_quality_work_outside_requirement_range")
         day_minutes[day.date.isoformat()] += materialized.physical_duration_minutes
         key = (component.allocation_segment_id, component.physical_category.value)
         segment_category[key] = segment_category.get(key, 0) + materialized.physical_duration_minutes
@@ -464,7 +568,7 @@ def materialize_training_days_v3(
     allocation: TrainingAllocation | None = None,
 ) -> MaterializedTrainingDayPlanResult:
     results = tuple(
-        materialize_training_component_v3(component, context=context)
+        materialize_training_component_v3(component, context=context, quality_work_minutes=component.quality_work_minutes)
         for day in plan.days for component in day.components
     )
     return MaterializedTrainingDayPlanResult(results, reconcile_materialized_training_days_v3(plan, results, allocation=allocation))
