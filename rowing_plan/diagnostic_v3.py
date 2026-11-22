@@ -1,20 +1,56 @@
 """Pure, non-persistent end-to-end inspection of the reset V3 spine."""
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from typing import Any, Mapping
 
-from .intensity import build_intensity_profile
 from .materialization_v3 import MaterializationContext, materialize_training_days_v3
 from .performance_profile import build_athlete_performance_profile, derive_performance_limiter, derive_training_focus
 from .planning_profile import normalize_available_training_capacity, normalize_current_training_state
-from .power_profile import build_power_profile
+from .planning_normalization import normalize_planning_inputs
+from .recommended_training_dose import recent_actual_history_is_sufficient
+from .generation_history import recover_generation_history
 from .replacement_plan_v3 import generate_recommended_training_dose_v3
 from .rowing_quality_v3 import RowingQualityPlanningContext, generate_rowing_quality_plan
 from .training_allocation import generate_training_allocation_v3
 from .planning_domain import PhysicalCategory, TrainingModality
 from .training_days import CombinedDayPreferences, DailyTrainingCapacity, generate_training_days_v3
+
+
+@dataclass(frozen=True)
+class PersistedDiagnosticInput:
+    """Read-only persistence snapshot; it deliberately has no save operation."""
+
+    athlete_id: str
+    profile: Mapping[str, Any]
+    prior_plan_id: str | None
+    prior_plan: Mapping[str, Any] | None
+    workout_logs: tuple[Mapping[str, Any], ...]
+    workout_logs_by_plan: Mapping[str, tuple[Mapping[str, Any], ...]]
+    weekly_overrides: tuple[Mapping[str, Any], ...]
+
+
+def load_persisted_diagnostic_input(repository: Any, athlete_id: str) -> PersistedDiagnosticInput:
+    """Load the same persisted facts used by generation without invoking writes."""
+    profile = repository.get(athlete_id)
+    if not isinstance(profile, Mapping):
+        raise ValueError("diagnostic_athlete_not_found")
+    latest = repository.latest_plan_for_athlete(athlete_id)
+    plan = latest.get("plan") if isinstance(latest, Mapping) and isinstance(latest.get("plan"), Mapping) else None
+    plan_id = latest.get("plan_id") if isinstance(latest, Mapping) else None
+    context = plan.get("generation_input_context", {}) if isinstance(plan, Mapping) else {}
+    inherited_actual_plan_ids = context.get("actual_plan_ids", ()) if isinstance(context, Mapping) else ()
+    source_ids = tuple(dict.fromkeys(
+        [str(item) for item in inherited_actual_plan_ids if item] + ([str(plan_id)] if plan_id else [])
+    ))
+    logs_by_plan = {source_id: tuple(repository.logs_for_plan(source_id)) for source_id in source_ids}
+    logs = tuple(entry for source_id in source_ids for entry in logs_by_plan[source_id])
+    overrides = repository.weekly_overrides(athlete_id)
+    return PersistedDiagnosticInput(
+        athlete_id, dict(profile), str(plan_id) if plan_id else None,
+        dict(plan) if plan else None, logs, logs_by_plan, tuple(overrides),
+    )
 
 
 def _enum(value: Any) -> Any:
@@ -70,11 +106,34 @@ def render_v3_diagnostic_report(report: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def generate_v3_diagnostic_report(profile: Mapping[str, Any], config: Mapping[str, Any], *, planning_date: date) -> dict[str, Any]:
+def generate_v3_diagnostic_report(
+    profile: Mapping[str, Any], *, planning_date: date,
+    prior_plan: Mapping[str, Any] | None = None,
+    history_actuals: Mapping[str, Mapping[str, Any]] | None = None,
+    locked_sessions=(), future_placements=(),
+) -> dict[str, Any]:
     """Run R1B→R7B without routing, persistence, or legacy planner execution."""
-    r2 = generate_recommended_training_dose_v3(profile, planning_date=planning_date)
-    r3 = generate_training_allocation_v3(profile, planning_date=planning_date, recommended_dose=r2).allocation
-    current = normalize_current_training_state(profile)
+    r2 = generate_recommended_training_dose_v3(
+        profile, planning_date=planning_date, prior_plan=prior_plan,
+        history_actuals=history_actuals, locked_sessions=locked_sessions,
+        future_placements=future_placements,
+    )
+    r3 = generate_training_allocation_v3(
+        profile, planning_date=planning_date, recommended_dose=r2,
+        prior_plan=prior_plan, history_actuals=history_actuals,
+        locked_sessions=locked_sessions, future_placements=future_placements,
+    ).allocation
+    normalized = normalize_planning_inputs(
+        profile, planning_date=r2.planning_start, prior_plan=prior_plan,
+        history_actuals=history_actuals, locked_sessions=locked_sessions,
+        future_placements=future_placements,
+    )
+    current = normalize_current_training_state(
+        profile, historical_facts=normalized.historical_facts,
+        recent_actuals_sufficient=recent_actual_history_is_sufficient(
+            normalized.historical_facts, planning_start=r2.planning_start,
+        ), observation_window_days=21,
+    )
     capacity = normalize_available_training_capacity(profile)
     rowing_modalities = _rowing_modalities(capacity)
     preferences = _diagnostic_preferences(profile)
@@ -155,6 +214,42 @@ def generate_v3_diagnostic_report(profile: Mapping[str, Any], config: Mapping[st
         "structural_validation": "PASS" if r4.success and r5.success and r2_total == r3_total == r4_total == r5_total else "FAIL",
         "plausibility_reviews": reviews,
         "training_plausibility": "QUESTIONABLE" if any(value["rating"] == "QUESTIONABLE" for value in reviews.values()) else "GOOD",
+    }
+    report["human_readable"] = render_v3_diagnostic_report(report)
+    return report
+
+
+def generate_persisted_v3_diagnostic_report(
+    repository: Any, athlete_id: str, *, planning_date: date,
+) -> dict[str, Any]:
+    """Run the pure diagnostic from the same persisted-history inputs as V3.
+
+    Weekly overrides are deliberately retained in the report but not supplied
+    to the planner: the production generation path uses them for fingerprint
+    invalidation and Week-view display, not for V3 prescription authority.
+    """
+    persisted = load_persisted_diagnostic_input(repository, athlete_id)
+    previous = (
+        {"plan_id": persisted.prior_plan_id, "plan": persisted.prior_plan}
+        if persisted.prior_plan_id and persisted.prior_plan else None
+    )
+    locked, actuals, actual_plan_ids = recover_generation_history(
+        previous, lambda plan_id: persisted.workout_logs_by_plan.get(plan_id, ()),
+    )
+    report = generate_v3_diagnostic_report(
+        persisted.profile, planning_date=planning_date,
+        prior_plan=persisted.prior_plan, history_actuals=actuals,
+        locked_sessions=locked,
+    )
+    report["persisted_input_audit"] = {
+        "prior_plan_id": persisted.prior_plan_id,
+        "actual_plan_ids": actual_plan_ids,
+        "workout_log_count": len(persisted.workout_logs),
+        "inherited_locked_count": len(locked),
+        "weekly_override_count": len(persisted.weekly_overrides),
+        "weekly_overrides_planner_input": False,
+        "performance_tests_source": "persisted_profile",
+        "race_context_source": "persisted_profile",
     }
     report["human_readable"] = render_v3_diagnostic_report(report)
     return report

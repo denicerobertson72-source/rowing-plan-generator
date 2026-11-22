@@ -34,6 +34,7 @@ from .repositories import REPOSITORIES, profile_revision, public_profile, with_p
 from .auth import current_user_id
 from rowing_plan.training_load import load_summary, session_load_au
 from rowing_plan.planning_domain import normalize_training_modality, TrainingModality
+from rowing_plan.generation_history import recover_generation_history, optional_activity_history_session as _optional_activity_history_session
 from rowing_plan.recurring_activities import normalize_recurring_schedule_for_planning, schedule_signature
 from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, AthleteUpdateRequest, OptionalActivityLogRequest, PlanGenerationRequest, PlanResponse, PrivateCheckInRequest, RacePostingRequest, RegenerateRequest, WeeklyOverrideRequest, WorkoutLogRequest
 
@@ -402,28 +403,7 @@ def _session_key_for_generation(session: dict) -> str:
 
 def _generation_history(previous: dict | None) -> tuple[list[dict], dict[str, dict], tuple[str, ...]]:
     """Recover completed-history inputs carried through immutable versions."""
-
-    if not previous:
-        return [], {}, ()
-    plan = previous.get("plan", {})
-    context = plan.get("generation_input_context", {}) if isinstance(plan, dict) else {}
-    inherited_locked = [dict(item) for item in context.get("locked_sessions", ()) if isinstance(item, dict)] if isinstance(context, dict) else []
-    source_ids = [str(item) for item in context.get("actual_plan_ids", ()) if item] if isinstance(context, dict) else []
-    source_ids.append(previous["plan_id"])
-    actuals: dict[str, dict] = {}
-    for plan_id in source_ids:
-        for entry in REPOSITORIES.logs_for_plan(plan_id):
-            if isinstance(entry.get("payload"), dict):
-                actuals[entry["session_key"]] = entry["payload"]
-    completed = {key for key, payload in actuals.items() if payload.get("status") == "completed"}
-    newly_completed = [dict(session) for session in plan.get("sessions", ()) if _session_key_for_generation(session) in completed]
-    optional_completed = [
-        optional_activity_history_session(key, payload)
-        for key, payload in actuals.items()
-        if key in completed and key.startswith("actual:")
-    ]
-    locked_by_key = {_session_key_for_generation(item): item for item in inherited_locked + newly_completed + optional_completed}
-    return list(locked_by_key.values()), actuals, tuple(dict.fromkeys(source_ids))
+    return recover_generation_history(previous, REPOSITORIES.logs_for_plan)
 
 
 def resolve_planner_choice(internal_planner_choice: PlannerChoice | None = None) -> PlannerChoice:
@@ -830,23 +810,7 @@ def optional_activity_history_session(session_key: str, payload: dict) -> dict:
     history.  Its key is retained in ``source_id`` so repeated regeneration
     cannot manufacture a second completed exposure.
     """
-    _, activity_date, activity_type = session_key.split(":", 2)
-    modality=normalize_training_modality(activity_type)
-    mode={TrainingModality.ERG:"erg", TrainingModality.ON_WATER:"on_water", TrainingModality.STRENGTH:"strength"}.get(modality, modality.value if modality in {TrainingModality.BIKE, TrainingModality.ELLIPTICAL, TrainingModality.STAIR_CLIMBER, TrainingModality.RUNNING} else "other")
-    minutes=payload.get("actual_duration_min") or 0
-    session={
-        "date":activity_date,
-        "session_id":f"ACTUAL_{activity_type.upper()}",
-        "mode":mode,
-        "source_id":session_key,
-        "title":f"Completed {activity_type.replace('_', ' ')}",
-        "total_cardio_minutes":minutes if mode in {"erg", "on_water"} else 0,
-        "strength_minutes":minutes if mode == "strength" else 0,
-        "total_training_minutes":minutes,
-    }
-    if payload.get("actual_intensity"):
-        session["band"]=payload["actual_intensity"]
-    return session
+    return _optional_activity_history_session(session_key, payload)
 
 
 def optional_actuals_for_day(plan_id: str, activity_date: str) -> list[dict]:

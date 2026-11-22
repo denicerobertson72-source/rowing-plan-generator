@@ -367,6 +367,60 @@ class PostgresRepositories:
         with self._connect() as db, db.cursor() as cursor: cursor.execute("SELECT posting_id,created_by,created_at,updated_at,payload_json FROM race_postings ORDER BY updated_at DESC"); rows=cursor.fetchall()
         return [{"posting_id":row["posting_id"],"created_by":row["created_by"],"created_at":row["created_at"].isoformat(),"updated_at":row["updated_at"].isoformat(),"payload":row["payload_json"]} for row in rows]
 
+
+class DiagnosticPostgresReadRepository:
+    """Small diagnostic-only Supabase boundary that can issue SELECTs only.
+
+    It deliberately does not inherit ``PostgresRepositories``: its constructor
+    must never run schema initialization. PostgreSQL additionally enforces a
+    read-only transaction on every connection.
+    """
+
+    def __init__(self, database_url: str) -> None:
+        try:
+            import psycopg  # noqa: F401
+        except ImportError as error:
+            raise RuntimeError("psycopg is required when SUPABASE_DB_URL is set") from error
+        self._database_url = database_url
+
+    def _connect(self):
+        import psycopg
+        from psycopg.rows import dict_row
+        return psycopg.connect(
+            self._database_url, row_factory=dict_row,
+            options="-c default_transaction_read_only=on",
+        )
+
+    @staticmethod
+    def _select(cursor, statement: str, parameters: tuple[Any, ...]):
+        if statement.lstrip().split(None, 1)[0].upper() != "SELECT":
+            raise RuntimeError("diagnostic_read_repository_select_only")
+        cursor.execute(statement, parameters)
+        return cursor.fetchall()
+
+    def get(self, athlete_id: str) -> dict[str, Any] | None:
+        with self._connect() as db, db.cursor() as cursor:
+            rows = self._select(cursor, "SELECT profile_json FROM athletes WHERE athlete_id=%s", (athlete_id,))
+        return rows[0]["profile_json"] if rows else None
+
+    def latest_plan_for_athlete(self, athlete_id: str) -> dict[str, Any] | None:
+        with self._connect() as db, db.cursor() as cursor:
+            rows = self._select(cursor, "SELECT plan_id, athlete_id, version_number, created_at, plan_json FROM plan_versions WHERE athlete_id=%s ORDER BY version_number DESC LIMIT 1", (athlete_id,))
+        if not rows:
+            return None
+        row = rows[0]
+        return {"plan_id": row["plan_id"], "athlete_id": row["athlete_id"], "version_number": row["version_number"], "created_at": row["created_at"].isoformat(), "plan": row["plan_json"]}
+
+    def logs_for_plan(self, plan_id: str) -> list[dict[str, Any]]:
+        with self._connect() as db, db.cursor() as cursor:
+            rows = self._select(cursor, "SELECT log_id, session_key, created_at, payload_json FROM workout_logs WHERE plan_id=%s ORDER BY created_at DESC", (plan_id,))
+        return [{"log_id": row["log_id"], "session_key": row["session_key"], "created_at": row["created_at"].isoformat(), "payload": row["payload_json"]} for row in rows]
+
+    def weekly_overrides(self, athlete_id: str) -> list[dict[str, Any]]:
+        with self._connect() as db, db.cursor() as cursor:
+            rows = self._select(cursor, "SELECT override_id, created_at, payload_json FROM weekly_overrides WHERE athlete_id=%s ORDER BY created_at DESC", (athlete_id,))
+        return [{"override_id": row["override_id"], "created_at": row["created_at"].isoformat(), "payload": row["payload_json"]} for row in rows]
+
 class LazyRepositories:
     """Avoid opening a database connection during a serverless function import."""
     def __init__(self) -> None:
