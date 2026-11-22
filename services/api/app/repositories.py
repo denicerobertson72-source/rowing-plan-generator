@@ -403,6 +403,11 @@ class DiagnosticPostgresReadRepository:
             rows = self._select(cursor, "SELECT profile_json FROM athletes WHERE athlete_id=%s", (athlete_id,))
         return rows[0]["profile_json"] if rows else None
 
+    def athlete_owner(self, athlete_id: str) -> str | None:
+        with self._connect() as db, db.cursor() as cursor:
+            rows = self._select(cursor, "SELECT user_id FROM athletes WHERE athlete_id=%s", (athlete_id,))
+        return rows[0]["user_id"] if rows else None
+
     def latest_plan_for_athlete(self, athlete_id: str) -> dict[str, Any] | None:
         with self._connect() as db, db.cursor() as cursor:
             rows = self._select(cursor, "SELECT plan_id, athlete_id, version_number, created_at, plan_json FROM plan_versions WHERE athlete_id=%s ORDER BY version_number DESC LIMIT 1", (athlete_id,))

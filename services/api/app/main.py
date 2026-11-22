@@ -30,11 +30,12 @@ from rowing_plan.validators import hard_constraint_errors, validate_profile
 from rowing_plan.workbook import build_workbook
 from rowing_plan.replacement_plan_v3 import generate_plan_sequence_v3_candidate
 from rowing_plan.replacement_shadow import PlannerShadowComparison, compare_v2_with_v3
-from .repositories import REPOSITORIES, profile_revision, public_profile, with_profile_revision
+from .repositories import DiagnosticPostgresReadRepository, REPOSITORIES, profile_revision, public_profile, with_profile_revision
 from .auth import current_user_id
 from rowing_plan.training_load import load_summary, session_load_au
 from rowing_plan.planning_domain import normalize_training_modality, TrainingModality
 from rowing_plan.generation_history import recover_generation_history, optional_activity_history_session as _optional_activity_history_session
+from rowing_plan.diagnostic_v3 import generate_persisted_v3_diagnostic_report
 from rowing_plan.recurring_activities import normalize_recurring_schedule_for_planning, schedule_signature
 from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, AthleteUpdateRequest, OptionalActivityLogRequest, PlanGenerationRequest, PlanResponse, PrivateCheckInRequest, RacePostingRequest, RegenerateRequest, WeeklyOverrideRequest, WorkoutLogRequest
 
@@ -668,11 +669,15 @@ def build_plan(request: PlanGenerationRequest, *, internal_planner_choice: Plann
         log_planner_generation(authoritative_planner="v1", mode=routing_mode)
     return plan
 
-def owned_athlete(athlete_id: str, user_id: str) -> dict:
-    profile=REPOSITORIES.get(athlete_id)
+def owned_athlete_from_repository(repository, athlete_id: str, user_id: str) -> dict:
+    """Apply the normal 404/403 athlete-ownership contract to any read boundary."""
+    profile=repository.get(athlete_id)
     if not profile: raise HTTPException(404,"Athlete not found")
-    if REPOSITORIES.athlete_owner(athlete_id) != user_id: raise HTTPException(403,"This athlete belongs to another account.")
+    if repository.athlete_owner(athlete_id) != user_id: raise HTTPException(403,"This athlete belongs to another account.")
     return profile
+
+def owned_athlete(athlete_id: str, user_id: str) -> dict:
+    return owned_athlete_from_repository(REPOSITORIES, athlete_id, user_id)
 
 def safe_generation_metadata(profile: dict) -> dict:
     """Log only structural planner context for an unexpected generation failure."""
@@ -950,6 +955,20 @@ def get_or_create_onboarding_athlete(request: AthleteCreateRequest, user_id: str
 def get_athlete(athlete_id: str, user_id: str = Depends(current_user_id)) -> AthleteResponse:
     profile=owned_athlete(athlete_id,user_id)
     return athlete_response(athlete_id, profile)
+
+@app.get("/api/v1/athletes/{athlete_id}/diagnostics/v3-persisted")
+def persisted_v3_diagnostic(athlete_id: str, user_id: str = Depends(current_user_id)) -> dict:
+    """Temporary, authenticated R9A observation endpoint; it performs SELECTs only."""
+    database_url=os.getenv("SUPABASE_DB_URL")
+    if not database_url:
+        raise HTTPException(503,"Persisted V3 diagnostic database access is not configured.")
+    repository=DiagnosticPostgresReadRepository(database_url)
+    owned_athlete_from_repository(repository,athlete_id,user_id)
+    if athlete_id not in replacement_planner_live_athlete_ids():
+        raise HTTPException(403,"Persisted V3 diagnostics are not enabled for this athlete.")
+    return generate_persisted_v3_diagnostic_report(
+        repository,athlete_id,planning_date=current_planning_date(),
+    )
 
 @app.get("/api/v1/account/athlete")
 def get_current_athlete(user_id: str = Depends(current_user_id)) -> dict:
