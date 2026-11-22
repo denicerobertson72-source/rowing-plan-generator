@@ -189,6 +189,10 @@ DEFAULT_TRAINING_POLICY = TrainingPolicy(
         _rule("component_materialization_requires_exact_integer_duration", True, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "A concrete workout must exactly preserve its component's integer physical duration; no materialization-only tolerance is applied.", "not_applicable"),
         _rule("catalog_duration_envelopes_are_app_heuristics", True, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "Catalog minimums, maximums, parameter ranges, and warm-up/cooldown defaults are versioned implementation choices rather than externally derived formulas.", "coach_override"),
         _rule("materialization_variety_is_subordinate_to_compatibility", True, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "History-aware variety ranks only compatible category, purpose, modality, phase, race, and exact-duration candidates.", "not_applicable"),
+        _rule("r6_ordinary_low_intensity_guard_fraction", 0.70, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "Replacement R6 retains this configurable app guard for ordinary development composition; it is not a universal prescription.", "coach_override"),
+        _rule("r6_recent_quality_suppression_hours", {"AT": 72, "TR": 72, "AN": 96, "PP": 72}, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "R6 uses deterministic same-band suppression windows while later recovery policy becomes more individualized.", "coach_override"),
+        _rule("r6_quality_work_ranges_are_app_heuristics", True, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "R6 work-minute ranges are bounded composition defaults and do not allocate physical calendar minutes.", "coach_override"),
+        _rule("r6_race_context_precedes_limiter_chasing", True, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "Imminent competition selects race-specific composition before longer-term limiter emphasis.", "coach_override"),
     ),
 )
 

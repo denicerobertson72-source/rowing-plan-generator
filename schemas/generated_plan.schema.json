@@ -45,6 +45,29 @@
     "component_calendar_version": {
       "type": "string"
     },
+    "rowing_quality_plan_version": {
+      "description": "Additive R6 physiological-composition contract; it does not add physical calendar dose.",
+      "type": "string"
+    },
+    "rowing_quality_plans": {
+      "description": "Additive R6 quality requirements for future R4 consumption.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["allocation_segment_id", "segment_start", "segment_end", "rowing_specific_minutes", "low_intensity_guard_minutes", "requirements", "policy_version", "performance_profile_version", "basis_fingerprint"],
+        "properties": {
+          "allocation_segment_id": {"type": "string"},
+          "segment_start": {"type": "string", "format": "date"},
+          "segment_end": {"type": "string", "format": "date"},
+          "rowing_specific_minutes": {"type": "integer", "minimum": 0},
+          "low_intensity_guard_minutes": {"type": "integer", "minimum": 0},
+          "requirements": {"type": "array", "items": {"type": "object"}},
+          "policy_version": {"type": "string"},
+          "performance_profile_version": {"type": "string"},
+          "basis_fingerprint": {"type": "string"}
+        }
+      }
+    },
     "training_days": {
       "description": "Additive component-aware calendar foundation. Existing sessions remain the legacy projection during migration.",
       "type": "array",

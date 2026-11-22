@@ -102,14 +102,27 @@ class TrainingComponentPurpose(_TextEnum):
 
     EASY_AEROBIC = "easy_aerobic"
     TECHNICAL = "technical"
+    AEROBIC_STRENGTH = "aerobic_strength"
     STRENGTH = "strength"
     THRESHOLD = "threshold"
     RACE_SPECIFIC = "race_specific"
+    ANAEROBIC = "anaerobic"
     POWER = "power"
     RACE = "race"
     RECOVERY = "recovery"
     COACHED = "coached"
     PRIVATE_COACHING = "private_coaching"
+
+
+class RowingQualityFamily(_TextEnum):
+    """R6 physiological composition vocabulary, separate from physical dose."""
+
+    LOW_INTENSITY_AEROBIC = "low_intensity_aerobic"
+    AEROBIC_STRENGTH = "aerobic_strength"
+    THRESHOLD = "threshold"
+    RACE_SPECIFIC = "race_specific"
+    ANAEROBIC = "anaerobic"
+    POWER = "power"
 
 
 class TrainingDayState(_TextEnum):
@@ -676,6 +689,132 @@ class MaterializedTrainingComponentResult:
     @property
     def success(self) -> bool:
         return self.materialized is not None
+
+
+@dataclass(frozen=True)
+class RowingQualityRequirement:
+    """One physiological work requirement within fixed R3 rowing capacity.
+
+    The work minutes below are not a calendar reservation.  R4 selects a
+    physical component duration inside one of ``compatible_envelopes`` and R5
+    later realizes that component exactly.
+    """
+
+    requirement_id: str
+    family: RowingQualityFamily
+    physiological_band: str
+    desired_work_minutes: int
+    minimum_work_minutes: int
+    maximum_work_minutes: int
+    minimum_exposures: int
+    target_exposures: int
+    maximum_exposures: int
+    compatible_envelopes: tuple[tuple[str, int, int], ...]
+    minimum_spacing_hours: int = 0
+    recovery_constraint_codes: tuple[str, ...] = ()
+    rationale_codes: tuple[str, ...] = ()
+    provenance: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.requirement_id or not self.physiological_band:
+            raise ValueError("rowing_quality_requirement_identity_is_required")
+        values = (
+            self.desired_work_minutes, self.minimum_work_minutes,
+            self.maximum_work_minutes, self.minimum_exposures,
+            self.target_exposures, self.maximum_exposures,
+            self.minimum_spacing_hours,
+        )
+        if any(value < 0 for value in values):
+            raise ValueError("rowing_quality_requirement_values_are_invalid")
+        if not self.minimum_work_minutes <= self.desired_work_minutes <= self.maximum_work_minutes:
+            raise ValueError("rowing_quality_requirement_work_range_is_invalid")
+        if not self.minimum_exposures <= self.target_exposures <= self.maximum_exposures:
+            raise ValueError("rowing_quality_requirement_exposure_range_is_invalid")
+        if self.target_exposures and not self.compatible_envelopes:
+            raise ValueError("rowing_quality_requirement_requires_compatible_envelope")
+        normalized = tuple(sorted(set(self.compatible_envelopes)))
+        if any(not archetype_id or minimum <= 0 or maximum < minimum for archetype_id, minimum, maximum in normalized):
+            raise ValueError("rowing_quality_requirement_envelopes_are_invalid")
+        object.__setattr__(self, "compatible_envelopes", normalized)
+        object.__setattr__(self, "recovery_constraint_codes", tuple(sorted(set(self.recovery_constraint_codes))))
+        object.__setattr__(self, "rationale_codes", tuple(sorted(set(self.rationale_codes))))
+        object.__setattr__(self, "provenance", tuple(sorted(set(self.provenance))))
+
+
+@dataclass(frozen=True)
+class RowingQualityInfeasibility:
+    """A composition conflict; it never changes the R3 physical allocation."""
+
+    code: str
+    allocation_segment_id: str
+    detail: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.code or not self.allocation_segment_id:
+            raise ValueError("rowing_quality_infeasibility_identity_is_required")
+        object.__setattr__(self, "detail", _freeze(self.detail))
+
+
+@dataclass(frozen=True)
+class RowingQualityPlan:
+    """R6 physiological composition over one exact R3 allocation segment."""
+
+    allocation_segment_id: str
+    segment_start: date
+    segment_end: date
+    rowing_specific_minutes: int
+    low_intensity_guard_minutes: int
+    requirements: tuple[RowingQualityRequirement, ...]
+    dominant_focus: str
+    secondary_focus: str | None
+    performance_confidence: str
+    completed_quality_history_summary: tuple[str, ...] = ()
+    spacing_constraint_codes: tuple[str, ...] = ()
+    rationale_codes: tuple[str, ...] = ()
+    provenance: tuple[str, ...] = ()
+    policy_version: str = "rowing-quality-plan-v1"
+    performance_profile_version: str = ""
+    basis_fingerprint: str = ""
+    technical_emphasis: bool = False
+    recovery_emphasis: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            not self.allocation_segment_id or self.segment_end < self.segment_start
+            or self.rowing_specific_minutes < 0 or self.low_intensity_guard_minutes < 0
+            or self.low_intensity_guard_minutes > self.rowing_specific_minutes
+            or not self.dominant_focus or not self.policy_version
+            or not self.performance_profile_version or not self.basis_fingerprint
+        ):
+            raise ValueError("rowing_quality_plan_values_are_invalid")
+        ids = tuple(item.requirement_id for item in self.requirements)
+        if len(ids) != len(set(ids)) or tuple(sorted(self.requirements, key=lambda item: item.requirement_id)) != self.requirements:
+            raise ValueError("rowing_quality_plan_requirements_must_be_unique_and_ordered")
+        work = sum(item.desired_work_minutes for item in self.requirements)
+        if work > self.rowing_specific_minutes - self.low_intensity_guard_minutes:
+            raise ValueError("rowing_quality_plan_violates_low_intensity_guard")
+        object.__setattr__(self, "completed_quality_history_summary", tuple(sorted(set(self.completed_quality_history_summary))))
+        object.__setattr__(self, "spacing_constraint_codes", tuple(sorted(set(self.spacing_constraint_codes))))
+        object.__setattr__(self, "rationale_codes", tuple(sorted(set(self.rationale_codes))))
+        object.__setattr__(self, "provenance", tuple(sorted(set(self.provenance))))
+
+
+@dataclass(frozen=True)
+class RowingQualityPlanResult:
+    plan: RowingQualityPlan | None = None
+    infeasibilities: tuple[RowingQualityInfeasibility, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.plan is None and not self.infeasibilities:
+            raise ValueError("rowing_quality_result_requires_plan_or_infeasibility")
+        object.__setattr__(self, "infeasibilities", tuple(sorted(
+            self.infeasibilities,
+            key=lambda item: (item.code, item.allocation_segment_id, repr(item.detail)),
+        )))
+
+    @property
+    def success(self) -> bool:
+        return self.plan is not None and not self.infeasibilities
 
 
 @dataclass(frozen=True)

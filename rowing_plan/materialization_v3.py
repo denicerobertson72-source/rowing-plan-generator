@@ -32,13 +32,17 @@ _ROWING_PURPOSE_TO_ROLE = {
     TrainingComponentPurpose.EASY_AEROBIC: "AEROBIC_BASE",
     TrainingComponentPurpose.TECHNICAL: "TECHNIQUE_EASY",
     TrainingComponentPurpose.RECOVERY: "RECOVERY",
+    TrainingComponentPurpose.AEROBIC_STRENGTH: "AEROBIC_STRENGTH",
     TrainingComponentPurpose.THRESHOLD: "THRESHOLD",
     TrainingComponentPurpose.RACE_SPECIFIC: "RACE_PACE",
+    TrainingComponentPurpose.ANAEROBIC: "ANAEROBIC_CAPACITY",
     TrainingComponentPurpose.POWER: "SPRINT_POWER",
 }
 _QUALITY_PURPOSES = {
+    TrainingComponentPurpose.AEROBIC_STRENGTH,
     TrainingComponentPurpose.THRESHOLD,
     TrainingComponentPurpose.RACE_SPECIFIC,
+    TrainingComponentPurpose.ANAEROBIC,
     TrainingComponentPurpose.POWER,
 }
 _ROWING_MODALITIES = (TrainingModality.ERG, TrainingModality.ON_WATER)
@@ -70,6 +74,26 @@ class CatalogCapability:
     modality: TrainingModality
     purpose: TrainingComponentPurpose
     catalog_version: str
+
+
+@dataclass(frozen=True)
+class RowingCatalogCapability:
+    """Catalog envelope available to R6 without constructing an R4 component."""
+
+    selector_role: str
+    archetype_id: str
+    minimum_duration_minutes: int
+    maximum_duration_minutes: int
+    modality: TrainingModality
+    catalog_version: str
+
+    def __post_init__(self) -> None:
+        if (
+            not self.selector_role or not self.archetype_id
+            or self.minimum_duration_minutes <= 0
+            or self.maximum_duration_minutes < self.minimum_duration_minutes
+        ):
+            raise ValueError("rowing_catalog_capability_values_are_invalid")
 
 
 @dataclass(frozen=True)
@@ -140,6 +164,37 @@ def catalog_capabilities_v3(component: TrainingComponent, *, context: Materializ
             for item in pool
         )
     return tuple(sorted(result, key=lambda item: (item.modality.value, item.archetype_id)))
+
+
+def quality_catalog_capabilities_v3(
+    selector_role: str, *, context: MaterializationContext,
+) -> tuple[RowingCatalogCapability, ...]:
+    """Expose compatible catalog duration envelopes for R6 requirements.
+
+    This is intentionally a capability query, not selection or workout
+    construction.  It preserves the R4/R5 boundary by reporting only the
+    catalog's concrete physical-duration range.
+    """
+    band = ROLE_BAND.get(selector_role)
+    if band is None:
+        return ()
+    result: list[RowingCatalogCapability] = []
+    for modality in context.available_rowing_modalities:
+        pool = candidates(
+            role=selector_role, band=band, experience=context.experience,
+            phase=context.phase_id, race_type=context.race_type,
+            mode=_mode_name(modality), minutes=999,
+        )
+        result.extend(
+            RowingCatalogCapability(
+                selector_role, str(item["archetype_id"]),
+                int(item["duration_range_min"]["min"]),
+                int(item["duration_range_min"]["max"]), modality,
+                context.catalog_version,
+            )
+            for item in pool
+        )
+    return tuple(sorted(set(result), key=lambda item: (item.modality.value, item.archetype_id)))
 
 
 def _failure(component: TrainingComponent, reason: str, *, context: MaterializationContext,
