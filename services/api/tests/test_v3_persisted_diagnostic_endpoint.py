@@ -180,3 +180,33 @@ def test_persisted_v3_diagnostic_internal_failure_is_safe_and_keeps_cors_headers
     assert "secret" not in response.text
     assert "persisted_v3_diagnostic_failed" in caplog.text
     assert "secret" not in caplog.text
+
+
+def test_persisted_v3_diagnostic_connection_failure_is_sanitized(monkeypatch, caplog):
+    class TimedOutReadRepository(_ReadOnlyDiagnosticRepository):
+        def get(self, athlete_id):
+            raise TimeoutError("postgresql://secret@example.invalid/connect_timeout")
+
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://configured")
+    monkeypatch.setenv("REPLACEMENT_PLANNER_LIVE_ATHLETE_IDS", "athlete-1")
+    monkeypatch.setattr(main, "DiagnosticPostgresReadRepository", TimedOutReadRepository)
+    app.dependency_overrides[main.current_user_id] = lambda: "development-user"
+    client, cors, prior_origins = _production_pwa_client()
+    try:
+        response = client.get(
+            "/api/v1/athletes/athlete-1/diagnostics/v3-persisted",
+            headers={"Origin": PRODUCTION_PWA_ORIGIN, "Authorization": "Bearer test"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        cors.kwargs["allow_origins"] = prior_origins
+        app.middleware_stack = None
+
+    assert response.status_code == 500
+    assert response.headers["access-control-allow-origin"] == PRODUCTION_PWA_ORIGIN
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "persisted_v3_diagnostic_failed"
+    assert detail["failure_stage"] == "ownership_lookup"
+    assert detail["error_id"].startswith("r9a_")
+    assert "secret" not in response.text
+    assert "secret" not in caplog.text
