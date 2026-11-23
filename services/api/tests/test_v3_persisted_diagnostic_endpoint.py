@@ -6,6 +6,9 @@ from services.api.app import main
 from services.api.app.main import app
 
 
+PRODUCTION_PWA_ORIGIN = "https://rowing-plan-pwa.vercel.app"
+
+
 class _ReadOnlyDiagnosticRepository:
     instances = []
 
@@ -103,3 +106,77 @@ def test_persisted_v3_diagnostic_uses_only_read_repository_and_wrapper(monkeypat
     assert repository.database_url == "postgresql://configured"
     assert repository.calls == [("get", "athlete-1"), ("athlete_owner", "athlete-1")]
     assert wrapper_calls == [(repository, "athlete-1", date(2026, 11, 22))]
+
+
+def _production_pwa_client():
+    """Temporarily exercise the actual app middleware with the deployed PWA origin."""
+    cors = next(item for item in app.user_middleware if item.cls.__name__ == "CORSMiddleware")
+    prior_origins = cors.kwargs["allow_origins"]
+    cors.kwargs["allow_origins"] = [PRODUCTION_PWA_ORIGIN]
+    app.middleware_stack = None
+    return TestClient(app, raise_server_exceptions=False), cors, prior_origins
+
+
+def test_persisted_v3_diagnostic_accepts_configured_production_pwa_origin_and_preflight(monkeypatch):
+    _ReadOnlyDiagnosticRepository.instances.clear()
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://configured")
+    monkeypatch.setenv("REPLACEMENT_PLANNER_LIVE_ATHLETE_IDS", "athlete-1")
+    monkeypatch.setattr(main, "DiagnosticPostgresReadRepository", _ReadOnlyDiagnosticRepository)
+    monkeypatch.setattr(main, "generate_persisted_v3_diagnostic_report", lambda *args, **kwargs: {"human_readable": "R9A report"})
+    app.dependency_overrides[main.current_user_id] = lambda: "development-user"
+    client, cors, prior_origins = _production_pwa_client()
+    try:
+        preflight = client.options(
+            "/api/v1/athletes/athlete-1/diagnostics/v3-persisted",
+            headers={
+                "Origin": PRODUCTION_PWA_ORIGIN,
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization",
+            },
+        )
+        response = client.get(
+            "/api/v1/athletes/athlete-1/diagnostics/v3-persisted",
+            headers={"Origin": PRODUCTION_PWA_ORIGIN, "Authorization": "Bearer test"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        cors.kwargs["allow_origins"] = prior_origins
+        app.middleware_stack = None
+
+    assert preflight.status_code == 200
+    assert preflight.headers["access-control-allow-origin"] == PRODUCTION_PWA_ORIGIN
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == PRODUCTION_PWA_ORIGIN
+
+
+def test_persisted_v3_diagnostic_internal_failure_is_safe_and_keeps_cors_headers(monkeypatch, caplog):
+    _ReadOnlyDiagnosticRepository.instances.clear()
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://configured")
+    monkeypatch.setenv("REPLACEMENT_PLANNER_LIVE_ATHLETE_IDS", "athlete-1")
+    monkeypatch.setattr(main, "DiagnosticPostgresReadRepository", _ReadOnlyDiagnosticRepository)
+    monkeypatch.setattr(
+        main,
+        "generate_persisted_v3_diagnostic_report",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("postgresql://secret@example.invalid/diagnostic_failure")),
+    )
+    app.dependency_overrides[main.current_user_id] = lambda: "development-user"
+    client, cors, prior_origins = _production_pwa_client()
+    try:
+        response = client.get(
+            "/api/v1/athletes/athlete-1/diagnostics/v3-persisted",
+            headers={"Origin": PRODUCTION_PWA_ORIGIN, "Authorization": "Bearer test"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        cors.kwargs["allow_origins"] = prior_origins
+        app.middleware_stack = None
+
+    assert response.status_code == 500
+    assert response.headers["access-control-allow-origin"] == PRODUCTION_PWA_ORIGIN
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "persisted_v3_diagnostic_failed"
+    assert detail["failure_stage"] == "persisted_report_generation"
+    assert detail["error_id"].startswith("r9a_")
+    assert "secret" not in response.text
+    assert "persisted_v3_diagnostic_failed" in caplog.text
+    assert "secret" not in caplog.text

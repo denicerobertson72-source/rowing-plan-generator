@@ -743,6 +743,28 @@ def unexpected_generation_error(error: Exception, profile: dict, athlete_id: str
     )
     return HTTPException(500, detail={"error_code":"plan_generation_failed","error_id":error_id})
 
+
+def persisted_v3_diagnostic_error(stage: str, error: Exception) -> HTTPException:
+    """Expose a safe reference for a read-only diagnostic failure.
+
+    Unhandled endpoint errors are rendered by FastAPI's outer server-error
+    middleware, which can omit the CORS headers added by inner middleware.
+    Converting them here retains those headers while keeping database details
+    (including the connection URL) in server logs only.
+    """
+    error_id = f"r9a_{token_urlsafe(6).replace('-', '').replace('_', '')}"
+    trace = extract_tb(error.__traceback__)
+    source = f"{trace[-1].filename}:{trace[-1].lineno}" if trace else "unknown"
+    logger.error(
+        "persisted_v3_diagnostic_failed reference=%s failure_stage=%s exception_class=%s source=%s",
+        error_id, stage, type(error).__name__, source,
+    )
+    return HTTPException(500, detail={
+        "error_code": "persisted_v3_diagnostic_failed",
+        "error_id": error_id,
+        "failure_stage": stage,
+    })
+
 def generation_rejection_diagnostic(detail: object, error_code: str) -> dict:
     """Keep known 422 reasons visible even when older paths return plain lists or strings."""
     source=detail if isinstance(detail,dict) else {}
@@ -962,13 +984,24 @@ def persisted_v3_diagnostic(athlete_id: str, user_id: str = Depends(current_user
     database_url=os.getenv("SUPABASE_DB_URL")
     if not database_url:
         raise HTTPException(503,"Persisted V3 diagnostic database access is not configured.")
-    repository=DiagnosticPostgresReadRepository(database_url)
-    owned_athlete_from_repository(repository,athlete_id,user_id)
+    try:
+        repository=DiagnosticPostgresReadRepository(database_url)
+    except Exception as error:
+        raise persisted_v3_diagnostic_error("read_repository_initialization", error) from error
+    try:
+        owned_athlete_from_repository(repository,athlete_id,user_id)
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise persisted_v3_diagnostic_error("ownership_lookup", error) from error
     if athlete_id not in replacement_planner_live_athlete_ids():
         raise HTTPException(403,"Persisted V3 diagnostics are not enabled for this athlete.")
-    return generate_persisted_v3_diagnostic_report(
-        repository,athlete_id,planning_date=current_planning_date(),
-    )
+    try:
+        return generate_persisted_v3_diagnostic_report(
+            repository,athlete_id,planning_date=current_planning_date(),
+        )
+    except Exception as error:
+        raise persisted_v3_diagnostic_error("persisted_report_generation", error) from error
 
 @app.get("/api/v1/account/athlete")
 def get_current_athlete(user_id: str = Depends(current_user_id)) -> dict:
