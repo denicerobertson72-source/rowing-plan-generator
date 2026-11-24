@@ -12,13 +12,17 @@ from rowing_plan.planning_domain import (
     PhysiologicalState,
     RecommendedDoseSegment,
     RecommendedTrainingDose,
+    RowingQualityPlan,
     TrainingAllocationSegment,
 )
 from rowing_plan.training_allocation import (
     allocate_training_dose,
     generate_training_allocation_v3,
+    supplemental_general_aerobic_policy,
     weekly_evidence_for_allocation,
 )
+from rowing_plan.training_days import DailyTrainingCapacity, allocation_segment_id, generate_training_days_v3
+from rowing_plan.materialization_v3 import materialize_training_days_v3
 
 
 START = date(2026, 11, 16)
@@ -140,6 +144,86 @@ def test_no_cross_training_preference_permits_zero_general_aerobic():
     result = _allocate(_profile(cross=False), _dose(380))
     assert result.success
     assert result.allocation.general_aerobic_minutes == 0
+
+
+def test_explicit_recurring_optional_cardio_authorizes_deliberate_supplement_beyond_strength_goal():
+    profile = _profile(goal="build_endurance", rowing=180, strength_sessions=1)
+    profile["recurring_activities"] = [{
+        "activity_id": "lift", "activity_type": "strength", "sessions_per_week": 1,
+        "alternate_cardio": {"mode": "optional", "max_minutes": 15},
+        "same_day_rules": {"alternate_ut2_allowed": True},
+    }]
+    # These are legacy weekday fields.  The explicit recurring card already
+    # has established precedence in the planning adapter and wins here too.
+    for item in profile["weekly_availability"]:
+        item["alternate_ut2_allowed"] = False
+    result = _allocate(profile, _dose(380))
+    segment = result.allocation.segments[0]
+    assert result.success
+    assert (segment.general_aerobic_minutes, segment.deliberate_general_aerobic_minutes) == (15, 15)
+    assert segment.category_reconciliation_minutes == 0
+    assert segment.general_aerobic_supplemental_only
+    assert segment.general_aerobic_supplemental_max_minutes == 15
+    assert "recurring_strength:alternate_cardio:explicit" in segment.general_aerobic_policy_provenance
+    assert "legacy_weekday_alternate_ut2_flags_ignored_by_explicit_recurring_card" in segment.general_aerobic_policy_provenance
+
+    capacity = tuple(DailyTrainingCapacity(START + timedelta(days=index), 120) for index in range(7))
+    r4 = generate_training_days_v3(
+        result.allocation, capacity,
+        rowing_quality_plans=(RowingQualityPlan(
+            allocation_segment_id(segment), segment.start_date, segment.end_date,
+            segment.rowing_specific_minutes, 0, (), "ordinary", None, "high",
+            policy_version="test", performance_profile_version="test", basis_fingerprint="test",
+        ),),
+    )
+    r5 = materialize_training_days_v3(r4, allocation=result.allocation)
+    general = [item for item in r4.components if item.physical_category.value == "general_aerobic"]
+    assert r4.success and r5.success
+    assert [(item.duration_minutes, item.modality.value) for item in general] == [(15, "elliptical")]
+    assert any(
+        item.physical_category.value == "strength" and item.sequence < general[0].sequence
+        for item in r4.days[0].components
+    ) or any(
+        any(component.physical_category.value == "strength" for component in day.components)
+        and any(component.physical_category.value == "general_aerobic" for component in day.components)
+        for day in r4.days
+    )
+
+
+def test_explicit_off_or_legacy_weekday_prohibition_does_not_authorize_deliberate_cross_training():
+    profile = _profile(goal="build_endurance", rowing=180, strength_sessions=1)
+    profile["recurring_activities"] = [{
+        "activity_id": "lift", "activity_type": "strength", "sessions_per_week": 1,
+        "alternate_cardio": {"mode": "off", "max_minutes": 30},
+    }]
+    assert not supplemental_general_aerobic_policy(profile).allowed
+    assert _allocate(profile, _dose(380)).allocation.general_aerobic_minutes == 0
+
+    profile["recurring_activities"] = [{
+        "activity_id": "lift", "activity_type": "strength", "sessions_per_week": 1,
+        "same_day_rules": {"alternate_ut2_allowed": False},
+    }]
+    for item in profile["weekly_availability"]:
+        item["alternate_ut2_allowed"] = False
+    assert not supplemental_general_aerobic_policy(profile).allowed
+    assert _allocate(profile, _dose(380)).allocation.general_aerobic_minutes == 0
+
+
+def test_deliberate_supplement_scales_partial_segments_and_is_suppressed_for_race_specific_context():
+    profile = _profile(goal="build_endurance", rowing=120, strength_sessions=3)
+    profile["recurring_activities"] = [{
+        "activity_id": "lift", "activity_type": "strength", "sessions_per_week": 1,
+        "alternate_cardio": {"mode": "planned", "max_minutes": 30},
+    }]
+    partial = _allocate(profile, _dose(220, days=3)).allocation.segments[0]
+    assert (partial.general_aerobic_minutes, partial.deliberate_general_aerobic_minutes) == (13, 13)
+    assert partial.general_aerobic_supplemental_max_minutes == 30
+
+    race_profile = _profile(goal="build_endurance", rowing=120, strength_sessions=3, phase="race_specific_preparation")
+    race_profile["recurring_activities"] = profile["recurring_activities"]
+    race_profile["races"] = [{"race_dates": ["2026-11-22"]}]
+    race = _allocate(race_profile, _dose(380)).allocation.segments[0]
+    assert race.general_aerobic_minutes == race.deliberate_general_aerobic_minutes == 0
 
 
 def test_partial_segment_uses_a_discrete_not_full_week_strength_recommendation():

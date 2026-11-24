@@ -6,7 +6,7 @@ minutes already authorized by :mod:`recommended_training_dose`.
 """
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Any, Iterable, Mapping
 
@@ -30,6 +30,25 @@ from .recommended_training_dose import recent_actual_history_is_sufficient
 POLICY_VERSION = "training-allocation-v1"
 DEFAULT_STRENGTH_DURATION_MINUTES = 45
 GENERAL_PREP_CROSS_TRAINING_LATITUDE_MINUTES_PER_7D = 30
+SUPPLEMENTAL_GENERAL_AEROBIC_MINUTES_PER_COMPONENT = 15
+
+
+@dataclass(frozen=True)
+class SupplementalGeneralAerobicPolicy:
+    """Profile-backed permission for short strength-day aerobic add-ons."""
+
+    allowed: bool
+    maximum_minutes: int | None = None
+    provenance: tuple[str, ...] = ()
+    conflict_codes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.maximum_minutes is not None and self.maximum_minutes <= 0:
+            raise ValueError("supplemental_general_aerobic_maximum_is_invalid")
+        if self.allowed != (self.maximum_minutes is not None):
+            raise ValueError("supplemental_general_aerobic_policy_is_invalid")
+        object.__setattr__(self, "provenance", tuple(sorted(set(self.provenance))))
+        object.__setattr__(self, "conflict_codes", tuple(sorted(set(self.conflict_codes))))
 
 
 def _positive_int(value: Any) -> int | None:
@@ -214,6 +233,79 @@ def _cross_training_eligible(profile: Mapping[str, Any]) -> bool:
     return bool(general_aerobic_capabilities(profile))
 
 
+def supplemental_general_aerobic_policy(profile: Mapping[str, Any]) -> SupplementalGeneralAerobicPolicy:
+    """Resolve modern recurring-strength cardio before legacy weekday flags.
+
+    ``alternate_cardio`` is the explicit modern configuration.  The existing
+    planning adapter already treats it as authoritative over the legacy
+    ``alternate_ut2_allowed`` migration field, so R3 follows the same rule.
+    Weekday flags remain a fallback only when a modern card is absent; this
+    avoids turning omitted legacy data into a prohibition while still making
+    an actual legacy prohibition visible.
+    """
+    activities = profile.get("recurring_activities", ())
+    strengths = [
+        item for item in activities if isinstance(item, Mapping) and item.get("activity_type") == "strength"
+    ] if isinstance(activities, (list, tuple)) else []
+    modern = [
+        item.get("alternate_cardio") for item in strengths
+        if isinstance(item.get("alternate_cardio"), Mapping)
+    ]
+    if modern:
+        modes = {str(item.get("mode", "off")) for item in modern}
+        if "off" in modes:
+            return SupplementalGeneralAerobicPolicy(
+                False, provenance=("recurring_strength:alternate_cardio:off",),
+                conflict_codes=(("recurring_strength_alternate_cardio_conflict",) if len(modes) > 1 else ()),
+            )
+        allowed = [item for item in modern if str(item.get("mode", "off")) in {"optional", "planned"}]
+        if allowed:
+            maxima = [
+                value for value in (_positive_int(item.get("max_minutes")) for item in allowed)
+                if value is not None and value > 0
+            ]
+            maximum = min(maxima) if maxima else 20
+            weekday_flags = [
+                item.get("alternate_ut2_allowed")
+                for item in profile.get("weekly_availability", ())
+                if isinstance(item, Mapping) and item.get("alternate_ut2_allowed") is False
+            ]
+            return SupplementalGeneralAerobicPolicy(
+                True, maximum,
+                provenance=(
+                    "recurring_strength:alternate_cardio:explicit",
+                    f"recurring_strength:alternate_cardio:max_minutes:{maximum}",
+                    *(("legacy_weekday_alternate_ut2_flags_ignored_by_explicit_recurring_card",) if weekday_flags else ()),
+                ),
+            )
+        return SupplementalGeneralAerobicPolicy(
+            False, provenance=("recurring_strength:alternate_cardio:unsupported_mode",),
+        )
+
+    legacy_rules = [
+        item.get("same_day_rules", {}) for item in strengths
+        if isinstance(item.get("same_day_rules"), Mapping)
+    ]
+    if any(rules.get("alternate_ut2_allowed") is True for rules in legacy_rules):
+        return SupplementalGeneralAerobicPolicy(
+            True, 20, provenance=("recurring_strength:same_day_rules:legacy_alternate_ut2_allowed",),
+        )
+    weekday_values = [
+        item.get("alternate_ut2_allowed") for item in profile.get("weekly_availability", ())
+        if isinstance(item, Mapping) and "alternate_ut2_allowed" in item
+    ]
+    if any(value is True for value in weekday_values) and not any(value is False for value in weekday_values):
+        return SupplementalGeneralAerobicPolicy(
+            True, 20, provenance=("weekly_availability:alternate_ut2_allowed:legacy",),
+        )
+    if any(value is False for value in weekday_values):
+        return SupplementalGeneralAerobicPolicy(
+            False, provenance=("weekly_availability:alternate_ut2_allowed:explicit_prohibition",),
+            conflict_codes=(("weekday_alternate_ut2_preference_conflict",) if any(value is True for value in weekday_values) else ()),
+        )
+    return SupplementalGeneralAerobicPolicy(False, provenance=("supplemental_general_aerobic:not_configured",))
+
+
 def _strength_desired_per_week(
     profile: Mapping[str, Any], current_sessions: int, override_mode: str | None,
 ) -> int:
@@ -259,6 +351,7 @@ def allocate_training_dose(
     goal = _goal(profile)
     cross_capabilities = general_aerobic_capabilities(profile)
     cross_eligible = bool(cross_capabilities)
+    supplemental_policy = supplemental_general_aerobic_policy(profile)
     rowing_weekly, rowing_evidence_source = _rowing_weekly_evidence(profile, current_state)
     raw_segments: list[TrainingAllocationSegment] = []
 
@@ -319,6 +412,7 @@ def allocate_training_dose(
         if exposures == 0 and current_strength_state == "regular" and strength_experience in {"intermediate", "advanced"} and not any(code.startswith("strength_zero:") for code in rationale):
             rationale.append("strength_zero:hard_capacity_constraint")
         general_desired = 0
+        deliberate_general_desired = 0
         if cross_eligible and not race_specific and not recovery and phase in {"general_preparation", "foundation_orientation", "aerobic_development"} and goal == "develop_strength":
             general_desired = round(GENERAL_PREP_CROSS_TRAINING_LATITUDE_MINUTES_PER_7D * days / 7)
             rationale.append("general_aerobic:eligible_general_preparation")
@@ -326,7 +420,23 @@ def allocate_training_dose(
             rationale.append("general_aerobic:zero_no_eligible_preference")
         elif race_specific:
             rationale.append("general_aerobic:zero_race_specificity")
+        supplemental_context = (
+            cross_eligible and supplemental_policy.allowed and exposures > 0
+            and not race_specific and not recovery
+            and phase in {"general_preparation", "foundation_orientation", "aerobic_development"}
+        )
+        if supplemental_context:
+            weekly_latitude = round(GENERAL_PREP_CROSS_TRAINING_LATITUDE_MINUTES_PER_7D * days / 7)
+            per_component = min(SUPPLEMENTAL_GENERAL_AEROBIC_MINUTES_PER_COMPONENT, supplemental_policy.maximum_minutes or 0)
+            deliberate_general_desired = min(weekly_latitude, exposures * per_component)
+            general_desired = max(general_desired, deliberate_general_desired)
+            rationale.append("general_aerobic:deliberate_profile_authorized_supplement")
+        elif supplemental_policy.conflict_codes:
+            rationale.extend(f"general_aerobic:preference_conflict:{code}" for code in supplemental_policy.conflict_codes)
+        elif cross_eligible and not supplemental_policy.allowed:
+            rationale.append("general_aerobic:profile_supplement_not_authorized")
         general = min(general_desired, max(0, segment.recommended_physical_minutes - strength_minutes - rowing_floor))
+        deliberate_general = min(deliberate_general_desired, general)
         rowing = segment.recommended_physical_minutes - strength_minutes - general
         min_strength = exposures if hard_strength else 0
         max_strength = exposures
@@ -341,6 +451,10 @@ def allocate_training_dose(
             expected_strength_duration_minutes=duration,
             rationale_codes=tuple(rationale), constraints=tuple(constraints),
             general_aerobic_capabilities=cross_capabilities,
+            deliberate_general_aerobic_minutes=deliberate_general,
+            general_aerobic_policy_provenance=(*supplemental_policy.provenance, *supplemental_policy.conflict_codes),
+            general_aerobic_supplemental_max_minutes=(supplemental_policy.maximum_minutes if supplemental_context else None),
+            general_aerobic_supplemental_only=supplemental_context,
         ))
 
     segments = []

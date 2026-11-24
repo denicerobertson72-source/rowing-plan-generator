@@ -950,7 +950,12 @@ def generate_training_days_v3(
                              minutes=segment.expected_strength_duration_minutes,
                              purpose=TrainingComponentPurpose.STRENGTH)
 
-        for category in (PhysicalCategory.ROWING_SPECIFIC, PhysicalCategory.GENERAL_AEROBIC, PhysicalCategory.OTHER):
+        category_order = (
+            (PhysicalCategory.GENERAL_AEROBIC, PhysicalCategory.ROWING_SPECIFIC, PhysicalCategory.OTHER)
+            if segment.general_aerobic_supplemental_only
+            else (PhysicalCategory.ROWING_SPECIFIC, PhysicalCategory.GENERAL_AEROBIC, PhysicalCategory.OTHER)
+        )
+        for category in category_order:
             if category is PhysicalCategory.ROWING_SPECIFIC and segment_id in quality_plan_by_segment:
                 quality_plan = quality_plan_by_segment[segment_id]
                 if quality_plan.rowing_specific_minutes != segment.rowing_specific_minutes:
@@ -989,6 +994,18 @@ def generate_training_days_v3(
             index = 1
             while required:
                 candidates = eligible_days(segment, category, 1)
+                if category is PhysicalCategory.GENERAL_AEROBIC and segment.general_aerobic_supplemental_only:
+                    if (
+                        preferences.combined_days == "avoid"
+                        or preferences.strength_plus_easy_aerobic == "avoid"
+                    ):
+                        candidates = []
+                    else:
+                        candidates = [
+                            day for day in candidates
+                            if any(item.physical_category is PhysicalCategory.STRENGTH for item in daily_components[day])
+                            and not any(item.physical_category is PhysicalCategory.GENERAL_AEROBIC for item in daily_components[day])
+                        ]
                 if not candidates:
                     infeasibilities.append(TrainingDayInfeasibility(
                         "generated_component_capacity_infeasible", segment_id, category, required,
@@ -996,6 +1013,8 @@ def generate_training_days_v3(
                     break
                 chosen = candidates[0]
                 minutes = min(required, remaining(chosen))
+                if category is PhysicalCategory.GENERAL_AEROBIC and segment.general_aerobic_supplemental_max_minutes is not None:
+                    minutes = min(minutes, segment.general_aerobic_supplemental_max_minutes)
                 append_generated(chosen, lineage=f"{segment_id}:{category.value}:{index}", segment_id=segment_id,
                                  category=category, minutes=minutes, purpose=_default_purpose(category),
                                  modality=general_capability.modality if general_capability else None,

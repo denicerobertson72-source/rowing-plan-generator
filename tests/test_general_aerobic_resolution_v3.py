@@ -359,3 +359,37 @@ def test_persisted_shaped_six_segment_block_preserves_all_r2_minutes_after_bound
     assert sum(item.duration_minutes for item in r4.components) == 2714
     assert sum(item.duration_minutes for item in r4.components if item.physical_category is PhysicalCategory.STRENGTH) == 675
     assert sum(item.materialized.physical_duration_minutes for item in r5.results if item.materialized) == 2714
+
+
+def test_persisted_diagnostic_path_reports_deliberate_supplement_and_modern_precedence():
+    profile = {
+        "athlete": {"current_weekly_training_minutes": 380, "current_approx_weekly_rowing_minutes": 180},
+        "season": {"start_date": START.isoformat(), "end_date": "2027-01-03", "phase_type": "general_preparation"},
+        "training_context": {
+            "strength_experience": "advanced", "current_strength_state": "regular",
+            "current_strength_sessions_per_week": 1, "typical_strength_duration_minutes": 45,
+            "strength_override": {"mode": "none"},
+        },
+        "planning_goals": {"primary_goal": "build_endurance"},
+        "cross_training": {"modalities": {
+            "stair_climber": {"enabled": True, "familiarity": "regular", "preference": "prefer"},
+        }},
+        "recurring_activities": [{
+            "activity_id": "lift", "activity_type": "strength", "sessions_per_week": 1,
+            "alternate_cardio": {"mode": "optional", "max_minutes": 15},
+        }],
+        "weekly_availability": [
+            {"weekday": name, "available": True, "fixed_rest": False, "max_training_minutes": 120,
+             "rowing_modes": ["erg"], "alternate_ut2_allowed": False}
+            for name in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+        ],
+        "races": [],
+    }
+    report = generate_v3_diagnostic_report(profile, planning_date=START)
+    feasibility = report["r3_cadence_feasibility"][0]
+    assert feasibility["deliberate_general_aerobic_minutes"] == 15
+    assert feasibility["feasibility_reconciled_general_aerobic_minutes"] == 0
+    assert feasibility["supplemental_max_minutes"] == 15
+    assert "legacy_weekday_alternate_ut2_flags_ignored_by_explicit_recurring_card" in feasibility["general_aerobic_policy_provenance"]
+    general = next(item for day in report["calendar"] for item in day["components"] if item["category"] == "general_aerobic")
+    assert (general["physical_minutes"], general["modality"]) == (15, "stair_climber")
