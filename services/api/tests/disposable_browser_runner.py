@@ -21,6 +21,7 @@ def running_disposable_api(port: int = 8011):
         if not db.exists() or db == REAL_DB or db.parent.resolve() == REAL_DB.parent.resolve():
             raise RuntimeError("Refusing to start browser acceptance API against a non-disposable database")
         env=os.environ.copy(); env["ROWING_PLAN_DB_PATH"]=str(db)
+        env.pop("SUPABASE_DB_URL", None)
         env["PYTHONPATH"]=os.pathsep.join([str(TEMP_DEPS), str(Path.cwd()), env.get("PYTHONPATH","")])
         # Keep the same interpreter used by the caller, but make the bundled
         # API dependencies importable for the disposable subprocess.

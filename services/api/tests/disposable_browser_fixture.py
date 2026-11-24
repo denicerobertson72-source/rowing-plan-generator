@@ -67,7 +67,11 @@ def disposable_browser_fixture(profile_factory=synthetic_profile):
         db_path = Path(directory) / "acceptance.sqlite3"
         if db_path.resolve() == REAL_DB: raise RuntimeError("Step 6B fixture refused the real development database")
         previous=os.environ.get("ROWING_PLAN_DB_PATH")
+        previous_supabase=os.environ.get("SUPABASE_DB_URL")
         os.environ["ROWING_PLAN_DB_PATH"]=str(db_path)
+        # A developer shell may target production Supabase. Disposable browser
+        # fixtures are deliberately SQLite-only and must never inherit it.
+        os.environ.pop("SUPABASE_DB_URL", None)
         REPOSITORIES._instance=None
         profile=profile_factory(); repo=SQLiteRepositories(db_path); athlete_id=repo.create(profile,"development-user")
         config=json.loads((Path(__file__).resolve().parents[3] / "config" / "defaults.json").read_text())
@@ -77,3 +81,5 @@ def disposable_browser_fixture(profile_factory=synthetic_profile):
             REPOSITORIES._instance=None
             if previous is None: os.environ.pop("ROWING_PLAN_DB_PATH",None)
             else: os.environ["ROWING_PLAN_DB_PATH"]=previous
+            if previous_supabase is None: os.environ.pop("SUPABASE_DB_URL",None)
+            else: os.environ["SUPABASE_DB_URL"]=previous_supabase
