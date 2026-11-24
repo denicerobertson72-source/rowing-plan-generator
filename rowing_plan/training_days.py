@@ -373,7 +373,17 @@ def generate_training_days_v3(
             if remaining(day) < minutes or not _can_combine(daily_components, day, preferences):
                 continue
             result.append(day)
-        return sorted(result, key=lambda item: _candidate_sort_key(daily_components, item, category, preferences))
+        return sorted(
+            result,
+            key=lambda item: (
+                int(
+                    category is PhysicalCategory.STRENGTH
+                    and any(component.physical_category is PhysicalCategory.STRENGTH
+                            for component in daily_components[item])
+                ),
+                _candidate_sort_key(daily_components, item, category, preferences),
+            ),
+        )
 
     def append_generated(day: date, *, lineage: str, segment_id: str, category: PhysicalCategory,
                          minutes: int, purpose: TrainingComponentPurpose,
@@ -395,6 +405,125 @@ def generate_training_days_v3(
             maximum_quality_work_minutes=quality.maximum_work_minutes if quality else None,
             capability_provenance=capability_provenance,
         ))
+
+    rowing_duration_feasibility: dict[tuple[TrainingComponentPurpose, int], bool] = {}
+
+    def ordinary_rowing_duration_is_feasible(purpose: TrainingComponentPurpose, duration: int) -> bool:
+        """Cache R5's exact-envelope answer for bounded R4 feasibility work."""
+        key = (purpose, duration)
+        if key not in rowing_duration_feasibility:
+            rowing_duration_feasibility[key] = bool(preflight_rowing_duration_v3(
+                purpose, duration_minutes=duration, context=materialization_context,
+            ))
+        return rowing_duration_feasibility[key]
+
+    def ordinary_rowing_purpose(segment_id: str) -> TrainingComponentPurpose:
+        plan = quality_plan_by_segment.get(segment_id)
+        if plan and plan.recovery_emphasis:
+            return TrainingComponentPurpose.RECOVERY
+        if plan and plan.technical_emphasis:
+            return TrainingComponentPurpose.TECHNICAL
+        return TrainingComponentPurpose.EASY_AEROBIC
+
+    def residual_rowing_partition_exists(segment: TrainingAllocationSegment, segment_id: str) -> bool:
+        """Return whether remaining dated capacity can exactly honour R3 rowing.
+
+        The search is deliberately bounded to one R9B cadence segment.  It
+        uses the same exact-duration R5 preflight as ordinary rowing placement
+        and therefore prevents strength from fragmenting capacity into values
+        that cannot become physical rowing components.
+        """
+        placed = sum(
+            component.duration_minutes
+            for current_day in _dates(segment.start_date, segment.end_date)
+            for component in daily_components[current_day]
+            if (
+                component.allocation_segment_id == segment_id
+                and component.physical_category is PhysicalCategory.ROWING_SPECIFIC
+            )
+        )
+        residual = segment.rowing_specific_minutes - placed
+        if residual < 0:
+            return False
+        if residual == 0:
+            return True
+        purpose = ordinary_rowing_purpose(segment_id)
+        candidates = [
+            current_day for current_day in eligible_days(segment, PhysicalCategory.ROWING_SPECIFIC, 1)
+            if not any(item.physical_category is PhysicalCategory.ROWING_SPECIFIC for item in daily_components[current_day])
+        ]
+        totals = {0}
+        for current_day in candidates:
+            options = [
+                duration for duration in range(1, remaining(current_day) + 1)
+                if ordinary_rowing_duration_is_feasible(purpose, duration)
+            ]
+            totals |= {
+                total + duration
+                for total in tuple(totals)
+                for duration in options
+                if total + duration <= residual
+            }
+        return residual in totals
+
+    def joint_strength_rowing_detail(segment: TrainingAllocationSegment, segment_id: str,
+                                     remaining_strength_exposures: int) -> str:
+        purpose = ordinary_rowing_purpose(segment_id)
+        segment_days = _dates(segment.start_date, segment.end_date)
+        usable_capacity = sum(remaining(current_day) for current_day in segment_days)
+        unusable = sum(
+            remaining(current_day)
+            for current_day in segment_days
+            if remaining(current_day) and not any(
+                ordinary_rowing_duration_is_feasible(purpose, duration)
+                for duration in range(1, remaining(current_day) + 1)
+            )
+        )
+        return (
+            f"segment={segment.start_date.isoformat()}:{segment.end_date.isoformat()};"
+            f"rowing_required={segment.rowing_specific_minutes};"
+            f"strength_required={remaining_strength_exposures * segment.expected_strength_duration_minutes};"
+            f"strength_exposures_required={remaining_strength_exposures};"
+            f"usable_capacity={usable_capacity};unusable_rowing_capacity={unusable}"
+        )
+
+    def future_strength_and_rowing_partition_exists(segment: TrainingAllocationSegment, segment_id: str,
+                                                     remaining_strength_exposures: int) -> bool:
+        """Bounded joint feasibility for remaining strength plus R3 rowing."""
+        if remaining_strength_exposures == 0:
+            return residual_rowing_partition_exists(segment, segment_id)
+        for current_day in eligible_days(segment, PhysicalCategory.STRENGTH, segment.expected_strength_duration_minutes):
+            append_generated(
+                current_day,
+                lineage=f"{segment_id}:strength:probe:{remaining_strength_exposures}",
+                segment_id=segment_id, category=PhysicalCategory.STRENGTH,
+                minutes=segment.expected_strength_duration_minutes,
+                purpose=TrainingComponentPurpose.STRENGTH,
+            )
+            try:
+                if future_strength_and_rowing_partition_exists(
+                    segment, segment_id, remaining_strength_exposures - 1,
+                ):
+                    return True
+            finally:
+                daily_components[current_day].pop()
+        return False
+
+    def strength_day_preserves_rowing_partition(segment: TrainingAllocationSegment, segment_id: str,
+                                                current_day: date, remaining_strength_exposures: int) -> bool:
+        """Trial a strength date while reserving feasibility for later exposures."""
+        append_generated(
+            current_day, lineage=f"{segment_id}:strength:probe:{remaining_strength_exposures}", segment_id=segment_id,
+            category=PhysicalCategory.STRENGTH,
+            minutes=segment.expected_strength_duration_minutes,
+            purpose=TrainingComponentPurpose.STRENGTH,
+        )
+        try:
+            return future_strength_and_rowing_partition_exists(
+                segment, segment_id, remaining_strength_exposures - 1,
+            )
+        finally:
+            daily_components[current_day].pop()
 
     def place_quality_aware_rowing(segment: TrainingAllocationSegment, segment_id: str,
                                    plan: RowingQualityPlan) -> None:
@@ -667,7 +796,33 @@ def generate_training_days_v3(
                     PhysicalCategory.STRENGTH, segment.expected_strength_duration_minutes,
                 ))
                 break
-            append_generated(days[0], lineage=f"{segment_id}:strength:{exposure}", segment_id=segment_id,
+            # Generic R4 rowing retains its legacy direct-placement contract.
+            # Once an R6 composition plan is present, however, ordinary
+            # residual rowing must meet R5's exact catalog envelope, so a
+            # strength candidate has to preserve that physical partition.
+            rowing_safe_days = (
+                [
+                    current_day for current_day in days
+                    if strength_day_preserves_rowing_partition(
+                        segment, segment_id, current_day, expected_strength - exposure + 1,
+                    )
+                ]
+                if segment_id in quality_plan_by_segment else days
+            )
+            if not rowing_safe_days:
+                remaining_exposures = expected_strength - exposure + 1
+                detail = joint_strength_rowing_detail(segment, segment_id, remaining_exposures)
+                infeasibilities.append(TrainingDayInfeasibility(
+                    "joint_strength_rowing_partition_infeasible", segment_id,
+                    PhysicalCategory.STRENGTH,
+                    remaining_exposures * segment.expected_strength_duration_minutes,
+                    detail,
+                ))
+                diagnostics.append(TrainingDayDiagnostic(
+                    "strength_candidate_would_strand_rowing_partition", None, segment_id, detail,
+                ))
+                break
+            append_generated(rowing_safe_days[0], lineage=f"{segment_id}:strength:{exposure}", segment_id=segment_id,
                              category=PhysicalCategory.STRENGTH,
                              minutes=segment.expected_strength_duration_minutes,
                              purpose=TrainingComponentPurpose.STRENGTH)

@@ -20,6 +20,7 @@ from rowing_plan.planning_normalization import normalize_planning_inputs
 from rowing_plan.recommended_training_dose import normalize_recommended_dose_cadence
 from rowing_plan.replacement_plan_v3 import generate_recommended_training_dose_v3
 from rowing_plan.diagnostic_v3 import generate_v3_diagnostic_report
+from rowing_plan.materialization_v3 import materialize_training_days_v3
 from rowing_plan.training_allocation import generate_training_allocation_v3
 from rowing_plan.training_days import (
     AuthoritativeComponentFact,
@@ -299,3 +300,51 @@ def test_persisted_style_38_day_dose_keeps_all_r3_rowing_when_every_r6_plan_is_e
                if component.physical_category is PhysicalCategory.ROWING_SPECIFIC) == allocation.rowing_specific_minutes
     assert sum(component.duration_minutes for component in result.components
                if component.physical_category is PhysicalCategory.STRENGTH) == allocation.strength_minutes
+
+
+def test_production_shaped_38_day_strength_and_rowing_partition_reaches_r5_exactly():
+    start, end = date(2026, 11, 24), date(2026, 12, 31)
+    ranges = (
+        (start, date(2026, 11, 29)), (date(2026, 11, 30), date(2026, 12, 6)),
+        (date(2026, 12, 7), date(2026, 12, 13)), (date(2026, 12, 14), date(2026, 12, 20)),
+        (date(2026, 12, 21), date(2026, 12, 27)), (date(2026, 12, 28), end),
+    )
+    rowing_minutes = (346, 385, 385, 385, 385, 153)
+    strength_minutes = (90, 135, 135, 135, 135, 45)
+    segments = tuple(
+        TrainingAllocationSegment(
+            segment_start, segment_end, rowing + strength, rowing, strength, 0, 0, 0,
+            strength // 45, 0, strength // 45, 45,
+            rationale_codes=("production_38_day_fragment_regression",),
+        )
+        for (segment_start, segment_end), rowing, strength in zip(ranges, rowing_minutes, strength_minutes)
+    )
+    allocation = TrainingAllocation(
+        start, end, segments, 2_714, 2_039, 675, 0, 0, 15,
+        rationale_codes=("production_38_day_fragment_regression",), confidence="high",
+    )
+    capacity = tuple(
+        DailyTrainingCapacity(
+            start + timedelta(days=index),
+            90 if (start + timedelta(days=index)).weekday() >= 5 else 70,
+        )
+        for index in range((end - start).days + 1)
+    )
+    empty_plans = tuple(
+        RowingQualityPlan(
+            allocation_segment_id(segment), segment.start_date, segment.end_date,
+            0, 0, (), "test", None, "high", policy_version="test",
+            performance_profile_version="test", basis_fingerprint=f"production-empty:{index}",
+        )
+        for index, segment in enumerate(segments)
+    )
+
+    r4 = generate_training_days_v3(allocation, capacity, rowing_quality_plans=empty_plans)
+    r5 = materialize_training_days_v3(r4, allocation=allocation)
+
+    assert r4.success and r5.success
+    assert sum(day.total_physical_minutes for day in r4.days) == 2_714
+    assert sum(item.duration_minutes for item in r4.components if item.physical_category is PhysicalCategory.ROWING_SPECIFIC) == 2_039
+    assert sum(item.duration_minutes for item in r4.components if item.physical_category is PhysicalCategory.STRENGTH) == 675
+    assert len([item for item in r4.components if item.physical_category is PhysicalCategory.STRENGTH]) == 15
+    assert sum(item.materialized.physical_duration_minutes for item in r5.results if item.materialized) == 2_714

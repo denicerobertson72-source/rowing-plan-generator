@@ -123,6 +123,38 @@ def test_empty_r6_plan_returns_explicit_infeasibility_when_r3_rowing_cannot_fit(
     assert sum(item.duration_minutes for item in _rowing(result)) != allocation.rowing_specific_minutes
 
 
+def test_joint_strength_rowing_placement_avoids_the_70_minute_fragment_trap():
+    start = date(2026, 11, 24)
+    end = date(2026, 11, 29)
+    segment = TrainingAllocationSegment(
+        start, end, 436, 346, 90, 0, 0, 0,
+        2, 0, 2, 45, rationale_codes=("production_fragment_regression",),
+    )
+    allocation = TrainingAllocation(
+        start, end, (segment,), 436, 346, 90, 0, 0, 2,
+        rationale_codes=("production_fragment_regression",), confidence="high",
+    )
+    capacity = tuple(
+        DailyTrainingCapacity(start + timedelta(days=index), minutes)
+        for index, minutes in enumerate((70, 70, 70, 70, 90, 90))
+    )
+    result = generate_training_days_v3(
+        allocation, capacity,
+        rowing_quality_plans=(_empty_quality_plan(allocation, declared_rowing_minutes=0),),
+        materialization_context=_context(),
+    )
+
+    assert result.success
+    strengths = [
+        (day.date, component) for day in result.days for component in day.components
+        if component.physical_category is PhysicalCategory.STRENGTH
+    ]
+    assert [item[0] for item in strengths] == [date(2026, 11, 28), date(2026, 11, 29)]
+    assert sum(item.duration_minutes for item in _rowing(result)) == 346
+    assert sum(item.duration_minutes for _day, item in strengths) == 90
+    assert sum(item.duration_minutes for item in result.components) == 436
+
+
 def test_small_residual_is_rebalanced_into_the_quality_envelope_never_a_tiny_component():
     allocation = _allocation(40, days=1)
     result = generate_training_days_v3(allocation, _capacity(40), rowing_quality_plans=(_quality_plan(allocation),), materialization_context=_context())

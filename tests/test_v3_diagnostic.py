@@ -56,6 +56,7 @@ def test_reset_spine_diagnostic_separates_capacity_conservation_and_plausibility
     assert report["diagnostic_counts"]["r5_result_count"] == len(report["workouts"])
     public = public_v3_diagnostic_payload(report)
     assert "r4" not in public and "r5" not in public
+    assert public["r4_status"] == {"success": True, "infeasibilities": [], "diagnostics": []}
     assert public["calendar"] == report["calendar"]
     assert public["workouts"] == report["workouts"]
     assert public["r3_weekly_evidence"] == report["r3_weekly_evidence"]

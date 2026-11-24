@@ -72,6 +72,32 @@ def _diagnostic_preferences(profile: Mapping[str, Any]) -> CombinedDayPreference
     )
 
 
+def _r4_status_payload(result) -> dict[str, Any]:
+    """Expose R4 failure evidence without serializing its internal objects."""
+    return {
+        "success": result.success,
+        "infeasibilities": [
+            {
+                "code": item.code,
+                "allocation_segment_id": item.allocation_segment_id,
+                "physical_category": item.physical_category.value if item.physical_category else None,
+                "remaining_minutes": item.remaining_minutes,
+                "detail": item.detail,
+            }
+            for item in result.infeasibilities
+        ],
+        "diagnostics": [
+            {
+                "code": item.code,
+                "date": item.date.isoformat() if item.date else None,
+                "source_lineage_id": item.source_lineage_id,
+                "detail": item.detail,
+            }
+            for item in result.diagnostics
+        ],
+    }
+
+
 def _rowing_modalities(capacity) -> tuple[TrainingModality, ...]:
     values = tuple(sorted({mode for day in capacity.days for mode in day.allowed_modalities
                            if mode in {TrainingModality.ERG, TrainingModality.ON_WATER}}, key=lambda item: item.value))
@@ -193,6 +219,7 @@ def generate_v3_diagnostic_report(
         preferences=preferences,
     )
     record_timing("r4_training_days", r4_started)
+    r4_status = _r4_status_payload(r4)
     r5_started = perf_counter()
     r5 = materialize_training_days_v3(
         r4,
@@ -243,7 +270,8 @@ def generate_v3_diagnostic_report(
         "rowing_modalities": [item.value for item in rowing_modalities],
         "current_training": asdict(current), "r2_baseline_evidence": baseline_evidence,
         "r3_weekly_evidence": weekly_evidence_for_allocation(profile, current), "r2": asdict(r2), "r3": asdict(r3),
-        "r6": [asdict(item) for item in quality], "r4": r4, "r5": r5, "calendar": calendar, "workouts": workouts,
+        "r6": [asdict(item) for item in quality], "r4": r4, "r4_status": r4_status,
+        "r5": r5, "calendar": calendar, "workouts": workouts,
         "conservation": {"r2": r2_total, "r3": r3_total, "r4": r4_total, "r5": r5_total, "pass": r2_total == r3_total == r4_total == r5_total},
         "structural_validation": "PASS" if r4.success and r5.success and r2_total == r3_total == r4_total == r5_total else "FAIL",
         "plausibility_reviews": reviews,
@@ -272,7 +300,7 @@ def generate_v3_diagnostic_report(
 _PUBLIC_DIAGNOSTIC_KEYS = (
     "planning_date", "planning_end", "available_capacity_minutes",
     "planning_goals", "training_preferences", "rowing_modalities", "r2_baseline_evidence", "r3_weekly_evidence",
-    "current_training", "r2", "r3", "r6", "calendar", "workouts",
+    "current_training", "r2", "r3", "r6", "r4_status", "calendar", "workouts",
     "conservation", "structural_validation", "plausibility_reviews",
     "training_plausibility", "persisted_input_audit", "diagnostic_timing_ms",
     "diagnostic_counts", "human_readable",
