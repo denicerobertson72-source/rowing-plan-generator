@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from hashlib import sha256
+from time import perf_counter
 from typing import Iterable, Mapping
 
 from .planning_domain import (
@@ -155,6 +156,26 @@ class CombinedDayPreferences:
         }
 
 
+@dataclass(frozen=True)
+class CadenceCategoryFeasibility:
+    """Read-only R4/R5-backed feasibility evidence for one R3 cadence segment.
+
+    It intentionally reports category-envelope feasibility only.  R6 still
+    owns quality composition and the final R4 pass remains responsible for
+    quality-aware calendar feasibility.
+    """
+
+    allocation_segment_id: str
+    feasible: bool
+    runtime_ms: float
+    infeasibility_codes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.runtime_ms < 0:
+            raise ValueError("cadence_category_feasibility_runtime_is_invalid")
+        object.__setattr__(self, "infeasibility_codes", tuple(sorted(set(self.infeasibility_codes))))
+
+
 def _category_from_modality(modality: TrainingModality | None) -> PhysicalCategory | None:
     if modality in {TrainingModality.ERG, TrainingModality.ON_WATER}:
         return PhysicalCategory.ROWING_SPECIFIC
@@ -238,6 +259,77 @@ def _dates(start: date, end: date) -> tuple[date, ...]:
 def _calendar_week(day: date) -> tuple[int, int]:
     iso = day.isocalendar()
     return iso.year, iso.week
+
+
+def evaluate_cadence_category_feasibility(
+    segment: TrainingAllocationSegment,
+    capacity: Iterable[DailyTrainingCapacity],
+    *,
+    authorities: Iterable[AuthoritativeComponentFact] = (),
+    preferences: CombinedDayPreferences = CombinedDayPreferences(),
+    restrictions: Mapping[date, tuple[str, ...]] | None = None,
+    materialization_context: MaterializationContext = MaterializationContext(),
+    current_training_state: CurrentTrainingState | None = None,
+) -> CadenceCategoryFeasibility:
+    """Ask whether one exact R3 category partition can become dated work.
+
+    The query deliberately delegates to the normal R4 component placer with
+    an empty R6 quality plan, so its ordinary-rowing envelope decisions come
+    from the same R5 preflight used by real placement.  It neither mutates an
+    allocation nor creates a second prescription; R3 consumes this evidence
+    only when deciding whether its own category partition is viable.
+    """
+    started = perf_counter()
+    segment_id = allocation_segment_id(segment)
+    allocation = TrainingAllocation(
+        planning_start=segment.start_date,
+        planning_end=segment.end_date,
+        segments=(segment,),
+        recommended_physical_minutes=segment.recommended_physical_minutes,
+        rowing_specific_minutes=segment.rowing_specific_minutes,
+        strength_minutes=segment.strength_minutes,
+        general_aerobic_minutes=segment.general_aerobic_minutes,
+        other_physical_minutes=segment.other_physical_minutes,
+        recommended_strength_exposures=segment.recommended_strength_exposures,
+        rationale_codes=("cadence_category_feasibility_query",),
+        confidence="high",
+    )
+    # R6 has no authority to remove ordinary rowing.  An explicitly empty
+    # plan invokes R4's exact residual-rowing path without inventing quality.
+    ordinary_plan = RowingQualityPlan(
+        allocation_segment_id=segment_id,
+        segment_start=segment.start_date,
+        segment_end=segment.end_date,
+        rowing_specific_minutes=segment.rowing_specific_minutes,
+        low_intensity_guard_minutes=0,
+        requirements=(),
+        dominant_focus="ordinary_aerobic",
+        secondary_focus=None,
+        performance_confidence="high",
+        policy_version="cadence-category-feasibility-v1",
+        performance_profile_version="cadence-category-feasibility-v1",
+        basis_fingerprint=segment_id,
+    )
+    relevant_authorities = tuple(
+        item for item in authorities
+        if segment.start_date <= item.date <= segment.end_date
+    )
+    result = generate_training_days_v3(
+        allocation,
+        tuple(item for item in capacity if segment.start_date <= item.date <= segment.end_date),
+        authorities=relevant_authorities,
+        preferences=preferences,
+        restrictions=restrictions,
+        rowing_quality_plans=(ordinary_plan,),
+        materialization_context=materialization_context,
+        current_training_state=current_training_state,
+    )
+    return CadenceCategoryFeasibility(
+        allocation_segment_id=segment_id,
+        feasible=result.success,
+        runtime_ms=round((perf_counter() - started) * 1000, 3),
+        infeasibility_codes=tuple(item.code for item in result.infeasibilities),
+    )
 
 
 def _combined_days_in_week(days: Mapping[date, list[TrainingComponent]], candidate: date) -> int:

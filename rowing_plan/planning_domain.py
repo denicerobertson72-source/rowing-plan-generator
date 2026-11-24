@@ -376,6 +376,14 @@ class TrainingAllocationSegment:
     constraints: tuple[str, ...] = ()
     other_provenance: tuple[str, ...] = ()
     general_aerobic_capabilities: tuple[GeneralAerobicModalityCapability, ...] = ()
+    # R3 normally preserves its first category partition.  These fields make
+    # the exceptional, feasibility-authorized rowing -> general-aerobic
+    # reconciliation observable without creating another dose authority.
+    category_reconciliation_minutes: int = 0
+    category_reconciliation_reason: str | None = None
+    category_feasibility_original: bool | None = None
+    category_feasibility_final: bool | None = None
+    category_feasibility_runtime_ms: float | None = None
 
     def __post_init__(self) -> None:
         values = (
@@ -395,6 +403,12 @@ class TrainingAllocationSegment:
             raise ValueError("training_allocation_segment_strength_minutes_must_match_exposures")
         if self.other_physical_minutes and (not self.other_provenance or not self.rationale_codes):
             raise ValueError("training_allocation_segment_other_requires_provenance_and_rationale")
+        if self.category_reconciliation_minutes < 0 or self.category_reconciliation_minutes > self.general_aerobic_minutes:
+            raise ValueError("training_allocation_segment_category_reconciliation_is_invalid")
+        if self.category_reconciliation_minutes and not self.category_reconciliation_reason:
+            raise ValueError("training_allocation_segment_category_reconciliation_reason_is_required")
+        if self.category_feasibility_runtime_ms is not None and self.category_feasibility_runtime_ms < 0:
+            raise ValueError("training_allocation_segment_category_feasibility_runtime_is_invalid")
         if (
             self.rowing_specific_minutes + self.strength_minutes
             + self.general_aerobic_minutes + self.other_physical_minutes

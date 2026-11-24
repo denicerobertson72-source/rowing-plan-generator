@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from .planning_domain import (
     CurrentTrainingSource,
@@ -376,12 +376,145 @@ def allocate_training_dose(
     return TrainingAllocationResult(allocation=allocation)
 
 
+def reconcile_training_allocation_for_cadence_feasibility(
+    allocation: TrainingAllocation,
+    *,
+    capacity: Iterable[Any],
+    preferences: Any = None,
+    authorities: Iterable[Any] = (),
+    restrictions: Mapping[date, tuple[str, ...]] | None = None,
+    materialization_context: Any = None,
+    current_training_state: CurrentTrainingState | None = None,
+) -> TrainingAllocationResult:
+    """Keep R3's category partition unless actual dated envelopes reject it.
+
+    R2 remains the total-dose authority.  This is the sole narrowly-scoped
+    exception to R3's original category split: in non-race/non-recovery
+    general-preparation context, R3 may exchange a bounded amount of rowing
+    residual for athlete-approved general aerobic work when, and only when,
+    the original partition cannot be placed under R4/R5's real envelopes.
+    """
+    # Local import avoids making the allocation module depend on R4 at import
+    # time while ensuring the query uses the one actual envelope implementation.
+    from .materialization_v3 import MaterializationContext
+    from .training_days import (
+        CombinedDayPreferences,
+        evaluate_cadence_category_feasibility,
+    )
+
+    capacity = tuple(capacity)
+    preferences = preferences if preferences is not None else CombinedDayPreferences()
+    materialization_context = materialization_context or MaterializationContext()
+    authorities = tuple(authorities)
+    reconciled: list[TrainingAllocationSegment] = []
+
+    for segment in allocation.segments:
+        original = evaluate_cadence_category_feasibility(
+            segment, capacity, authorities=authorities, preferences=preferences,
+            restrictions=restrictions, materialization_context=materialization_context,
+            current_training_state=current_training_state,
+        )
+        if original.feasible:
+            reconciled.append(replace(
+                segment,
+                category_feasibility_original=True,
+                category_feasibility_final=True,
+                category_feasibility_runtime_ms=original.runtime_ms,
+            ))
+            continue
+
+        # This policy uses the existing 30 min / 7 d general-preparation
+        # latitude as a *maximum*, but now permits it to solve a demonstrated
+        # envelope infeasibility even when R3's ordinary composition initially
+        # assigned none of that latitude to cross-training.
+        days = (segment.end_date - segment.start_date).days + 1
+        phase_code = next(
+            (code.removeprefix("season_phase:") for code in segment.constraints if code.startswith("season_phase:")),
+            "general_preparation",
+        )
+        phase_allows_reconciliation = (
+            phase_code in {"general_preparation", "foundation_orientation", "aerobic_development"}
+            and "race_specific_context" not in segment.constraints
+            and "recovery_constraint" not in segment.constraints
+            and not any(code in {"r2_status:recovery", "r2_status:taper"} for code in segment.constraints)
+        )
+        latitude = round(GENERAL_PREP_CROSS_TRAINING_LATITUDE_MINUTES_PER_7D * days / 7)
+        maximum_transfer = min(
+            max(0, latitude - segment.general_aerobic_minutes),
+            max(0, segment.rowing_specific_minutes - segment.rowing_specific_floor_minutes),
+        )
+        selected: tuple[TrainingAllocationSegment, Any] | None = None
+        if phase_allows_reconciliation and segment.general_aerobic_capabilities:
+            for transfer in range(1, maximum_transfer + 1):
+                candidate = replace(
+                    segment,
+                    rowing_specific_minutes=segment.rowing_specific_minutes - transfer,
+                    general_aerobic_minutes=segment.general_aerobic_minutes + transfer,
+                    category_reconciliation_minutes=transfer,
+                    category_reconciliation_reason="cadence_envelope_feasibility_rowing_to_general_aerobic",
+                    category_feasibility_original=False,
+                )
+                feasibility = evaluate_cadence_category_feasibility(
+                    candidate, capacity, authorities=authorities, preferences=preferences,
+                    restrictions=restrictions, materialization_context=materialization_context,
+                    current_training_state=current_training_state,
+                )
+                if feasibility.feasible:
+                    selected = (candidate, feasibility)
+                    break
+        if selected is None:
+            return TrainingAllocationResult(infeasibility=TrainingAllocationInfeasibility(
+                code="cadence_category_envelope_infeasible",
+                segment_start=segment.start_date,
+                segment_end=segment.end_date,
+                required_strength_minutes=segment.strength_minutes,
+                rowing_specific_floor_minutes=segment.rowing_specific_floor_minutes,
+                recommended_physical_minutes=segment.recommended_physical_minutes,
+                shortfall_minutes=1,
+                conflicting_constraint_provenance=tuple(sorted({
+                    "r4_r5_category_envelope",
+                    *original.infeasibility_codes,
+                    *(("no_eligible_general_aerobic_modality",) if not segment.general_aerobic_capabilities else ()),
+                })),
+            ))
+        candidate, final = selected
+        reconciled.append(replace(
+            candidate,
+            rationale_codes=(*candidate.rationale_codes, "category_reconciliation:cadence_envelope_feasibility"),
+            category_feasibility_final=True,
+            category_feasibility_runtime_ms=round(original.runtime_ms + final.runtime_ms, 3),
+        ))
+
+    ordered = tuple(reconciled)
+    return TrainingAllocationResult(allocation=TrainingAllocation(
+        planning_start=allocation.planning_start,
+        planning_end=allocation.planning_end,
+        segments=ordered,
+        recommended_physical_minutes=sum(item.recommended_physical_minutes for item in ordered),
+        rowing_specific_minutes=sum(item.rowing_specific_minutes for item in ordered),
+        strength_minutes=sum(item.strength_minutes for item in ordered),
+        general_aerobic_minutes=sum(item.general_aerobic_minutes for item in ordered),
+        other_physical_minutes=sum(item.other_physical_minutes for item in ordered),
+        recommended_strength_exposures=sum(item.recommended_strength_exposures for item in ordered),
+        rationale_codes=tuple(code for item in ordered for code in item.rationale_codes),
+        evidence_sources=allocation.evidence_sources,
+        constraints=tuple(code for item in ordered for code in item.constraints),
+        confidence=allocation.confidence,
+        policy_version=allocation.policy_version,
+    ))
+
+
 def generate_training_allocation_v3(
     profile: Mapping[str, Any], *, planning_date: date,
     recommended_dose: RecommendedTrainingDose | None = None,
     prior_plan: Mapping[str, Any] | None = None,
     history_actuals: Mapping[str, Mapping[str, Any]] | None = None,
     locked_sessions=(), future_placements=(),
+    cadence_capacity: Iterable[Any] | None = None,
+    cadence_preferences: Any = None,
+    cadence_authorities: Iterable[Any] = (),
+    cadence_restrictions: Mapping[date, tuple[str, ...]] | None = None,
+    cadence_materialization_context: Any = None,
 ) -> TrainingAllocationResult:
     """Clear R3 entry point; it consumes R2 directly and no legacy targets."""
     if recommended_dose is None:
@@ -402,4 +535,15 @@ def generate_training_allocation_v3(
         recent_actuals_sufficient=sufficient, observation_window_days=21,
     )
     state = reduce_physiological_state(context, profile=profile)
-    return allocate_training_dose(recommended_dose, profile=profile, current_state=current, state=state)
+    result = allocate_training_dose(recommended_dose, profile=profile, current_state=current, state=state)
+    if not result.success or cadence_capacity is None:
+        return result
+    return reconcile_training_allocation_for_cadence_feasibility(
+        result.allocation,
+        capacity=cadence_capacity,
+        preferences=cadence_preferences,
+        authorities=cadence_authorities,
+        restrictions=cadence_restrictions,
+        materialization_context=cadence_materialization_context,
+        current_training_state=current,
+    )

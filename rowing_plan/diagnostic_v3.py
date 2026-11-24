@@ -14,7 +14,10 @@ from .recommended_training_dose import r2_baseline_evidence, recent_actual_histo
 from .generation_history import recover_generation_history
 from .replacement_plan_v3 import generate_recommended_training_dose_v3
 from .rowing_quality_v3 import RowingQualityPlanningContext, generate_rowing_quality_plan
-from .training_allocation import generate_training_allocation_v3, weekly_evidence_for_allocation
+from .training_allocation import (
+    generate_training_allocation_v3,
+    weekly_evidence_for_allocation,
+)
 from .planning_domain import PhysicalCategory, TrainingModality
 from .training_days import CombinedDayPreferences, DailyTrainingCapacity, generate_training_days_v3
 
@@ -161,12 +164,35 @@ def generate_v3_diagnostic_report(
         future_placements=future_placements,
     )
     record_timing("r2_recommended_dose", r2_started)
+    capacity = normalize_available_training_capacity(profile)
+    rowing_modalities = _rowing_modalities(capacity)
+    preferences = _diagnostic_preferences(profile)
+    by_weekday = {item.day_key: item for item in capacity.days}
+    days = tuple(
+        DailyTrainingCapacity(
+            r2.planning_start + timedelta(days=index),
+            by_weekday[(r2.planning_start + timedelta(days=index)).strftime("%A").lower()].usable_minutes,
+            available=by_weekday[(r2.planning_start + timedelta(days=index)).strftime("%A").lower()].available,
+            fixed_rest=by_weekday[(r2.planning_start + timedelta(days=index)).strftime("%A").lower()].fixed_rest,
+        )
+        for index in range((r2.planning_end - r2.planning_start).days + 1)
+    )
     r3_started = perf_counter()
-    r3 = generate_training_allocation_v3(
+    r3_result = generate_training_allocation_v3(
         profile, planning_date=planning_date, recommended_dose=r2,
         prior_plan=prior_plan, history_actuals=history_actuals,
         locked_sessions=locked_sessions, future_placements=future_placements,
-    ).allocation
+        cadence_capacity=days,
+        cadence_preferences=preferences,
+        cadence_materialization_context=MaterializationContext(
+            phase_id="general_preparation",
+            experience=str(profile.get("athlete", {}).get("experience_level", "intermediate")),
+            available_rowing_modalities=rowing_modalities,
+        ),
+    )
+    if r3_result.allocation is None:
+        raise ValueError("r3_cadence_category_envelope_infeasible")
+    r3 = r3_result.allocation
     record_timing("r3_allocation", r3_started)
     normalization_started = perf_counter()
     normalized = normalize_planning_inputs(
@@ -184,19 +210,6 @@ def generate_v3_diagnostic_report(
         profile, current, normalized.historical_facts, planning_start=r2.planning_start,
     )
     record_timing("current_training_history_normalization", normalization_started)
-    capacity = normalize_available_training_capacity(profile)
-    rowing_modalities = _rowing_modalities(capacity)
-    preferences = _diagnostic_preferences(profile)
-    by_weekday = {item.day_key: item for item in capacity.days}
-    days = tuple(
-        DailyTrainingCapacity(
-            r2.planning_start + timedelta(days=index),
-            by_weekday[(r2.planning_start + timedelta(days=index)).strftime("%A").lower()].usable_minutes,
-            available=by_weekday[(r2.planning_start + timedelta(days=index)).strftime("%A").lower()].available,
-            fixed_rest=by_weekday[(r2.planning_start + timedelta(days=index)).strftime("%A").lower()].fixed_rest,
-        )
-        for index in range((r2.planning_end - r2.planning_start).days + 1)
-    )
     performance_started = perf_counter()
     performance = build_athlete_performance_profile(profile, as_of=r2.planning_start)
     limiter = derive_performance_limiter(performance, coach_focus=profile.get("preferences", {}).get("development_focus"))
@@ -274,6 +287,29 @@ def generate_v3_diagnostic_report(
         "rowing_modalities": [item.value for item in rowing_modalities],
         "current_training": asdict(current), "r2_baseline_evidence": baseline_evidence,
         "r3_weekly_evidence": weekly_evidence_for_allocation(profile, current), "r2": asdict(r2), "r3": asdict(r3),
+        "r3_cadence_feasibility": [
+            {
+                "allocation_segment_id": f"r3:{segment.start_date.isoformat()}:{segment.end_date.isoformat()}",
+                "original": {
+                    "rowing_specific_minutes": segment.rowing_specific_minutes + segment.category_reconciliation_minutes,
+                    "general_aerobic_minutes": segment.general_aerobic_minutes - segment.category_reconciliation_minutes,
+                    "feasible": segment.category_feasibility_original,
+                },
+                "final": {
+                    "rowing_specific_minutes": segment.rowing_specific_minutes,
+                    "general_aerobic_minutes": segment.general_aerobic_minutes,
+                    "feasible": segment.category_feasibility_final,
+                },
+                "minutes_transferred_rowing_to_general_aerobic": segment.category_reconciliation_minutes,
+                "reason": segment.category_reconciliation_reason,
+                "eligible_general_aerobic_modalities": [item.modality.value for item in segment.general_aerobic_capabilities],
+                "protected_rowing_floor_minutes": segment.rowing_specific_floor_minutes,
+                "strength_minutes": segment.strength_minutes,
+                "strength_exposures": segment.recommended_strength_exposures,
+                "runtime_ms": segment.category_feasibility_runtime_ms,
+            }
+            for segment in r3.segments
+        ],
         "r6": [asdict(item) for item in quality], "r4": r4, "r4_status": r4_status,
         "r5": r5, "calendar": calendar, "workouts": workouts,
         "conservation": {"r2": r2_total, "r3": r3_total, "r4": r4_total, "r5": r5_total, "pass": r2_total == r3_total == r4_total == r5_total},
@@ -304,7 +340,7 @@ def generate_v3_diagnostic_report(
 _PUBLIC_DIAGNOSTIC_KEYS = (
     "planning_date", "planning_end", "available_capacity_minutes",
     "planning_goals", "training_preferences", "rowing_modalities", "r2_baseline_evidence", "r3_weekly_evidence",
-    "current_training", "r2", "r3", "r6", "r4_status", "calendar", "workouts",
+    "current_training", "r2", "r3", "r3_cadence_feasibility", "r6", "r4_status", "calendar", "workouts",
     "conservation", "structural_validation", "plausibility_reviews",
     "training_plausibility", "persisted_input_audit", "diagnostic_timing_ms",
     "diagnostic_counts", "human_readable",
