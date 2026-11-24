@@ -13,16 +13,26 @@ PRODUCTION_PWA_ORIGIN = "https://rowing-plan-pwa.vercel.app"
 class _ReadOnlyDiagnosticRepository:
     instances = []
 
-    def __init__(self, database_url):
+    def __init__(self, database_url, *, diagnostic_reference=None):
         self.database_url = database_url
+        self.diagnostic_reference = diagnostic_reference
         self.calls = []
         self.transaction_count = 0
         type(self).instances.append(self)
 
     @contextmanager
-    def read_transaction(self):
+    def read_transaction(self, *, checkpoint=None):
         self.transaction_count += 1
-        yield self
+        if checkpoint is not None:
+            checkpoint("db_connect_complete", 1.0)
+            checkpoint("readonly_begin_start", 0.0)
+            checkpoint("readonly_begin_complete", 1.0)
+        try:
+            yield self
+        finally:
+            if checkpoint is not None:
+                checkpoint("rollback_start", 0.0)
+                checkpoint("rollback_complete", 1.0)
 
     def get(self, athlete_id):
         self.calls.append(("get", athlete_id))
@@ -95,11 +105,15 @@ def test_persisted_v3_diagnostic_uses_only_read_repository_and_wrapper(monkeypat
     def no_normal_postgres_initialization(*args, **kwargs):
         raise AssertionError("normal_postgres_repositories_must_not_initialize")
 
-    def diagnostic_wrapper(repository, athlete_id, *, planning_date, profile=None, stage_timings_ms=None):
+    def diagnostic_wrapper(repository, athlete_id, *, planning_date, profile=None, stage_timings_ms=None, stage_checkpoint=None):
         wrapper_calls.append((repository, athlete_id, planning_date, profile))
         if stage_timings_ms is not None:
             stage_timings_ms["persisted_snapshot_load"] = 1.0
             stage_timings_ms["report_generation"] = 2.0
+        if stage_checkpoint is not None:
+            stage_checkpoint("snapshot_complete", 1.0)
+            stage_checkpoint("report_start", 0.0)
+            stage_checkpoint("report_complete", 2.0)
         return expected
 
     monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://configured")
@@ -118,8 +132,38 @@ def test_persisted_v3_diagnostic_uses_only_read_repository_and_wrapper(monkeypat
     assert repository.calls == [("get", "athlete-1"), ("athlete_owner", "athlete-1")]
     assert repository.transaction_count == 1
     assert wrapper_calls == [(repository, "athlete-1", date(2026, 11, 22), {"athlete": {"display_name": "Diagnostic athlete"}})]
-    assert "persisted_v3_diagnostic_timing reference=r9a_" in caplog.text
+    assert "persisted_v3_checkpoint reference=r9a_" in caplog.text
+    assert "stage=request_start" in caplog.text
+    assert "stage=request_complete" in caplog.text
     assert "Diagnostic athlete" not in caplog.text
+
+
+def test_persisted_v3_diagnostic_checkpoint_order_is_immediate_and_sanitized(monkeypatch, caplog):
+    _ReadOnlyDiagnosticRepository.instances.clear()
+    caplog.set_level("INFO", logger="services.api.app.main")
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://configured")
+    monkeypatch.setenv("REPLACEMENT_PLANNER_LIVE_ATHLETE_IDS", "athlete-1")
+    monkeypatch.setattr(main, "DiagnosticPostgresReadRepository", _ReadOnlyDiagnosticRepository)
+
+    def diagnostic_wrapper(*args, stage_checkpoint=None, **kwargs):
+        stage_checkpoint("snapshot_complete", 2.0)
+        stage_checkpoint("report_start", 0.0)
+        stage_checkpoint("report_complete", 3.0)
+        return {"human_readable": "R9A report"}
+
+    monkeypatch.setattr(main, "generate_persisted_v3_diagnostic_report", diagnostic_wrapper)
+    response = TestClient(app).get("/api/v1/athletes/athlete-1/diagnostics/v3-persisted")
+
+    assert response.status_code == 200
+    checkpoints = [record.message for record in caplog.records if record.message.startswith("persisted_v3_checkpoint")]
+    stages = [entry.split("stage=", 1)[1].split()[0] for entry in checkpoints]
+    assert stages == [
+        "request_start", "db_connect_start", "db_connect_complete",
+        "readonly_begin_start", "readonly_begin_complete", "ownership_start",
+        "ownership_complete", "snapshot_start", "snapshot_complete", "report_start",
+        "report_complete", "rollback_start", "rollback_complete", "request_complete",
+    ]
+    assert all("configured" not in entry and "Diagnostic athlete" not in entry for entry in checkpoints)
 
 
 def _production_pwa_client():
@@ -221,6 +265,39 @@ def test_persisted_v3_diagnostic_connection_failure_is_sanitized(monkeypatch, ca
     detail = response.json()["detail"]
     assert detail["error_code"] == "persisted_v3_diagnostic_failed"
     assert detail["failure_stage"] == "ownership_lookup"
+    assert detail["error_id"].startswith("r9a_")
+    assert "secret" not in response.text
+    assert "secret" not in caplog.text
+
+
+def test_persisted_v3_diagnostic_transaction_entry_failure_is_sanitized(monkeypatch, caplog):
+    class FailingTransactionRepository(_ReadOnlyDiagnosticRepository):
+        @contextmanager
+        def read_transaction(self, *, checkpoint=None):
+            raise TimeoutError("postgresql://secret@example.invalid/connect_timeout")
+            yield self
+
+    caplog.set_level("ERROR", logger="services.api.app.main")
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://configured")
+    monkeypatch.setenv("REPLACEMENT_PLANNER_LIVE_ATHLETE_IDS", "athlete-1")
+    monkeypatch.setattr(main, "DiagnosticPostgresReadRepository", FailingTransactionRepository)
+    app.dependency_overrides[main.current_user_id] = lambda: "development-user"
+    client, cors, prior_origins = _production_pwa_client()
+    try:
+        response = client.get(
+            "/api/v1/athletes/athlete-1/diagnostics/v3-persisted",
+            headers={"Origin": PRODUCTION_PWA_ORIGIN, "Authorization": "Bearer test"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        cors.kwargs["allow_origins"] = prior_origins
+        app.middleware_stack = None
+
+    assert response.status_code == 500
+    assert response.headers["access-control-allow-origin"] == PRODUCTION_PWA_ORIGIN
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "persisted_v3_diagnostic_failed"
+    assert detail["failure_stage"] == "diagnostic_db_connect"
     assert detail["error_id"].startswith("r9a_")
     assert "secret" not in response.text
     assert "secret" not in caplog.text

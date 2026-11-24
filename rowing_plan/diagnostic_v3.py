@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from time import perf_counter
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .materialization_v3 import MaterializationContext, materialize_training_days_v3
 from .performance_profile import build_athlete_performance_profile, derive_performance_limiter, derive_training_focus
@@ -226,6 +226,7 @@ def generate_persisted_v3_diagnostic_report(
     repository: Any, athlete_id: str, *, planning_date: date,
     profile: Mapping[str, Any] | None = None,
     stage_timings_ms: dict[str, float] | None = None,
+    stage_checkpoint: Callable[[str, float], None] | None = None,
 ) -> dict[str, Any]:
     """Run the pure diagnostic from the same persisted-history inputs as V3.
 
@@ -237,6 +238,8 @@ def generate_persisted_v3_diagnostic_report(
     persisted = load_persisted_diagnostic_input(repository, athlete_id, profile=profile)
     if stage_timings_ms is not None:
         stage_timings_ms["persisted_snapshot_load"] = round((perf_counter() - snapshot_started) * 1000, 3)
+    if stage_checkpoint is not None:
+        stage_checkpoint("snapshot_complete", (perf_counter() - snapshot_started) * 1000)
     previous = (
         {"plan_id": persisted.prior_plan_id, "plan": persisted.prior_plan}
         if persisted.prior_plan_id and persisted.prior_plan else None
@@ -245,6 +248,8 @@ def generate_persisted_v3_diagnostic_report(
         previous, lambda plan_id: persisted.workout_logs_by_plan.get(plan_id, ()),
     )
     report_started = perf_counter()
+    if stage_checkpoint is not None:
+        stage_checkpoint("report_start", 0.0)
     report = generate_v3_diagnostic_report(
         persisted.profile, planning_date=planning_date,
         prior_plan=persisted.prior_plan, history_actuals=actuals,
@@ -252,6 +257,8 @@ def generate_persisted_v3_diagnostic_report(
     )
     if stage_timings_ms is not None:
         stage_timings_ms["report_generation"] = round((perf_counter() - report_started) * 1000, 3)
+    if stage_checkpoint is not None:
+        stage_checkpoint("report_complete", (perf_counter() - report_started) * 1000)
     report["persisted_input_audit"] = {
         "prior_plan_id": persisted.prior_plan_id,
         "actual_plan_ids": actual_plan_ids,

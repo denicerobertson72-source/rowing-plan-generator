@@ -1,15 +1,29 @@
 """Persistence boundaries with a small relational development implementation."""
 from __future__ import annotations
 import json
+import logging
 import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from time import perf_counter
+from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 REVISION_KEY = "_profile_revision"
+logger = logging.getLogger(__name__)
+
+
+def _flush_diagnostic_logs() -> None:
+    current: logging.Logger | None = logger
+    seen: set[int] = set()
+    while current is not None:
+        for handler in current.handlers:
+            if id(handler) not in seen:
+                handler.flush()
+                seen.add(id(handler))
+        current = current.parent if current.propagate else None
 
 def profile_revision(profile: dict[str, Any]) -> int:
     try:
@@ -377,26 +391,26 @@ class _DiagnosticPostgresReadTransaction:
         self._cursor = cursor
 
     def get(self, athlete_id: str) -> dict[str, Any] | None:
-        rows = self._repository._select(self._cursor, "SELECT profile_json FROM athletes WHERE athlete_id=%s", (athlete_id,))
+        rows = self._repository._timed_select("get", self._cursor, "SELECT profile_json FROM athletes WHERE athlete_id=%s", (athlete_id,))
         return rows[0]["profile_json"] if rows else None
 
     def athlete_owner(self, athlete_id: str) -> str | None:
-        rows = self._repository._select(self._cursor, "SELECT user_id FROM athletes WHERE athlete_id=%s", (athlete_id,))
+        rows = self._repository._timed_select("athlete_owner", self._cursor, "SELECT user_id FROM athletes WHERE athlete_id=%s", (athlete_id,))
         return rows[0]["user_id"] if rows else None
 
     def latest_plan_for_athlete(self, athlete_id: str) -> dict[str, Any] | None:
-        rows = self._repository._select(self._cursor, "SELECT plan_id, athlete_id, version_number, created_at, plan_json FROM plan_versions WHERE athlete_id=%s ORDER BY version_number DESC LIMIT 1", (athlete_id,))
+        rows = self._repository._timed_select("latest_plan_for_athlete", self._cursor, "SELECT plan_id, athlete_id, version_number, created_at, plan_json FROM plan_versions WHERE athlete_id=%s ORDER BY version_number DESC LIMIT 1", (athlete_id,))
         if not rows:
             return None
         row = rows[0]
         return {"plan_id": row["plan_id"], "athlete_id": row["athlete_id"], "version_number": row["version_number"], "created_at": row["created_at"].isoformat(), "plan": row["plan_json"]}
 
     def logs_for_plan(self, plan_id: str) -> list[dict[str, Any]]:
-        rows = self._repository._select(self._cursor, "SELECT log_id, session_key, created_at, payload_json FROM workout_logs WHERE plan_id=%s ORDER BY created_at DESC", (plan_id,))
+        rows = self._repository._timed_select("logs_for_plan", self._cursor, "SELECT log_id, session_key, created_at, payload_json FROM workout_logs WHERE plan_id=%s ORDER BY created_at DESC", (plan_id,))
         return [{"log_id": row["log_id"], "session_key": row["session_key"], "created_at": row["created_at"].isoformat(), "payload": row["payload_json"]} for row in rows]
 
     def weekly_overrides(self, athlete_id: str) -> list[dict[str, Any]]:
-        rows = self._repository._select(self._cursor, "SELECT override_id, created_at, payload_json FROM weekly_overrides WHERE athlete_id=%s ORDER BY created_at DESC", (athlete_id,))
+        rows = self._repository._timed_select("weekly_overrides", self._cursor, "SELECT override_id, created_at, payload_json FROM weekly_overrides WHERE athlete_id=%s ORDER BY created_at DESC", (athlete_id,))
         return [{"override_id": row["override_id"], "created_at": row["created_at"].isoformat(), "payload": row["payload_json"]} for row in rows]
 
 
@@ -408,12 +422,14 @@ class DiagnosticPostgresReadRepository:
     read-only transaction for every diagnostic operation.
     """
 
-    def __init__(self, database_url: str) -> None:
+    def __init__(self, database_url: str, *, diagnostic_reference: str | None = None) -> None:
         try:
             import psycopg  # noqa: F401
         except ImportError as error:
             raise RuntimeError("psycopg is required when SUPABASE_DB_URL is set") from error
         self._database_url = database_url
+        self._diagnostic_reference = diagnostic_reference
+        self._query_sequences: dict[str, int] = {}
 
     def _connect(self):
         import psycopg
@@ -424,14 +440,42 @@ class DiagnosticPostgresReadRepository:
         )
 
     @contextmanager
-    def read_transaction(self):
+    def read_transaction(self, *, checkpoint: Callable[[str, float], None] | None = None):
         """Use an operation-scoped read-only transaction without pool state."""
-        with self._connect() as db, db.cursor() as cursor:
-            cursor.execute("BEGIN TRANSACTION READ ONLY")
-            try:
-                yield _DiagnosticPostgresReadTransaction(self, cursor)
-            finally:
-                cursor.execute("ROLLBACK")
+        connect_started = perf_counter()
+        with self._connect() as db:
+            if checkpoint is not None:
+                checkpoint("db_connect_complete", (perf_counter() - connect_started) * 1000)
+            with db.cursor() as cursor:
+                if checkpoint is not None:
+                    checkpoint("readonly_begin_start", 0.0)
+                begin_started = perf_counter()
+                cursor.execute("BEGIN TRANSACTION READ ONLY")
+                if checkpoint is not None:
+                    checkpoint("readonly_begin_complete", (perf_counter() - begin_started) * 1000)
+                try:
+                    yield _DiagnosticPostgresReadTransaction(self, cursor)
+                finally:
+                    if checkpoint is not None:
+                        checkpoint("rollback_start", 0.0)
+                    rollback_started = perf_counter()
+                    cursor.execute("ROLLBACK")
+                    if checkpoint is not None:
+                        checkpoint("rollback_complete", (perf_counter() - rollback_started) * 1000)
+
+    def _timed_select(self, query: str, cursor, statement: str, parameters: tuple[Any, ...]):
+        started = perf_counter()
+        try:
+            return self._select(cursor, statement, parameters)
+        finally:
+            sequence = self._query_sequences.get(query, 0) + 1
+            self._query_sequences[query] = sequence
+            logger.info(
+                "persisted_v3_query reference=%s query=%s sequence=%s elapsed_ms=%s",
+                self._diagnostic_reference or "unscoped", query, sequence,
+                round((perf_counter() - started) * 1000, 3),
+            )
+            _flush_diagnostic_logs()
 
     @staticmethod
     def _select(cursor, statement: str, parameters: tuple[Any, ...]):

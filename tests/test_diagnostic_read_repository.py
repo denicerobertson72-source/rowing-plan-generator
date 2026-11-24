@@ -120,6 +120,35 @@ def test_one_read_transaction_reuses_one_connection_for_the_complete_diagnostic_
     assert connection.closed is True
 
 
+def test_diagnostic_query_timings_are_sanitized_and_sequence_repeated_log_reads(monkeypatch, caplog):
+    cursor = _Cursor()
+    connection = _Connection(cursor)
+    repository = DiagnosticPostgresReadRepository(
+        "postgresql://secret@example.invalid/diagnostic",
+        diagnostic_reference="r9a_query_test",
+    )
+    monkeypatch.setattr(repository, "_connect", lambda: connection)
+    caplog.set_level("INFO", logger="services.api.app.repositories")
+
+    with repository.read_transaction() as transaction:
+        transaction.get("athlete-secret")
+        transaction.athlete_owner("athlete-secret")
+        transaction.latest_plan_for_athlete("athlete-secret")
+        transaction.logs_for_plan("plan-secret")
+        transaction.logs_for_plan("plan-secret-2")
+        transaction.weekly_overrides("athlete-secret")
+
+    messages = [record.message for record in caplog.records if record.message.startswith("persisted_v3_query")]
+    assert len(messages) == 6
+    assert "reference=r9a_query_test query=get sequence=1 elapsed_ms=" in messages[0]
+    assert "query=athlete_owner sequence=1 elapsed_ms=" in messages[1]
+    assert "query=latest_plan_for_athlete sequence=1 elapsed_ms=" in messages[2]
+    assert "query=logs_for_plan sequence=1 elapsed_ms=" in messages[3]
+    assert "query=logs_for_plan sequence=2 elapsed_ms=" in messages[4]
+    assert "query=weekly_overrides sequence=1 elapsed_ms=" in messages[5]
+    assert all("secret" not in message for message in messages)
+
+
 def test_diagnostic_postgres_repository_rejects_non_select_statements():
     class Cursor:
         def execute(self, statement, parameters):

@@ -744,6 +744,18 @@ def unexpected_generation_error(error: Exception, profile: dict, athlete_id: str
     return HTTPException(500, detail={"error_code":"plan_generation_failed","error_id":error_id})
 
 
+def _flush_persisted_v3_diagnostic_logs() -> None:
+    """Flush handlers now so an in-flight request leaves a stage breadcrumb."""
+    current: logging.Logger | None = logger
+    seen: set[int] = set()
+    while current is not None:
+        for handler in current.handlers:
+            if id(handler) not in seen:
+                handler.flush()
+                seen.add(id(handler))
+        current = current.parent if current.propagate else None
+
+
 def persisted_v3_diagnostic_error(stage: str, error: Exception, *, error_id: str | None = None) -> HTTPException:
     """Expose a safe reference for a read-only diagnostic failure.
 
@@ -754,16 +766,33 @@ def persisted_v3_diagnostic_error(stage: str, error: Exception, *, error_id: str
     """
     error_id = error_id or f"r9a_{token_urlsafe(6).replace('-', '').replace('_', '')}"
     trace = extract_tb(error.__traceback__)
-    source = f"{trace[-1].filename}:{trace[-1].lineno}" if trace else "unknown"
+    source_file = trace[-1].filename if trace else "unknown"
+    source_line = trace[-1].lineno if trace else "unknown"
     logger.error(
-        "persisted_v3_diagnostic_failed reference=%s failure_stage=%s exception_class=%s source=%s",
-        error_id, stage, type(error).__name__, source,
+        "persisted_v3_diagnostic_failed reference=%s failure_stage=%s exception_class=%s source_file=%s source_line=%s",
+        error_id, stage, type(error).__name__, source_file, source_line,
     )
+    _flush_persisted_v3_diagnostic_logs()
     return HTTPException(500, detail={
         "error_code": "persisted_v3_diagnostic_failed",
         "error_id": error_id,
         "failure_stage": stage,
     })
+
+
+def persisted_v3_diagnostic_checkpoint(reference: str, stage: str, *, elapsed_ms: float | None = None, total_ms: float | None = None) -> None:
+    """Emit a deliberately small, synchronous R9A progress marker.
+
+    The explicit handler flush keeps a stage breadcrumb available if a later
+    operation stalls or the platform interrupts the request.
+    """
+    fields = [f"persisted_v3_checkpoint reference={reference}", f"stage={stage}"]
+    if elapsed_ms is not None:
+        fields.append(f"elapsed_ms={round(elapsed_ms, 3)}")
+    if total_ms is not None:
+        fields.append(f"total_ms={round(total_ms, 3)}")
+    logger.info(" ".join(fields))
+    _flush_persisted_v3_diagnostic_logs()
 
 
 def log_persisted_v3_diagnostic_timings(reference: str, timings_ms: dict[str, float]) -> None:
@@ -997,25 +1026,38 @@ def persisted_v3_diagnostic(athlete_id: str, user_id: str = Depends(current_user
     timings_ms: dict[str, float] = {}
     total_started=perf_counter()
     failure_stage="read_repository_initialization"
+
+    def checkpoint(stage: str, elapsed_ms: float) -> None:
+        timings_ms[stage] = round(elapsed_ms, 3)
+        if stage == "db_connect_complete":
+            timings_ms["diagnostic_db_connect"] = timings_ms[stage]
+        persisted_v3_diagnostic_checkpoint(reference, stage, elapsed_ms=elapsed_ms)
+
     try:
+        persisted_v3_diagnostic_checkpoint(reference, "request_start")
         database_url=os.getenv("SUPABASE_DB_URL")
         if not database_url:
             raise HTTPException(503,"Persisted V3 diagnostic database access is not configured.")
-        repository=DiagnosticPostgresReadRepository(database_url)
-        connect_started=perf_counter()
+        repository=DiagnosticPostgresReadRepository(database_url, diagnostic_reference=reference)
         failure_stage="diagnostic_db_connect"
-        with repository.read_transaction() as read_repository:
-            timings_ms["diagnostic_db_connect"] = round((perf_counter() - connect_started) * 1000, 3)
+        persisted_v3_diagnostic_checkpoint(reference, "db_connect_start")
+        with repository.read_transaction(checkpoint=checkpoint) as read_repository:
             ownership_started=perf_counter()
             failure_stage="ownership_lookup"
+            persisted_v3_diagnostic_checkpoint(reference, "ownership_start")
             profile=owned_athlete_from_repository(read_repository,athlete_id,user_id)
             timings_ms["ownership_check"] = round((perf_counter() - ownership_started) * 1000, 3)
+            persisted_v3_diagnostic_checkpoint(reference, "ownership_complete", elapsed_ms=timings_ms["ownership_check"])
             if athlete_id not in replacement_planner_live_athlete_ids():
                 raise HTTPException(403,"Persisted V3 diagnostics are not enabled for this athlete.")
             failure_stage="persisted_report_generation"
+            persisted_v3_diagnostic_checkpoint(reference, "snapshot_start")
             return generate_persisted_v3_diagnostic_report(
                 read_repository,athlete_id,planning_date=current_planning_date(),
                 profile=profile, stage_timings_ms=timings_ms,
+                stage_checkpoint=lambda stage, elapsed: persisted_v3_diagnostic_checkpoint(
+                    reference, stage, elapsed_ms=elapsed,
+                ),
             )
     except HTTPException:
         raise
@@ -1023,6 +1065,7 @@ def persisted_v3_diagnostic(athlete_id: str, user_id: str = Depends(current_user
         raise persisted_v3_diagnostic_error(failure_stage, error, error_id=reference) from error
     finally:
         timings_ms["total"] = round((perf_counter() - total_started) * 1000, 3)
+        persisted_v3_diagnostic_checkpoint(reference, "request_complete", total_ms=timings_ms["total"])
         log_persisted_v3_diagnostic_timings(reference, timings_ms)
 
 @app.get("/api/v1/account/athlete")
