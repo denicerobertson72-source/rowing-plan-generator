@@ -9,7 +9,12 @@ from rowing_plan.diagnostic_v3 import generate_v3_diagnostic_report
 from rowing_plan.materialization_v3 import MaterializationContext, materialize_training_days_v3
 from rowing_plan.planning_domain import (
     GeneralAerobicModalityCapability,
+    CurrentTrainingSource,
+    CurrentTrainingState,
     PhysicalCategory,
+    PhysiologicalState,
+    RecommendedDoseSegment,
+    RecommendedTrainingDose,
     RowingQualityPlan,
     TrainingAllocation,
     TrainingAllocationSegment,
@@ -41,7 +46,8 @@ def _capability(modality: TrainingModality, *, preference: str = "neutral", fami
 
 
 def _allocation(*, rowing: int = 0, strength: int = 45, general: int = 15,
-                days: int = 1, capabilities=()):
+                days: int = 1, capabilities=(), supplemental_max: int | None = None,
+                supplemental_only: bool = False):
     end = START + timedelta(days=days - 1)
     total = rowing + strength + general
     segment = TrainingAllocationSegment(
@@ -49,6 +55,9 @@ def _allocation(*, rowing: int = 0, strength: int = 45, general: int = 15,
         strength // 45, 0, strength // 45, 45,
         rationale_codes=("r9e_2a_test",),
         general_aerobic_capabilities=tuple(capabilities),
+        deliberate_general_aerobic_minutes=general if supplemental_only else 0,
+        general_aerobic_supplemental_max_minutes=supplemental_max,
+        general_aerobic_supplemental_only=supplemental_only,
     )
     return TrainingAllocation(
         START, end, (segment,), total, rowing, strength, general, 0,
@@ -124,6 +133,127 @@ def test_combined_day_limit_is_respected_for_resolved_general_aerobic_work():
     assert not result.success
     assert any(item.code == "generated_component_capacity_infeasible" for item in result.infeasibilities)
     assert all(not day.combined_day for day in result.days)
+
+
+@pytest.mark.parametrize(
+    ("minutes", "expected"),
+    ((30, (15, 15)), (26, (13, 13)), (10, (10,)), (15, (15,))),
+)
+def test_supplemental_general_aerobic_uses_balanced_meaningful_exact_partitions(minutes, expected):
+    strength = 45 * len(expected)
+    allocation = _allocation(
+        strength=strength, general=minutes, days=len(expected),
+        capabilities=(_capability(TrainingModality.STAIR_CLIMBER, preference="prefer"),),
+        supplemental_max=30, supplemental_only=True,
+    )
+    capacity = tuple(DailyTrainingCapacity(START + timedelta(days=index), 70) for index in range(len(expected)))
+    result = generate_training_days_v3(allocation, capacity)
+    preflight = evaluate_cadence_category_feasibility(allocation.segments[0], capacity)
+
+    durations = tuple(sorted(
+        item.duration_minutes for item in result.components
+        if item.physical_category is PhysicalCategory.GENERAL_AEROBIC
+    ))
+    assert result.success and preflight.feasible
+    assert durations == expected
+    assert all(10 <= duration <= 15 for duration in durations)
+    assert all(
+        any(item.physical_category is PhysicalCategory.STRENGTH for item in day.components)
+        for day in result.days if any(item.physical_category is PhysicalCategory.GENERAL_AEROBIC for item in day.components)
+    )
+
+
+def test_supplemental_general_aerobic_uses_one_longer_component_only_when_one_strength_day_makes_it_necessary():
+    allocation = _allocation(
+        strength=45, general=26, days=1,
+        capabilities=(_capability(TrainingModality.STAIR_CLIMBER),),
+        supplemental_max=30, supplemental_only=True,
+    )
+    result = generate_training_days_v3(allocation, (DailyTrainingCapacity(START, 75),))
+    general = [item for item in result.components if item.physical_category is PhysicalCategory.GENERAL_AEROBIC]
+    assert result.success
+    assert [item.duration_minutes for item in general] == [26]
+
+
+def test_supplemental_general_aerobic_below_minimum_is_explicitly_infeasible_not_materialized_as_a_fragment():
+    allocation = _allocation(
+        strength=45, general=5, days=1,
+        capabilities=(_capability(TrainingModality.STAIR_CLIMBER),),
+        supplemental_max=15, supplemental_only=True,
+    )
+    result = generate_training_days_v3(allocation, (DailyTrainingCapacity(START, 60),))
+    assert not result.success
+    assert "supplemental_general_aerobic_partition_infeasible" in {item.code for item in result.infeasibilities}
+    assert not any(item.physical_category is PhysicalCategory.GENERAL_AEROBIC for item in result.components)
+
+
+def test_supplemental_duration_policy_conflict_is_not_authorized_by_r3():
+    profile = {
+        "athlete": {"current_approx_weekly_rowing_minutes": 120, "current_weekly_training_minutes": 260},
+        "season": {"start_date": START.isoformat(), "end_date": "2027-01-03", "phase_type": "general_preparation"},
+        "training_context": {"current_strength_sessions_per_week": 1, "typical_strength_duration_minutes": 45},
+        "planning_goals": {"primary_goal": "build_endurance"},
+        "cross_training": {"modalities": {"stair_climber": {"enabled": True, "preference": "prefer"}}},
+        "recurring_activities": [{"activity_type": "strength", "alternate_cardio": {"mode": "optional", "max_minutes": 5}}],
+    }
+    dose = RecommendedTrainingDose(
+        START, START + timedelta(days=6),
+        (RecommendedDoseSegment(START, START + timedelta(days=6), 260, 260, 260, 1000, 0, "ordinary", ("test",)),),
+        260, 260, 260, 1000, 0, "maintenance", "maintain", "moderate", policy_version="test",
+    )
+    state = CurrentTrainingState(
+        CurrentTrainingSource.ATHLETE_ESTIMATE,
+        approximate_total_physical_minutes=260, approximate_rowing_minutes=120, strength_exposures=1,
+        typical_strength_duration_minutes=45, consistency="regular", confidence="moderate",
+    )
+    result = allocate_training_dose(dose, profile=profile, current_state=state, state=PhysiologicalState(as_of_date=START))
+    segment = result.allocation.segments[0]
+    assert segment.deliberate_general_aerobic_minutes == 0
+    assert "general_aerobic:supplemental_duration_policy_conflict" in segment.rationale_codes
+
+
+def test_production_shaped_supplemental_distribution_is_exact_balanced_and_materializable():
+    spans = (6, 7, 7, 7, 7, 4)
+    general_minutes = (26, 30, 30, 30, 30, 15)
+    strength_exposures = (2, 3, 3, 3, 3, 1)
+    expected_partitions = ((13, 13), (15, 15), (15, 15), (15, 15), (15, 15), (15,))
+    capability = _capability(TrainingModality.STAIR_CLIMBER, preference="prefer")
+    cursor = START
+    segments = []
+    for days, general, exposures in zip(spans, general_minutes, strength_exposures):
+        end = cursor + timedelta(days=days - 1)
+        strength = exposures * 45
+        segments.append(TrainingAllocationSegment(
+            cursor, end, strength + general, 0, strength, general, 0, 0,
+            exposures, 0, exposures, 45, rationale_codes=("production_shaped_supplement",),
+            general_aerobic_capabilities=(capability,),
+            deliberate_general_aerobic_minutes=general,
+            general_aerobic_supplemental_max_minutes=30,
+            general_aerobic_supplemental_only=True,
+        ))
+        cursor = end + timedelta(days=1)
+    total = sum(item.recommended_physical_minutes for item in segments)
+    allocation = TrainingAllocation(
+        START, cursor - timedelta(days=1), tuple(segments), total, 0,
+        sum(item.strength_minutes for item in segments), sum(general_minutes), 0,
+        sum(strength_exposures), rationale_codes=("production_shaped_supplement",), confidence="high",
+    )
+    capacities = tuple(DailyTrainingCapacity(day, 70) for day in (START + timedelta(days=index) for index in range(38)))
+    r4 = generate_training_days_v3(allocation, capacities)
+    r5 = materialize_training_days_v3(r4, allocation=allocation)
+
+    assert r4.success and r5.success
+    assert sum(component.duration_minutes for component in r4.components) == total
+    assert sum(component.duration_minutes for component in r4.components if component.physical_category is PhysicalCategory.STRENGTH) == 675
+    assert sum(component.duration_minutes for component in r4.components if component.physical_category is PhysicalCategory.GENERAL_AEROBIC) == 161
+    for segment, expected in zip(segments, expected_partitions):
+        segment_id = allocation_segment_id(segment)
+        actual = tuple(sorted(
+            component.duration_minutes for component in r4.components
+            if component.allocation_segment_id == segment_id
+            and component.physical_category is PhysicalCategory.GENERAL_AEROBIC
+        ))
+        assert actual == expected
 
 
 def test_partial_cadence_segment_conserves_205_rowing_45_strength_and_15_general_aerobic():
@@ -393,3 +523,4 @@ def test_persisted_diagnostic_path_reports_deliberate_supplement_and_modern_prec
     assert "legacy_weekday_alternate_ut2_flags_ignored_by_explicit_recurring_card" in feasibility["general_aerobic_policy_provenance"]
     general = next(item for day in report["calendar"] for item in day["components"] if item["category"] == "general_aerobic")
     assert (general["physical_minutes"], general["modality"]) == (15, "stair_climber")
+    assert "r4:supplemental_general_aerobic_exact_partition" in general["capability_provenance"]

@@ -20,6 +20,8 @@ from .planning_domain import (
     TrainingAllocationResult,
     TrainingAllocationSegment,
     TrainingModality,
+    SUPPLEMENTAL_GENERAL_AEROBIC_MINIMUM_MINUTES,
+    SUPPLEMENTAL_GENERAL_AEROBIC_PREFERRED_MINUTES,
 )
 from .planning_normalization import NormalizedPlanningContext, normalize_planning_inputs
 from .planning_profile import normalize_current_training_state
@@ -30,7 +32,6 @@ from .recommended_training_dose import recent_actual_history_is_sufficient
 POLICY_VERSION = "training-allocation-v1"
 DEFAULT_STRENGTH_DURATION_MINUTES = 45
 GENERAL_PREP_CROSS_TRAINING_LATITUDE_MINUTES_PER_7D = 30
-SUPPLEMENTAL_GENERAL_AEROBIC_MINUTES_PER_COMPONENT = 15
 
 
 @dataclass(frozen=True)
@@ -420,17 +421,24 @@ def allocate_training_dose(
             rationale.append("general_aerobic:zero_no_eligible_preference")
         elif race_specific:
             rationale.append("general_aerobic:zero_race_specificity")
+        supplemental_duration_is_valid = (
+            supplemental_policy.maximum_minutes is not None
+            and supplemental_policy.maximum_minutes >= SUPPLEMENTAL_GENERAL_AEROBIC_MINIMUM_MINUTES
+        )
         supplemental_context = (
             cross_eligible and supplemental_policy.allowed and exposures > 0
+            and supplemental_duration_is_valid
             and not race_specific and not recovery
             and phase in {"general_preparation", "foundation_orientation", "aerobic_development"}
         )
         if supplemental_context:
             weekly_latitude = round(GENERAL_PREP_CROSS_TRAINING_LATITUDE_MINUTES_PER_7D * days / 7)
-            per_component = min(SUPPLEMENTAL_GENERAL_AEROBIC_MINUTES_PER_COMPONENT, supplemental_policy.maximum_minutes or 0)
+            per_component = min(SUPPLEMENTAL_GENERAL_AEROBIC_PREFERRED_MINUTES, supplemental_policy.maximum_minutes or 0)
             deliberate_general_desired = min(weekly_latitude, exposures * per_component)
             general_desired = max(general_desired, deliberate_general_desired)
             rationale.append("general_aerobic:deliberate_profile_authorized_supplement")
+        elif supplemental_policy.allowed and not supplemental_duration_is_valid:
+            rationale.append("general_aerobic:supplemental_duration_policy_conflict")
         elif supplemental_policy.conflict_codes:
             rationale.extend(f"general_aerobic:preference_conflict:{code}" for code in supplemental_policy.conflict_codes)
         elif cross_eligible and not supplemental_policy.allowed:

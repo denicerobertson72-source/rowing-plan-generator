@@ -97,6 +97,13 @@ class PhysicalCategory(_TextEnum):
     OTHER = "other"
 
 
+# These limits apply only to the deliberate, profile-authorized supplemental
+# general-aerobic purpose.  They are intentionally not a generic warm-up,
+# cool-down, or standalone cross-training minimum.
+SUPPLEMENTAL_GENERAL_AEROBIC_MINIMUM_MINUTES = 10
+SUPPLEMENTAL_GENERAL_AEROBIC_PREFERRED_MINUTES = 15
+
+
 class TrainingComponentPurpose(_TextEnum):
     """Small, pre-composition purpose vocabulary for R4 calendar facts."""
 

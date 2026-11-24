@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from hashlib import sha256
+from itertools import combinations
 from time import perf_counter
 from typing import Iterable, Mapping
 
@@ -33,6 +34,8 @@ from .planning_domain import (
     QualityRequirementPriority,
     RowingQualityPlan,
     RowingQualityRequirement,
+    SUPPLEMENTAL_GENERAL_AEROBIC_MINIMUM_MINUTES,
+    SUPPLEMENTAL_GENERAL_AEROBIC_PREFERRED_MINUTES,
 )
 from .materialization_v3 import (
     MaterializationContext, preflight_quality_duration_v3,
@@ -529,6 +532,74 @@ def generate_training_days_v3(
             capability_provenance=capability_provenance,
         ))
 
+    def supplemental_general_aerobic_partition(
+        segment: TrainingAllocationSegment,
+        required: int,
+    ) -> tuple[tuple[date, int], ...] | None:
+        """Return one exact, useful strength-day supplement partition.
+
+        This is deliberately a small bounded subset search: a cadence segment
+        has at most seven dates and the R3 policy caps deliberate supplemental
+        aerobic work.  The same R4 routine is used by the cadence-feasibility
+        query, so preflight cannot approve a duration partition that final
+        placement would later reject.
+        """
+        maximum = segment.general_aerobic_supplemental_max_minutes
+        if maximum is None or maximum < SUPPLEMENTAL_GENERAL_AEROBIC_MINIMUM_MINUTES:
+            return None
+        if required < SUPPLEMENTAL_GENERAL_AEROBIC_MINIMUM_MINUTES:
+            return None
+        if preferences.combined_days == "avoid" or preferences.strength_plus_easy_aerobic == "avoid":
+            return None
+        candidates = [
+            day for day in eligible_days(segment, PhysicalCategory.GENERAL_AEROBIC, 1)
+            if any(item.physical_category is PhysicalCategory.STRENGTH for item in daily_components[day])
+            and not any(item.physical_category is PhysicalCategory.GENERAL_AEROBIC for item in daily_components[day])
+            and min(maximum, remaining(day)) >= SUPPLEMENTAL_GENERAL_AEROBIC_MINIMUM_MINUTES
+        ]
+        preferred_count = max(1, (required + SUPPLEMENTAL_GENERAL_AEROBIC_PREFERRED_MINUTES - 1)
+                              // SUPPLEMENTAL_GENERAL_AEROBIC_PREFERRED_MINUTES)
+
+        alternatives: list[tuple[tuple[date, int], ...]] = []
+        # At most seven cadence dates are considered.  Enumerating the day
+        # subsets is therefore bounded (2^7), unlike the old long-horizon
+        # fill-and-remainder loop.  Each feasible subset is filled by a
+        # deterministic water-fill that keeps durations as even as capacity
+        # allows.
+        for count in range(1, len(candidates) + 1):
+            if required < count * SUPPLEMENTAL_GENERAL_AEROBIC_MINIMUM_MINUTES:
+                continue
+            for selected_days in combinations(candidates, count):
+                caps = [min(maximum, remaining(day)) for day in selected_days]
+                if sum(caps) < required:
+                    continue
+                durations = [SUPPLEMENTAL_GENERAL_AEROBIC_MINIMUM_MINUTES] * count
+                outstanding = required - sum(durations)
+                while outstanding:
+                    eligible_indexes = [index for index, cap in enumerate(caps) if durations[index] < cap]
+                    if not eligible_indexes:  # defensive; the sum check covers it
+                        break
+                    index = min(eligible_indexes, key=lambda item: (durations[item], selected_days[item]))
+                    durations[index] += 1
+                    outstanding -= 1
+                if outstanding == 0:
+                    alternatives.append(tuple(zip(selected_days, durations)))
+        if not alternatives:
+            return None
+
+        def score(partition: tuple[tuple[date, int], ...]) -> tuple[object, ...]:
+            durations = tuple(minutes for _, minutes in partition)
+            # First use the physiologically useful number of add-ons, then
+            # balance them, then bring them toward the 10–15 minute range.
+            return (
+                abs(len(durations) - preferred_count),
+                max(durations) - min(durations),
+                sum(abs(minutes - SUPPLEMENTAL_GENERAL_AEROBIC_PREFERRED_MINUTES) for minutes in durations),
+                tuple((day.isoformat(), minutes) for day, minutes in partition),
+            )
+
+        return min(alternatives, key=score)
+
     rowing_duration_feasibility: dict[tuple[TrainingComponentPurpose, int], bool] = {}
 
     def ordinary_rowing_duration_is_feasible(purpose: TrainingComponentPurpose, duration: int) -> bool:
@@ -991,21 +1062,44 @@ def generate_training_days_v3(
                         "other_component_split_not_authorized", segment_id, category, required,
                     ))
                     continue
+            if category is PhysicalCategory.GENERAL_AEROBIC and segment.general_aerobic_supplemental_only:
+                partition = supplemental_general_aerobic_partition(segment, required)
+                if partition is None:
+                    code = (
+                        "supplemental_general_aerobic_duration_policy_conflict"
+                        if (segment.general_aerobic_supplemental_max_minutes or 0)
+                        < SUPPLEMENTAL_GENERAL_AEROBIC_MINIMUM_MINUTES
+                        else "supplemental_general_aerobic_partition_infeasible"
+                    )
+                    infeasibilities.append(TrainingDayInfeasibility(
+                        code, segment_id, category, required,
+                        f"minimum={SUPPLEMENTAL_GENERAL_AEROBIC_MINIMUM_MINUTES};"
+                        f"maximum={segment.general_aerobic_supplemental_max_minutes};"
+                        "requires_strength_day=true",
+                    ))
+                    continue
+                for index, (chosen, minutes) in enumerate(partition, start=1):
+                    append_generated(chosen, lineage=f"{segment_id}:{category.value}:{index}", segment_id=segment_id,
+                                     category=category, minutes=minutes, purpose=_default_purpose(category),
+                                     modality=general_capability.modality if general_capability else None,
+                                     capability_provenance=(
+                                         (
+                                             "r4:general_aerobic_modality_resolution",
+                                             "r4:supplemental_general_aerobic_exact_partition",
+                                             *general_capability.provenance,
+                                         )
+                                         if general_capability else ()
+                                     ))
+                    if general_capability:
+                        diagnostics.append(TrainingDayDiagnostic(
+                            "general_aerobic_modality_selected", chosen, segment_id,
+                            f"modality={general_capability.modality.value};preference={general_capability.preference};"
+                            f"familiarity={general_capability.familiarity or 'unspecified'}",
+                        ))
+                continue
             index = 1
             while required:
                 candidates = eligible_days(segment, category, 1)
-                if category is PhysicalCategory.GENERAL_AEROBIC and segment.general_aerobic_supplemental_only:
-                    if (
-                        preferences.combined_days == "avoid"
-                        or preferences.strength_plus_easy_aerobic == "avoid"
-                    ):
-                        candidates = []
-                    else:
-                        candidates = [
-                            day for day in candidates
-                            if any(item.physical_category is PhysicalCategory.STRENGTH for item in daily_components[day])
-                            and not any(item.physical_category is PhysicalCategory.GENERAL_AEROBIC for item in daily_components[day])
-                        ]
                 if not candidates:
                     infeasibilities.append(TrainingDayInfeasibility(
                         "generated_component_capacity_infeasible", segment_id, category, required,
