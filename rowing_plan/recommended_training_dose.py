@@ -235,6 +235,130 @@ def _allocate_total(total: int, capacities: tuple[int, ...], commitments: tuple[
     return tuple(allocation)
 
 
+def _calendar_week_ranges(start: date, end: date) -> tuple[tuple[date, date], ...]:
+    """Return Monday--Sunday bounded ranges, including partial edge weeks."""
+    ranges = []
+    cursor = start
+    while cursor <= end:
+        week_end = min(end, cursor + timedelta(days=6 - cursor.weekday()))
+        ranges.append((cursor, week_end))
+        cursor = week_end + timedelta(days=1)
+    return tuple(ranges)
+
+
+def _reconcile_integer_distribution(
+    total: int, weights: tuple[int, ...], *, lower: tuple[int, ...], upper: tuple[int, ...],
+) -> tuple[int, ...]:
+    """Distribute an integer total exactly, with deterministic bounded rounding.
+
+    This is intentionally an allocation primitive rather than a second dose
+    policy.  It applies a segment's existing total to its calendar-week slices
+    using usable-capacity weights, then reconciles residual minutes by stable
+    largest remainder (earlier cadence segment wins a true tie).
+    """
+    if len(weights) != len(lower) or len(weights) != len(upper):
+        raise ValueError("cadence_distribution_shape_mismatch")
+    if any(weight < 0 for weight in weights) or any(low < 0 or high < low for low, high in zip(lower, upper)):
+        raise ValueError("cadence_distribution_bounds_invalid")
+    if not sum(lower) <= total <= sum(upper):
+        raise ValueError("cadence_distribution_total_is_infeasible")
+    denominator = sum(weights)
+    if denominator == 0:
+        # A zero-capacity segment can only carry zero minutes under the R2
+        # contract.  Keeping the deterministic lower-bound allocation makes
+        # invalid source data fail above instead of silently inventing days.
+        provisional = list(lower)
+    else:
+        provisional = [
+            min(high, max(low, (total * weight) // denominator))
+            for weight, low, high in zip(weights, lower, upper)
+        ]
+    current = sum(provisional)
+    remainders = [((total * weight) % denominator) if denominator else 0 for weight in weights]
+    while current < total:
+        candidates = [index for index, value in enumerate(provisional) if value < upper[index]]
+        if not candidates:  # Defensive: feasibility was checked above.
+            raise ValueError("cadence_distribution_cannot_add_residual")
+        index = min(candidates, key=lambda item: (-remainders[item], item))
+        provisional[index] += 1
+        current += 1
+    while current > total:
+        candidates = [index for index, value in enumerate(provisional) if value > lower[index]]
+        if not candidates:  # Defensive: feasibility was checked above.
+            raise ValueError("cadence_distribution_cannot_remove_residual")
+        index = min(candidates, key=lambda item: (remainders[item], -item))
+        provisional[index] -= 1
+        current -= 1
+    return tuple(provisional)
+
+
+def normalize_recommended_dose_cadence(
+    dose: RecommendedTrainingDose, *, profile: Mapping[str, Any], context: NormalizedPlanningContext,
+) -> RecommendedTrainingDose:
+    """Derive Monday--Sunday cadence slices without changing R2 authority.
+
+    Long R2 context segments remain the source of total physical dose.  This
+    function only creates contiguous calendar-week accounting slices whose
+    derived totals reconcile exactly to each source segment.  Authoritative
+    commitments are assigned to the week that contains their fixed date, so
+    later R3/R4 allocation cannot displace them through proportional rounding.
+    """
+    cadence_segments: list[RecommendedDoseSegment] = []
+    for source in dose.segments:
+        ranges = _calendar_week_ranges(source.start_date, source.end_date)
+        if len(ranges) == 1:
+            cadence_segments.append(source)
+            continue
+        capacities = tuple(_capacity(profile, start, end) for start, end in ranges)
+        commitments = tuple(_committed_minutes(context, start, end) for start, end in ranges)
+        if sum(capacities) != source.available_capacity_minutes or sum(commitments) != source.committed_physical_minutes:
+            raise ValueError("cadence_source_segment_accounting_mismatch")
+        recommended = _reconcile_integer_distribution(
+            source.recommended_physical_minutes, capacities,
+            lower=commitments, upper=capacities,
+        )
+        minimum = _reconcile_integer_distribution(
+            source.minimum_acceptable_physical_minutes, capacities,
+            lower=(0,) * len(ranges), upper=recommended,
+        )
+        maximum = _reconcile_integer_distribution(
+            source.maximum_reasonable_physical_minutes, capacities,
+            lower=recommended, upper=capacities,
+        )
+        for index, ((start, end), capacity, committed, target, minimum_target, maximum_target) in enumerate(
+            zip(ranges, capacities, commitments, recommended, minimum, maximum)
+        ):
+            cadence_segments.append(RecommendedDoseSegment(
+                start_date=start,
+                end_date=end,
+                recommended_physical_minutes=target,
+                minimum_acceptable_physical_minutes=minimum_target,
+                maximum_reasonable_physical_minutes=maximum_target,
+                available_capacity_minutes=capacity,
+                committed_physical_minutes=committed,
+                recommendation_status=source.recommendation_status,
+                rationale_codes=(*source.rationale_codes, "cadence:calendar_week", f"cadence:index:{index + 1}"),
+            ))
+    segments = tuple(cadence_segments)
+    return RecommendedTrainingDose(
+        planning_start=dose.planning_start,
+        planning_end=dose.planning_end,
+        segments=segments,
+        recommended_physical_minutes=sum(item.recommended_physical_minutes for item in segments),
+        minimum_acceptable_physical_minutes=sum(item.minimum_acceptable_physical_minutes for item in segments),
+        maximum_reasonable_physical_minutes=sum(item.maximum_reasonable_physical_minutes for item in segments),
+        available_capacity_minutes=sum(item.available_capacity_minutes for item in segments),
+        committed_physical_minutes=sum(item.committed_physical_minutes for item in segments),
+        recommendation_status=dose.recommendation_status,
+        progression_state=dose.progression_state,
+        confidence=dose.confidence,
+        rationale_codes=(*dose.rationale_codes, "cadence:calendar_week"),
+        evidence_sources=dose.evidence_sources,
+        constraints=dose.constraints,
+        policy_version=dose.policy_version,
+    )
+
+
 def derive_recommended_training_dose(
     profile: Mapping[str, Any], context: NormalizedPlanningContext, *, planning_start: date,
     planning_end: date, policy: TrainingPolicy = DEFAULT_TRAINING_POLICY,

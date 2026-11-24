@@ -40,7 +40,7 @@ from .planning_normalization import NormalizedPlanningContext, normalize_plannin
 from .scheduler_v2 import finalize_translated_quality_sequence, translate_quality_role
 from .training_policy import DEFAULT_TRAINING_POLICY, TrainingPolicy
 from .performance_profile import build_athlete_performance_profile, derive_development_block, derive_performance_limiter, derive_training_focus
-from .recommended_training_dose import derive_recommended_training_dose
+from .recommended_training_dose import derive_recommended_training_dose, normalize_recommended_dose_cadence
 
 
 @dataclass(frozen=True)
@@ -193,10 +193,11 @@ def generate_recommended_training_dose_v3(
         history_actuals=history_actuals, locked_sessions=locked_sessions,
         future_placements=future_placements,
     )
-    return derive_recommended_training_dose(
+    source_dose = derive_recommended_training_dose(
         profile, context, planning_start=active_start, planning_end=active_end,
         policy=policy,
     )
+    return normalize_recommended_dose_cadence(source_dose, profile=profile, context=context)
 
 
 def _quality_translation(
