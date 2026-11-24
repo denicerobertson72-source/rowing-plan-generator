@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
+from time import perf_counter
 from typing import Any, Mapping
 
 from .materialization_v3 import MaterializationContext, materialize_training_days_v3
@@ -31,10 +32,12 @@ class PersistedDiagnosticInput:
     weekly_overrides: tuple[Mapping[str, Any], ...]
 
 
-def load_persisted_diagnostic_input(repository: Any, athlete_id: str) -> PersistedDiagnosticInput:
+def load_persisted_diagnostic_input(
+    repository: Any, athlete_id: str, *, profile: Mapping[str, Any] | None = None,
+) -> PersistedDiagnosticInput:
     """Load the same persisted facts used by generation without invoking writes."""
-    profile = repository.get(athlete_id)
-    if not isinstance(profile, Mapping):
+    loaded_profile = profile if isinstance(profile, Mapping) else repository.get(athlete_id)
+    if not isinstance(loaded_profile, Mapping):
         raise ValueError("diagnostic_athlete_not_found")
     latest = repository.latest_plan_for_athlete(athlete_id)
     plan = latest.get("plan") if isinstance(latest, Mapping) and isinstance(latest.get("plan"), Mapping) else None
@@ -48,7 +51,7 @@ def load_persisted_diagnostic_input(repository: Any, athlete_id: str) -> Persist
     logs = tuple(entry for source_id in source_ids for entry in logs_by_plan[source_id])
     overrides = repository.weekly_overrides(athlete_id)
     return PersistedDiagnosticInput(
-        athlete_id, dict(profile), str(plan_id) if plan_id else None,
+        athlete_id, dict(loaded_profile), str(plan_id) if plan_id else None,
         dict(plan) if plan else None, logs, logs_by_plan, tuple(overrides),
     )
 
@@ -221,6 +224,8 @@ def generate_v3_diagnostic_report(
 
 def generate_persisted_v3_diagnostic_report(
     repository: Any, athlete_id: str, *, planning_date: date,
+    profile: Mapping[str, Any] | None = None,
+    stage_timings_ms: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Run the pure diagnostic from the same persisted-history inputs as V3.
 
@@ -228,7 +233,10 @@ def generate_persisted_v3_diagnostic_report(
     to the planner: the production generation path uses them for fingerprint
     invalidation and Week-view display, not for V3 prescription authority.
     """
-    persisted = load_persisted_diagnostic_input(repository, athlete_id)
+    snapshot_started = perf_counter()
+    persisted = load_persisted_diagnostic_input(repository, athlete_id, profile=profile)
+    if stage_timings_ms is not None:
+        stage_timings_ms["persisted_snapshot_load"] = round((perf_counter() - snapshot_started) * 1000, 3)
     previous = (
         {"plan_id": persisted.prior_plan_id, "plan": persisted.prior_plan}
         if persisted.prior_plan_id and persisted.prior_plan else None
@@ -236,11 +244,14 @@ def generate_persisted_v3_diagnostic_report(
     locked, actuals, actual_plan_ids = recover_generation_history(
         previous, lambda plan_id: persisted.workout_logs_by_plan.get(plan_id, ()),
     )
+    report_started = perf_counter()
     report = generate_v3_diagnostic_report(
         persisted.profile, planning_date=planning_date,
         prior_plan=persisted.prior_plan, history_actuals=actuals,
         locked_sessions=locked,
     )
+    if stage_timings_ms is not None:
+        stage_timings_ms["report_generation"] = round((perf_counter() - report_started) * 1000, 3)
     report["persisted_input_audit"] = {
         "prior_plan_id": persisted.prior_plan_id,
         "actual_plan_ids": actual_plan_ids,

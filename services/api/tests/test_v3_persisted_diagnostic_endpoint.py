@@ -1,4 +1,5 @@
 from datetime import date
+from contextlib import contextmanager
 
 from fastapi.testclient import TestClient
 
@@ -15,7 +16,13 @@ class _ReadOnlyDiagnosticRepository:
     def __init__(self, database_url):
         self.database_url = database_url
         self.calls = []
+        self.transaction_count = 0
         type(self).instances.append(self)
+
+    @contextmanager
+    def read_transaction(self):
+        self.transaction_count += 1
+        yield self
 
     def get(self, athlete_id):
         self.calls.append(("get", athlete_id))
@@ -79,16 +86,20 @@ def test_persisted_v3_diagnostic_requires_database_url_without_fallback(monkeypa
     assert "not configured" in response.json()["detail"]
 
 
-def test_persisted_v3_diagnostic_uses_only_read_repository_and_wrapper(monkeypatch):
+def test_persisted_v3_diagnostic_uses_only_read_repository_and_wrapper(monkeypatch, caplog):
     _ReadOnlyDiagnosticRepository.instances.clear()
+    caplog.set_level("INFO", logger="services.api.app.main")
     expected = {"human_readable": "R9A report", "conservation": {"pass": True}}
     wrapper_calls = []
 
     def no_normal_postgres_initialization(*args, **kwargs):
         raise AssertionError("normal_postgres_repositories_must_not_initialize")
 
-    def diagnostic_wrapper(repository, athlete_id, *, planning_date):
-        wrapper_calls.append((repository, athlete_id, planning_date))
+    def diagnostic_wrapper(repository, athlete_id, *, planning_date, profile=None, stage_timings_ms=None):
+        wrapper_calls.append((repository, athlete_id, planning_date, profile))
+        if stage_timings_ms is not None:
+            stage_timings_ms["persisted_snapshot_load"] = 1.0
+            stage_timings_ms["report_generation"] = 2.0
         return expected
 
     monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://configured")
@@ -105,7 +116,10 @@ def test_persisted_v3_diagnostic_uses_only_read_repository_and_wrapper(monkeypat
     repository = _ReadOnlyDiagnosticRepository.instances[-1]
     assert repository.database_url == "postgresql://configured"
     assert repository.calls == [("get", "athlete-1"), ("athlete_owner", "athlete-1")]
-    assert wrapper_calls == [(repository, "athlete-1", date(2026, 11, 22))]
+    assert repository.transaction_count == 1
+    assert wrapper_calls == [(repository, "athlete-1", date(2026, 11, 22), {"athlete": {"display_name": "Diagnostic athlete"}})]
+    assert "persisted_v3_diagnostic_timing reference=r9a_" in caplog.text
+    assert "Diagnostic athlete" not in caplog.text
 
 
 def _production_pwa_client():

@@ -99,6 +99,27 @@ def test_diagnostic_read_rolls_back_after_select_failure(monkeypatch):
     assert connection.closed is True
 
 
+def test_one_read_transaction_reuses_one_connection_for_the_complete_diagnostic_snapshot(monkeypatch):
+    cursor = _Cursor()
+    connection = _Connection(cursor)
+    repository = DiagnosticPostgresReadRepository("postgresql://diagnostic-only")
+    connection_calls = []
+    monkeypatch.setattr(repository, "_connect", lambda: (connection_calls.append(True), connection)[1])
+
+    with repository.read_transaction() as transaction:
+        transaction.get("athlete-1")
+        transaction.athlete_owner("athlete-1")
+        transaction.latest_plan_for_athlete("athlete-1")
+        transaction.logs_for_plan("plan-1")
+        transaction.weekly_overrides("athlete-1")
+
+    assert len(connection_calls) == 1
+    assert [statement for statement, _parameters in cursor.executed].count("BEGIN TRANSACTION READ ONLY") == 1
+    assert sum(statement.startswith("SELECT") for statement, _parameters in cursor.executed) == 5
+    assert [statement for statement, _parameters in cursor.executed].count("ROLLBACK") == 1
+    assert connection.closed is True
+
+
 def test_diagnostic_postgres_repository_rejects_non_select_statements():
     class Cursor:
         def execute(self, statement, parameters):

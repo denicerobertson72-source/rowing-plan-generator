@@ -369,6 +369,37 @@ class PostgresRepositories:
         return [{"posting_id":row["posting_id"],"created_by":row["created_by"],"created_at":row["created_at"].isoformat(),"updated_at":row["updated_at"].isoformat(),"payload":row["payload_json"]} for row in rows]
 
 
+class _DiagnosticPostgresReadTransaction:
+    """The narrow read surface bound to one diagnostic transaction."""
+
+    def __init__(self, repository: "DiagnosticPostgresReadRepository", cursor) -> None:
+        self._repository = repository
+        self._cursor = cursor
+
+    def get(self, athlete_id: str) -> dict[str, Any] | None:
+        rows = self._repository._select(self._cursor, "SELECT profile_json FROM athletes WHERE athlete_id=%s", (athlete_id,))
+        return rows[0]["profile_json"] if rows else None
+
+    def athlete_owner(self, athlete_id: str) -> str | None:
+        rows = self._repository._select(self._cursor, "SELECT user_id FROM athletes WHERE athlete_id=%s", (athlete_id,))
+        return rows[0]["user_id"] if rows else None
+
+    def latest_plan_for_athlete(self, athlete_id: str) -> dict[str, Any] | None:
+        rows = self._repository._select(self._cursor, "SELECT plan_id, athlete_id, version_number, created_at, plan_json FROM plan_versions WHERE athlete_id=%s ORDER BY version_number DESC LIMIT 1", (athlete_id,))
+        if not rows:
+            return None
+        row = rows[0]
+        return {"plan_id": row["plan_id"], "athlete_id": row["athlete_id"], "version_number": row["version_number"], "created_at": row["created_at"].isoformat(), "plan": row["plan_json"]}
+
+    def logs_for_plan(self, plan_id: str) -> list[dict[str, Any]]:
+        rows = self._repository._select(self._cursor, "SELECT log_id, session_key, created_at, payload_json FROM workout_logs WHERE plan_id=%s ORDER BY created_at DESC", (plan_id,))
+        return [{"log_id": row["log_id"], "session_key": row["session_key"], "created_at": row["created_at"].isoformat(), "payload": row["payload_json"]} for row in rows]
+
+    def weekly_overrides(self, athlete_id: str) -> list[dict[str, Any]]:
+        rows = self._repository._select(self._cursor, "SELECT override_id, created_at, payload_json FROM weekly_overrides WHERE athlete_id=%s ORDER BY created_at DESC", (athlete_id,))
+        return [{"override_id": row["override_id"], "created_at": row["created_at"].isoformat(), "payload": row["payload_json"]} for row in rows]
+
+
 class DiagnosticPostgresReadRepository:
     """Small diagnostic-only Supabase boundary that can issue SELECTs only.
 
@@ -393,12 +424,12 @@ class DiagnosticPostgresReadRepository:
         )
 
     @contextmanager
-    def _read_cursor(self):
+    def read_transaction(self):
         """Use an operation-scoped read-only transaction without pool state."""
         with self._connect() as db, db.cursor() as cursor:
             cursor.execute("BEGIN TRANSACTION READ ONLY")
             try:
-                yield cursor
+                yield _DiagnosticPostgresReadTransaction(self, cursor)
             finally:
                 cursor.execute("ROLLBACK")
 
@@ -410,32 +441,24 @@ class DiagnosticPostgresReadRepository:
         return cursor.fetchall()
 
     def get(self, athlete_id: str) -> dict[str, Any] | None:
-        with self._read_cursor() as cursor:
-            rows = self._select(cursor, "SELECT profile_json FROM athletes WHERE athlete_id=%s", (athlete_id,))
-        return rows[0]["profile_json"] if rows else None
+        with self.read_transaction() as transaction:
+            return transaction.get(athlete_id)
 
     def athlete_owner(self, athlete_id: str) -> str | None:
-        with self._read_cursor() as cursor:
-            rows = self._select(cursor, "SELECT user_id FROM athletes WHERE athlete_id=%s", (athlete_id,))
-        return rows[0]["user_id"] if rows else None
+        with self.read_transaction() as transaction:
+            return transaction.athlete_owner(athlete_id)
 
     def latest_plan_for_athlete(self, athlete_id: str) -> dict[str, Any] | None:
-        with self._read_cursor() as cursor:
-            rows = self._select(cursor, "SELECT plan_id, athlete_id, version_number, created_at, plan_json FROM plan_versions WHERE athlete_id=%s ORDER BY version_number DESC LIMIT 1", (athlete_id,))
-        if not rows:
-            return None
-        row = rows[0]
-        return {"plan_id": row["plan_id"], "athlete_id": row["athlete_id"], "version_number": row["version_number"], "created_at": row["created_at"].isoformat(), "plan": row["plan_json"]}
+        with self.read_transaction() as transaction:
+            return transaction.latest_plan_for_athlete(athlete_id)
 
     def logs_for_plan(self, plan_id: str) -> list[dict[str, Any]]:
-        with self._read_cursor() as cursor:
-            rows = self._select(cursor, "SELECT log_id, session_key, created_at, payload_json FROM workout_logs WHERE plan_id=%s ORDER BY created_at DESC", (plan_id,))
-        return [{"log_id": row["log_id"], "session_key": row["session_key"], "created_at": row["created_at"].isoformat(), "payload": row["payload_json"]} for row in rows]
+        with self.read_transaction() as transaction:
+            return transaction.logs_for_plan(plan_id)
 
     def weekly_overrides(self, athlete_id: str) -> list[dict[str, Any]]:
-        with self._read_cursor() as cursor:
-            rows = self._select(cursor, "SELECT override_id, created_at, payload_json FROM weekly_overrides WHERE athlete_id=%s ORDER BY created_at DESC", (athlete_id,))
-        return [{"override_id": row["override_id"], "created_at": row["created_at"].isoformat(), "payload": row["payload_json"]} for row in rows]
+        with self.read_transaction() as transaction:
+            return transaction.weekly_overrides(athlete_id)
 
 class LazyRepositories:
     """Avoid opening a database connection during a serverless function import."""
