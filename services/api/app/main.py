@@ -17,8 +17,9 @@ from traceback import extract_tb
 from enum import Enum
 from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
@@ -35,7 +36,7 @@ from .auth import current_user_id
 from rowing_plan.training_load import load_summary, session_load_au
 from rowing_plan.planning_domain import normalize_training_modality, TrainingModality
 from rowing_plan.generation_history import recover_generation_history, optional_activity_history_session as _optional_activity_history_session
-from rowing_plan.diagnostic_v3 import generate_persisted_v3_diagnostic_report
+from rowing_plan.diagnostic_v3 import generate_persisted_v3_diagnostic_report, public_v3_diagnostic_payload
 from rowing_plan.recurring_activities import normalize_recurring_schedule_for_planning, schedule_signature
 from .schemas import ApiHealth, AthleteCreateRequest, AthleteResponse, AthleteUpdateRequest, OptionalActivityLogRequest, PlanGenerationRequest, PlanResponse, PrivateCheckInRequest, RacePostingRequest, RegenerateRequest, WeeklyOverrideRequest, WorkoutLogRequest
 
@@ -1020,7 +1021,7 @@ def get_athlete(athlete_id: str, user_id: str = Depends(current_user_id)) -> Ath
     return athlete_response(athlete_id, profile)
 
 @app.get("/api/v1/athletes/{athlete_id}/diagnostics/v3-persisted")
-def persisted_v3_diagnostic(athlete_id: str, user_id: str = Depends(current_user_id)) -> dict:
+def persisted_v3_diagnostic(athlete_id: str, user_id: str = Depends(current_user_id)) -> JSONResponse:
     """Temporary, authenticated R9A observation endpoint; it performs SELECTs only."""
     reference=f"r9a_{token_urlsafe(6).replace('-', '').replace('_', '')}"
     timings_ms: dict[str, float] = {}
@@ -1052,13 +1053,15 @@ def persisted_v3_diagnostic(athlete_id: str, user_id: str = Depends(current_user
                 raise HTTPException(403,"Persisted V3 diagnostics are not enabled for this athlete.")
             failure_stage="persisted_report_generation"
             persisted_v3_diagnostic_checkpoint(reference, "snapshot_start")
-            return generate_persisted_v3_diagnostic_report(
+            report = generate_persisted_v3_diagnostic_report(
                 read_repository,athlete_id,planning_date=current_planning_date(),
                 profile=profile, stage_timings_ms=timings_ms,
                 stage_checkpoint=lambda stage, elapsed: persisted_v3_diagnostic_checkpoint(
                     reference, stage, elapsed_ms=elapsed,
                 ),
             )
+            failure_stage="response_serialization"
+            return JSONResponse(content=jsonable_encoder(public_v3_diagnostic_payload(report)))
     except HTTPException:
         raise
     except Exception as error:

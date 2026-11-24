@@ -301,3 +301,59 @@ def test_persisted_v3_diagnostic_transaction_entry_failure_is_sanitized(monkeypa
     assert detail["error_id"].startswith("r9a_")
     assert "secret" not in response.text
     assert "secret" not in caplog.text
+
+
+def test_persisted_v3_diagnostic_serializes_a_public_payload_and_excludes_raw_planner_results(monkeypatch):
+    _ReadOnlyDiagnosticRepository.instances.clear()
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://configured")
+    monkeypatch.setenv("REPLACEMENT_PLANNER_LIVE_ATHLETE_IDS", "athlete-1")
+    monkeypatch.setattr(main, "DiagnosticPostgresReadRepository", _ReadOnlyDiagnosticRepository)
+    raw_r4 = object()
+    raw_r5 = object()
+    monkeypatch.setattr(
+        main,
+        "generate_persisted_v3_diagnostic_report",
+        lambda *args, **kwargs: {
+            "calendar": [{"date": "2026-11-16", "components": []}],
+            "workouts": [{"component_id": "component-1", "status": "success"}],
+            "conservation": {"pass": True}, "human_readable": "R9A report",
+            "r4": raw_r4, "r5": raw_r5,
+        },
+    )
+
+    response = TestClient(app).get("/api/v1/athletes/athlete-1/diagnostics/v3-persisted")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.content.startswith(b"{")
+    payload = response.json()
+    assert payload["calendar"][0]["date"] == "2026-11-16"
+    assert payload["workouts"][0]["component_id"] == "component-1"
+    assert "r4" not in payload
+    assert "r5" not in payload
+
+
+def test_persisted_v3_diagnostic_serialization_failure_is_sanitized(monkeypatch, caplog):
+    class Unserializable:
+        __slots__ = ()
+
+    caplog.set_level("ERROR", logger="services.api.app.main")
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://configured")
+    monkeypatch.setenv("REPLACEMENT_PLANNER_LIVE_ATHLETE_IDS", "athlete-1")
+    monkeypatch.setattr(main, "DiagnosticPostgresReadRepository", _ReadOnlyDiagnosticRepository)
+    monkeypatch.setattr(
+        main,
+        "generate_persisted_v3_diagnostic_report",
+        lambda *args, **kwargs: {"current_training": Unserializable(), "human_readable": "R9A report"},
+    )
+
+    response = TestClient(app).get("/api/v1/athletes/athlete-1/diagnostics/v3-persisted")
+
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "persisted_v3_diagnostic_failed"
+    assert detail["failure_stage"] == "response_serialization"
+    assert detail["error_id"].startswith("r9a_")
+    assert "Unserializable" not in response.text
+    assert "Unserializable" not in caplog.text
+    assert "failure_stage=response_serialization" in caplog.text

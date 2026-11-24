@@ -114,18 +114,29 @@ def generate_v3_diagnostic_report(
     prior_plan: Mapping[str, Any] | None = None,
     history_actuals: Mapping[str, Mapping[str, Any]] | None = None,
     locked_sessions=(), future_placements=(),
+    diagnostic_timings_ms: dict[str, float] | None = None,
+    diagnostic_counts: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Run R1B→R7B without routing, persistence, or legacy planner execution."""
+    def record_timing(name: str, started: float) -> None:
+        if diagnostic_timings_ms is not None:
+            diagnostic_timings_ms[name] = round((perf_counter() - started) * 1000, 3)
+
+    r2_started = perf_counter()
     r2 = generate_recommended_training_dose_v3(
         profile, planning_date=planning_date, prior_plan=prior_plan,
         history_actuals=history_actuals, locked_sessions=locked_sessions,
         future_placements=future_placements,
     )
+    record_timing("r2_recommended_dose", r2_started)
+    r3_started = perf_counter()
     r3 = generate_training_allocation_v3(
         profile, planning_date=planning_date, recommended_dose=r2,
         prior_plan=prior_plan, history_actuals=history_actuals,
         locked_sessions=locked_sessions, future_placements=future_placements,
     ).allocation
+    record_timing("r3_allocation", r3_started)
+    normalization_started = perf_counter()
     normalized = normalize_planning_inputs(
         profile, planning_date=r2.planning_start, prior_plan=prior_plan,
         history_actuals=history_actuals, locked_sessions=locked_sessions,
@@ -137,6 +148,7 @@ def generate_v3_diagnostic_report(
             normalized.historical_facts, planning_start=r2.planning_start,
         ), observation_window_days=21,
     )
+    record_timing("current_training_history_normalization", normalization_started)
     capacity = normalize_available_training_capacity(profile)
     rowing_modalities = _rowing_modalities(capacity)
     preferences = _diagnostic_preferences(profile)
@@ -150,22 +162,29 @@ def generate_v3_diagnostic_report(
         )
         for index in range((r2.planning_end - r2.planning_start).days + 1)
     )
+    performance_started = perf_counter()
     performance = build_athlete_performance_profile(profile, as_of=r2.planning_start)
     limiter = derive_performance_limiter(performance, coach_focus=profile.get("preferences", {}).get("development_focus"))
     focus = derive_training_focus(limiter, phase="general_preparation")
+    record_timing("performance_profile_focus", performance_started)
+    r6_started = perf_counter()
     quality = tuple(generate_rowing_quality_plan(
         segment, allocation_segment_id=f"r3:{segment.start_date.isoformat()}:{segment.end_date.isoformat()}",
         performance=performance, limiter=limiter, focus=focus,
         context=RowingQualityPlanningContext(r2.planning_start, experience=str(profile.get("athlete", {}).get("experience_level", "intermediate")), available_rowing_modalities=rowing_modalities),
     ).plan for segment in r3.segments)
+    record_timing("r6_rowing_quality", r6_started)
     # Winter ERG is an explicit athlete environment, not an auto-selected
     # cross-training modality.
+    r4_started = perf_counter()
     r4 = generate_training_days_v3(
         r3, days, rowing_quality_plans=quality,
         materialization_context=MaterializationContext(phase_id="general_preparation", experience=str(profile.get("athlete", {}).get("experience_level", "intermediate")), available_rowing_modalities=rowing_modalities),
         current_training_state=current,
         preferences=preferences,
     )
+    record_timing("r4_training_days", r4_started)
+    r5_started = perf_counter()
     r5 = materialize_training_days_v3(
         r4,
         context=MaterializationContext(
@@ -175,10 +194,12 @@ def generate_v3_diagnostic_report(
         ),
         allocation=r3,
     )
+    record_timing("r5_materialization", r5_started)
     r2_total = r2.recommended_physical_minutes
     r3_total = r3.recommended_physical_minutes
     r4_total = sum(day.total_physical_minutes for day in r4.days)
     r5_total = sum(item.materialized.physical_duration_minutes for item in r5.results if item.success and item.materialized)
+    primitive_started = perf_counter()
     calendar = []
     component_dates = {component.component_id: day.date.isoformat() for day in r4.days for component in day.components}
     for day in r4.days:
@@ -218,8 +239,45 @@ def generate_v3_diagnostic_report(
         "plausibility_reviews": reviews,
         "training_plausibility": "QUESTIONABLE" if any(value["rating"] == "QUESTIONABLE" for value in reviews.values()) else "GOOD",
     }
+    if diagnostic_counts is not None:
+        diagnostic_counts.update({
+            "r2_segment_count": len(r2.segments),
+            "r3_segment_count": len(r3.segments),
+            "r6_requirement_count": sum(len(item.requirements) for item in quality),
+            "r4_day_count": len(r4.days),
+            "r4_component_count": sum(len(day.components) for day in r4.days),
+            "r5_result_count": len(r5.results),
+        })
+    record_timing("report_primitive_conversion", primitive_started)
+    rendering_started = perf_counter()
     report["human_readable"] = render_v3_diagnostic_report(report)
+    record_timing("human_readable_rendering", rendering_started)
+    if diagnostic_timings_ms is not None:
+        report["diagnostic_timing_ms"] = dict(diagnostic_timings_ms)
+    if diagnostic_counts is not None:
+        report["diagnostic_counts"] = dict(diagnostic_counts)
     return report
+
+
+_PUBLIC_DIAGNOSTIC_KEYS = (
+    "planning_date", "planning_end", "available_capacity_minutes",
+    "planning_goals", "training_preferences", "rowing_modalities",
+    "current_training", "r2", "r3", "r6", "calendar", "workouts",
+    "conservation", "structural_validation", "plausibility_reviews",
+    "training_plausibility", "persisted_input_audit", "diagnostic_timing_ms",
+    "diagnostic_counts", "human_readable",
+)
+
+
+def public_v3_diagnostic_payload(report: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the R9A API payload without leaking internal R4/R5 result objects.
+
+    ``calendar`` is the full dated R4 component representation and ``workouts``
+    is the full diagnostic R5 materialization representation.  They preserve
+    the review data while keeping the pure internal report free to retain its
+    domain objects for local diagnostic assertions.
+    """
+    return {key: report[key] for key in _PUBLIC_DIAGNOSTIC_KEYS if key in report}
 
 
 def generate_persisted_v3_diagnostic_report(
@@ -240,6 +298,7 @@ def generate_persisted_v3_diagnostic_report(
         stage_timings_ms["persisted_snapshot_load"] = round((perf_counter() - snapshot_started) * 1000, 3)
     if stage_checkpoint is not None:
         stage_checkpoint("snapshot_complete", (perf_counter() - snapshot_started) * 1000)
+    history_started = perf_counter()
     previous = (
         {"plan_id": persisted.prior_plan_id, "plan": persisted.prior_plan}
         if persisted.prior_plan_id and persisted.prior_plan else None
@@ -247,13 +306,23 @@ def generate_persisted_v3_diagnostic_report(
     locked, actuals, actual_plan_ids = recover_generation_history(
         previous, lambda plan_id: persisted.workout_logs_by_plan.get(plan_id, ()),
     )
+    if stage_timings_ms is not None:
+        stage_timings_ms["canonical_generation_history"] = round((perf_counter() - history_started) * 1000, 3)
     report_started = perf_counter()
     if stage_checkpoint is not None:
         stage_checkpoint("report_start", 0.0)
+    diagnostic_counts = {
+        "inherited_planversion_source_count": len(actual_plan_ids),
+        "completed_actual_count": len(actuals),
+        "history_actual_count": len(actuals),
+        "locked_session_count": len(locked),
+    }
     report = generate_v3_diagnostic_report(
         persisted.profile, planning_date=planning_date,
         prior_plan=persisted.prior_plan, history_actuals=actuals,
         locked_sessions=locked,
+        diagnostic_timings_ms=stage_timings_ms,
+        diagnostic_counts=diagnostic_counts,
     )
     if stage_timings_ms is not None:
         stage_timings_ms["report_generation"] = round((perf_counter() - report_started) * 1000, 3)

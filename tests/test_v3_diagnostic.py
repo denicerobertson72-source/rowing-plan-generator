@@ -1,9 +1,13 @@
+import json
 from datetime import date
+
+from fastapi.encoders import jsonable_encoder
 
 from rowing_plan.diagnostic_v3 import (
     generate_persisted_v3_diagnostic_report,
     generate_v3_diagnostic_report,
     load_persisted_diagnostic_input,
+    public_v3_diagnostic_payload,
 )
 from rowing_plan.generation_history import recover_generation_history
 from services.api.tests.disposable_browser_fixture import synthetic_profile
@@ -20,7 +24,12 @@ def test_reset_spine_diagnostic_separates_capacity_conservation_and_plausibility
     profile["training_context"] = {"current_strength_sessions_per_week": 3, "typical_strength_duration_minutes": 45}
     profile["planning_goals"] = {"primary_goal": "develop_strength", "secondary_goal": "build_endurance"}
     profile["training_preferences"] = {"combined_days": "preferred", "strength_plus_easy_aerobic": "preferred", "strength_plus_hard_rowing": "avoid"}
-    report = generate_v3_diagnostic_report(profile, planning_date=date(2026, 11, 16))
+    timings = {}
+    counts = {}
+    report = generate_v3_diagnostic_report(
+        profile, planning_date=date(2026, 11, 16),
+        diagnostic_timings_ms=timings, diagnostic_counts=counts,
+    )
     assert report["available_capacity_minutes"] == 530
     assert report["r2"]["recommended_physical_minutes"] < 530
     assert report["conservation"]["pass"]
@@ -33,6 +42,14 @@ def test_reset_spine_diagnostic_separates_capacity_conservation_and_plausibility
     assert report["training_preferences"]["combined_days"] == "preferred"
     assert report["rowing_modalities"] == ["erg"]
     assert {result.materialized.modality.value for result in report["r5"].results if result.materialized and result.materialized.purpose.value != "strength"} == {"erg"}
+    assert report["diagnostic_timing_ms"]
+    assert report["diagnostic_counts"]["r4_day_count"] == len(report["calendar"])
+    assert report["diagnostic_counts"]["r5_result_count"] == len(report["workouts"])
+    public = public_v3_diagnostic_payload(report)
+    assert "r4" not in public and "r5" not in public
+    assert public["calendar"] == report["calendar"]
+    assert public["workouts"] == report["workouts"]
+    assert json.loads(json.dumps(jsonable_encoder(public)))["conservation"]["pass"] is True
 
 
 def test_persisted_diagnostic_adapter_uses_only_read_methods():
