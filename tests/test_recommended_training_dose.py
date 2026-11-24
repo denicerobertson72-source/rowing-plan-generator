@@ -11,7 +11,9 @@ from rowing_plan.recommended_training_dose import (
     RecommendedDoseInfeasibleError,
     derive_recommended_training_dose,
     recent_actual_history_is_sufficient,
+    r2_baseline_evidence,
 )
+from rowing_plan.planning_profile import normalize_current_training_state
 from rowing_plan.replacement_plan_v3 import generate_recommended_training_dose_v3
 from rowing_plan.validators import validate_profile
 from services.api.tests.disposable_browser_fixture import synthetic_profile
@@ -34,6 +36,23 @@ def _profile() -> dict:
 
 def _context(profile: dict, start: date, *, history_actuals=None):
     return normalize_planning_inputs(profile, planning_date=start, history_actuals=history_actuals or {})
+
+
+def _actual_fact(identifier: str, day: date, minutes: int) -> HistoricalFact:
+    return HistoricalFact(
+        identifier, day, HistoricalFactType.OPTIONAL_ACTIVITY,
+        completed_actual={"status": "completed", "activity_type": "erg", "actual_duration_min": minutes},
+        provenance=Provenance(identifier, ProvenanceSource.OPTIONAL_ACTIVITY_LOG),
+    )
+
+
+def _baseline(profile: dict, facts: tuple[HistoricalFact, ...], start: date) -> dict:
+    current = normalize_current_training_state(
+        profile, historical_facts=facts,
+        recent_actuals_sufficient=recent_actual_history_is_sufficient(facts, planning_start=start),
+        observation_window_days=21,
+    )
+    return r2_baseline_evidence(profile, current, facts, planning_start=start)
 
 
 def test_block_totals_are_derived_from_non_overlapping_segments_and_capacity_is_not_filled():
@@ -113,3 +132,73 @@ def test_dose_override_schema_accepts_one_value_and_rejects_ambiguous_values():
         "preferred_physical_minutes": 450,
     }
     assert "Planning dose override must provide exactly one non-negative physical-minute value." in validate_profile(profile)
+
+
+def test_insufficient_sparse_actuals_do_not_dilute_an_explicit_weekly_total_estimate():
+    profile = _profile()
+    profile["athlete"]["current_weekly_training_minutes"] = 500
+    start = date(2026, 11, 16)
+    facts = tuple(_actual_fact(f"actual:{offset}", start - timedelta(days=20 - offset * 4), 60) for offset in range(4))
+    context = _context(profile, start)
+    context = type(context)(
+        planning_date=context.planning_date, historical_facts=facts,
+        authoritative_commitments=context.authoritative_commitments,
+        provisional_prior_placement_ids=context.provisional_prior_placement_ids,
+        race_context=context.race_context, authority_precedence=context.authority_precedence,
+        diagnostics=context.diagnostics,
+    )
+    dose = derive_recommended_training_dose(profile, context, planning_start=start, planning_end=start + timedelta(days=6))
+    evidence = _baseline(profile, facts, start)
+
+    assert evidence["actual_history_sufficient"] is False
+    assert evidence["normalized_actual_weekly_minutes"] is not None
+    assert evidence["selected_baseline_weekly_minutes"] == 500
+    assert evidence["selected_baseline_source"] == "explicit_weekly_total_training_estimate"
+    assert evidence["insufficient_actual_history_not_used_for_dose"] is True
+    assert dose.recommended_physical_minutes == 500
+    assert "baseline_source:explicit_weekly_total_training_estimate" in dose.rationale_codes
+    assert "insufficient_actual_history_not_used_for_dose" in dose.rationale_codes
+
+
+def test_sufficient_actuals_remain_the_r2_baseline_even_when_an_explicit_weekly_total_exists():
+    profile = _profile()
+    profile["athlete"]["current_weekly_training_minutes"] = 500
+    start = date(2026, 11, 16)
+    facts = tuple(
+        _actual_fact(f"actual:{offset}", start - timedelta(days=days), 100)
+        for offset, days in enumerate((20, 16, 12, 8, 4, 1))
+    )
+    evidence = _baseline(profile, facts, start)
+
+    assert evidence["actual_history_sufficient"] is True
+    assert evidence["normalized_actual_weekly_minutes"] == 200
+    assert evidence["selected_baseline_weekly_minutes"] == 200
+    assert evidence["selected_baseline_source"] == "sufficient_recent_actual_training"
+
+
+def test_insufficient_actuals_without_explicit_weekly_total_use_documented_conservative_fallback():
+    profile = _profile()
+    profile["athlete"].pop("current_weekly_training_minutes", None)
+    start = date(2026, 11, 16)
+    facts = tuple(_actual_fact(f"actual:{offset}", start - timedelta(days=20 - offset * 4), 60) for offset in range(4))
+    evidence = _baseline(profile, facts, start)
+
+    assert evidence["actual_history_sufficient"] is False
+    assert evidence["selected_baseline_source"] == "fallback_conservative_experience_baseline"
+    assert evidence["insufficient_actual_history_not_used_for_dose"] is True
+
+
+def test_explicit_weekly_total_without_actuals_and_seven_day_actual_observation_keep_their_expected_rates():
+    profile = _profile()
+    profile["athlete"]["current_weekly_training_minutes"] = 500
+    start = date(2026, 11, 16)
+    explicit = _baseline(profile, (), start)
+    one_week = tuple(
+        _actual_fact(f"actual:{offset}", start - timedelta(days=days), 50)
+        for offset, days in enumerate((6, 5, 4, 3, 2, 1, 1))
+    )
+    profile["athlete"].pop("current_weekly_training_minutes", None)
+    actual = _baseline(profile, one_week, start)
+
+    assert (explicit["selected_baseline_weekly_minutes"], explicit["selected_baseline_source"]) == (500, "explicit_weekly_total_training_estimate")
+    assert actual["normalized_actual_weekly_minutes"] == 350

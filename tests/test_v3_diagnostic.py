@@ -166,3 +166,37 @@ def test_persisted_style_21_day_observation_is_reported_and_normalized_before_r3
     assert evidence["strength_evidence_source"] == "normalized_observation_window_evidence"
     assert any(item["recommended_strength_exposures"] > 0 for item in report["r3"]["segments"])
     assert report["conservation"]["pass"]
+
+
+def test_persisted_style_sparse_actuals_do_not_dilute_explicit_r2_weekly_total_baseline():
+    profile = synthetic_profile()
+    profile["season"] = {"start_date": "2026-11-18", "end_date": "2026-12-25"}
+    profile["weekly_availability"] = [
+        {"weekday": day, "available": True, "max_training_minutes": 90, "rowing_modes": ["erg"]}
+        for day in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    ]
+    profile["athlete"].update({
+        "current_weekly_training_minutes": 500,
+        "current_approx_weekly_rowing_minutes": 240,
+    })
+    profile["training_context"] = {
+        "current_strength_sessions_per_week": 3,
+        "typical_strength_duration_minutes": 45,
+    }
+    history_actuals = {
+        f"actual:{day}:erg": {"status": "completed", "activity_type": "erg", "actual_duration_min": 60}
+        for day in ("2026-10-29", "2026-11-02", "2026-11-06", "2026-11-10")
+    }
+
+    report = generate_v3_diagnostic_report(
+        profile, planning_date=date(2026, 11, 18), history_actuals=history_actuals,
+    )
+
+    evidence = report["r2_baseline_evidence"]
+    assert evidence["actual_history_sufficient"] is False
+    assert evidence["explicit_weekly_total_training_minutes"] == 500
+    assert evidence["selected_baseline_weekly_minutes"] == 500
+    assert evidence["selected_baseline_source"] == "explicit_weekly_total_training_estimate"
+    assert evidence["insufficient_actual_history_not_used_for_dose"] is True
+    assert report["r2"]["recommended_physical_minutes"] == 2_714
+    assert report["conservation"]["pass"]

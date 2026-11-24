@@ -91,21 +91,64 @@ def _weekly_actual_baseline(facts: Iterable[HistoricalFact], planning_start: dat
     return round(sum(values) * 7 / observed_days)
 
 
+def _explicit_weekly_total_training_estimate(profile: Mapping[str, Any]) -> int | None:
+    """Return the legacy field whose schema explicitly declares a weekly total."""
+    athlete = profile.get("athlete", {}) if isinstance(profile.get("athlete"), Mapping) else {}
+    return _positive_int(athlete.get("current_weekly_training_minutes"))
+
+
+def r2_baseline_evidence(
+    profile: Mapping[str, Any], current: CurrentTrainingState, facts: Iterable[HistoricalFact], *, planning_start: date,
+) -> dict[str, int | str | bool | None]:
+    """Select R2's baseline under the same actual-history sufficiency contract.
+
+    A calculable actual rate is diagnostic evidence, not automatically a dose
+    authority.  It may drive the R2 baseline only after the existing history
+    sufficiency policy accepts that observation set.
+    """
+    facts = tuple(facts)
+    actual_history_sufficient = recent_actual_history_is_sufficient(facts, planning_start=planning_start)
+    actual_weekly = _weekly_actual_baseline(facts, planning_start)
+    explicit_weekly = _explicit_weekly_total_training_estimate(profile)
+    insufficient_actual_not_used = bool(actual_weekly is not None and not actual_history_sufficient)
+    if actual_history_sufficient and actual_weekly is not None:
+        selected, source, confidence = actual_weekly, "sufficient_recent_actual_training", "high"
+    elif explicit_weekly is not None:
+        selected, source, confidence = explicit_weekly, "explicit_weekly_total_training_estimate", current.confidence
+    elif current.approximate_total_physical_minutes is not None:
+        selected, source, confidence = (
+            current.approximate_total_physical_minutes,
+            "fallback_current_training_state_estimate",
+            current.confidence,
+        )
+    else:
+        athlete = profile.get("athlete", {}) if isinstance(profile.get("athlete"), Mapping) else {}
+        experience = str(athlete.get("experience_level", "intermediate"))
+        selected, source, confidence = (
+            _FALLBACK_WEEKLY_MINUTES.get(experience, _FALLBACK_WEEKLY_MINUTES["intermediate"]),
+            "fallback_conservative_experience_baseline",
+            "low",
+        )
+    return {
+        "actual_history_sufficient": actual_history_sufficient,
+        "normalized_actual_weekly_minutes": actual_weekly,
+        "explicit_weekly_total_training_minutes": explicit_weekly,
+        "selected_baseline_weekly_minutes": selected,
+        "selected_baseline_source": source,
+        "selected_baseline_confidence": confidence,
+        "insufficient_actual_history_not_used_for_dose": insufficient_actual_not_used,
+    }
+
+
 def _baseline_weekly_minutes(
     profile: Mapping[str, Any], current: CurrentTrainingState, facts: Iterable[HistoricalFact], *, planning_start: date,
 ) -> tuple[int, str, str]:
-    actual_weekly = _weekly_actual_baseline(facts, planning_start)
-    estimate = current.approximate_total_physical_minutes
-    if current.source.value == "recent_actuals" and actual_weekly is not None:
-        return actual_weekly, "recent_actual_training", "high"
-    if actual_weekly is not None and estimate is not None:
-        # The equal blend is explicit R2 policy, not a physiological claim.
-        return round((actual_weekly + estimate) / 2), "mixed_actual_and_athlete_estimate", "moderate"
-    if estimate is not None:
-        return estimate, "athlete_current_training_estimate", current.confidence
-    athlete = profile.get("athlete", {}) if isinstance(profile.get("athlete"), Mapping) else {}
-    experience = str(athlete.get("experience_level", "intermediate"))
-    return _FALLBACK_WEEKLY_MINUTES.get(experience, _FALLBACK_WEEKLY_MINUTES["intermediate"]), "conservative_experience_start", "low"
+    evidence = r2_baseline_evidence(profile, current, facts, planning_start=planning_start)
+    return (
+        int(evidence["selected_baseline_weekly_minutes"]),
+        str(evidence["selected_baseline_source"]),
+        str(evidence["selected_baseline_confidence"]),
+    )
 
 
 def _date_capacity(profile: Mapping[str, Any], day: date) -> int:
@@ -372,9 +415,10 @@ def derive_recommended_training_dose(
         recent_actuals_sufficient=sufficient, observation_window_days=21,
     )
     state = reduce_physiological_state(context, profile=profile)
-    baseline_weekly, baseline_source, confidence = _baseline_weekly_minutes(
-        profile, current, context.historical_facts, planning_start=planning_start,
-    )
+    baseline_evidence = r2_baseline_evidence(profile, current, context.historical_facts, planning_start=planning_start)
+    baseline_weekly = int(baseline_evidence["selected_baseline_weekly_minutes"])
+    baseline_source = str(baseline_evidence["selected_baseline_source"])
+    confidence = str(baseline_evidence["selected_baseline_confidence"])
     starts = _boundaries(profile, state, planning_start, planning_end)
     ranges = tuple(zip(starts, starts[1:]))
     capacities = tuple(_capacity(profile, start, end - timedelta(days=1)) for start, end in ranges)
@@ -389,7 +433,12 @@ def derive_recommended_training_dose(
         target = round(baseline_weekly * days / 7 * modifier_percent / 100)
         requested.append(target)
         statuses.append(status)
-        rationales.append((f"baseline_source:{baseline_source}", *rationale))
+        rationales.append((
+            f"baseline_source:{baseline_source}",
+            *( ("insufficient_actual_history_not_used_for_dose",)
+               if baseline_evidence["insufficient_actual_history_not_used_for_dose"] else () ),
+            *rationale,
+        ))
     mode, value = _override(profile)
     constraints: list[str] = []
     if mode == "fixed":
