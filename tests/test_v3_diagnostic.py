@@ -41,6 +41,15 @@ def test_reset_spine_diagnostic_separates_capacity_conservation_and_plausibility
     assert report["planning_goals"]["primary_goal"] == "develop_strength"
     assert report["training_preferences"]["combined_days"] == "preferred"
     assert report["rowing_modalities"] == ["erg"]
+    assert report["r3_weekly_evidence"] == {
+        "observation_window_days": 21,
+        "raw_observation_rowing_minutes": 240,
+        "raw_observation_strength_exposures": 3,
+        "weekly_rowing_minutes": 240,
+        "weekly_strength_exposures": 3,
+        "rowing_evidence_source": "explicit_weekly_profile_context",
+        "strength_evidence_source": "explicit_weekly_profile_context",
+    }
     assert {result.materialized.modality.value for result in report["r5"].results if result.materialized and result.materialized.purpose.value != "strength"} == {"erg"}
     assert report["diagnostic_timing_ms"]
     assert report["diagnostic_counts"]["r4_day_count"] == len(report["calendar"])
@@ -49,6 +58,7 @@ def test_reset_spine_diagnostic_separates_capacity_conservation_and_plausibility
     assert "r4" not in public and "r5" not in public
     assert public["calendar"] == report["calendar"]
     assert public["workouts"] == report["workouts"]
+    assert public["r3_weekly_evidence"] == report["r3_weekly_evidence"]
     assert json.loads(json.dumps(jsonable_encoder(public)))["conservation"]["pass"] is True
 
 
@@ -120,4 +130,39 @@ def test_persisted_diagnostic_consumes_the_canonical_completed_history_path():
     assert report["persisted_input_audit"]["weekly_overrides_planner_input"] is False
     assert report["persisted_input_audit"]["performance_tests_source"] == "persisted_profile"
     assert report["persisted_input_audit"]["race_context_source"] == "persisted_profile"
+    assert report["conservation"]["pass"]
+
+
+def test_persisted_style_21_day_observation_is_reported_and_normalized_before_r3_allocation():
+    profile = synthetic_profile()
+    profile["season"] = {"start_date": "2026-11-18", "end_date": "2026-12-25"}
+    profile["weekly_availability"] = [
+        {"weekday": day, "available": True, "max_training_minutes": 90, "rowing_modes": ["erg"]}
+        for day in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    ]
+    profile["athlete"].pop("current_approx_weekly_rowing_minutes", None)
+    profile["athlete"].pop("current_rowing_sessions_per_week", None)
+    profile["training_context"] = {"typical_strength_duration_minutes": 45}
+    history_actuals = {
+        f"actual:{day}:erg": {"status": "completed", "activity_type": "erg", "actual_duration_min": 80}
+        for day in ("2026-10-28", "2026-11-04", "2026-11-10")
+    }
+    history_actuals.update({
+        f"actual:{day}:strength": {"status": "completed", "activity_type": "strength", "actual_duration_min": 45}
+        for day in ("2026-10-31", "2026-11-07", "2026-11-14")
+    })
+
+    report = generate_v3_diagnostic_report(
+        profile, planning_date=date(2026, 11, 18), history_actuals=history_actuals,
+    )
+
+    evidence = report["r3_weekly_evidence"]
+    assert evidence["observation_window_days"] == 21
+    assert evidence["raw_observation_rowing_minutes"] == 240
+    assert evidence["raw_observation_strength_exposures"] == 3
+    assert evidence["weekly_rowing_minutes"] == 80
+    assert evidence["weekly_strength_exposures"] == 1
+    assert evidence["rowing_evidence_source"] == "normalized_observation_window_evidence"
+    assert evidence["strength_evidence_source"] == "normalized_observation_window_evidence"
+    assert any(item["recommended_strength_exposures"] > 0 for item in report["r3"]["segments"])
     assert report["conservation"]["pass"]

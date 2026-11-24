@@ -11,6 +11,7 @@ from datetime import date
 from typing import Any, Mapping
 
 from .planning_domain import (
+    CurrentTrainingSource,
     CurrentTrainingState,
     RecommendedTrainingDose,
     TrainingAllocation,
@@ -48,14 +49,49 @@ def _discrete_exposures(per_week: int, days: int) -> int:
     return whole_weeks * per_week + min(per_week, remainder // interval)
 
 
-def _strength_inputs(profile: Mapping[str, Any], current: CurrentTrainingState) -> tuple[int, int, str, str | None]:
+def _normalized_weekly_minutes(observed_minutes: int, observation_window_days: int) -> int:
+    """Return a deterministic nearest whole-minute seven-day equivalent."""
+    return (observed_minutes * 7 + observation_window_days // 2) // observation_window_days
+
+
+def _normalized_weekly_exposures(observed_exposures: int, observation_window_days: int) -> int:
+    """Return a conservative discrete weekly exposure rate.
+
+    Floor is deliberate: a sparse observation must not create an extra weekly
+    strength obligation merely because a partial observation window is scaled.
+    The later ``_discrete_exposures`` function still determines what fits a
+    partial cadence segment.
+    """
+    return observed_exposures * 7 // observation_window_days
+
+
+def _is_observation_window_evidence(current: CurrentTrainingState) -> bool:
+    """True only when current-state quantities came from completed actuals."""
+    return (
+        current.source is CurrentTrainingSource.RECENT_ACTUALS
+        and current.observation_window_days is not None
+    )
+
+
+def _strength_inputs(profile: Mapping[str, Any], current: CurrentTrainingState) -> tuple[int, int, str, str | None, str]:
     context = profile.get("training_context", {}) if isinstance(profile.get("training_context"), Mapping) else {}
     override = context.get("strength_override", {}) if isinstance(context.get("strength_override"), Mapping) else {}
     mode = str(override.get("mode", "none"))
     requested = _positive_int(override.get("sessions_per_week"))
     current_sessions = _positive_int(context.get("current_strength_sessions_per_week"))
-    if current_sessions is None:
-        current_sessions = current.strength_exposures or 0
+    if current_sessions is not None:
+        strength_evidence_source = "explicit_weekly_profile_context"
+    elif current.strength_exposures is not None and _is_observation_window_evidence(current):
+        current_sessions = _normalized_weekly_exposures(
+            current.strength_exposures, current.observation_window_days or 7,
+        )
+        strength_evidence_source = "normalized_observation_window_evidence"
+    elif current.strength_exposures is not None:
+        current_sessions = current.strength_exposures
+        strength_evidence_source = "fallback_current_training_state_evidence"
+    else:
+        current_sessions = 0
+        strength_evidence_source = "fallback_default_evidence"
     duration = _positive_int(override.get("expected_duration_minutes"))
     if duration is not None:
         duration_source = "strength_override_expected_duration"
@@ -70,7 +106,7 @@ def _strength_inputs(profile: Mapping[str, Any], current: CurrentTrainingState) 
         duration_source = "policy_default_strength_duration"
     if mode in {"minimum", "fixed_commitment"} and requested is None:
         raise ValueError("strength_override_requires_exposure_count")
-    return current_sessions, duration, duration_source, mode if mode != "none" else None
+    return current_sessions, duration, duration_source, mode if mode != "none" else None, strength_evidence_source
 
 
 def _goal(profile: Mapping[str, Any]) -> str | None:
@@ -96,13 +132,39 @@ def _phase_and_race_context(profile: Mapping[str, Any], start: date, end: date) 
     return phase, race_specific
 
 
-def _rowing_weekly_evidence(profile: Mapping[str, Any], current: CurrentTrainingState) -> int:
+def _rowing_weekly_evidence(profile: Mapping[str, Any], current: CurrentTrainingState) -> tuple[int, str]:
     athlete = profile.get("athlete", {}) if isinstance(profile.get("athlete"), Mapping) else {}
-    return (
-        current.approximate_rowing_minutes
-        or _positive_int(athlete.get("current_approx_weekly_rowing_minutes"))
-        or ((_positive_int(athlete.get("current_rowing_sessions_per_week")) or 0) * 45)
-    )
+    explicit_weekly = _positive_int(athlete.get("current_approx_weekly_rowing_minutes"))
+    if explicit_weekly is not None:
+        return explicit_weekly, "explicit_weekly_profile_context"
+    if current.approximate_rowing_minutes is not None and _is_observation_window_evidence(current):
+        return (
+            _normalized_weekly_minutes(
+                current.approximate_rowing_minutes, current.observation_window_days or 7,
+            ),
+            "normalized_observation_window_evidence",
+        )
+    if current.approximate_rowing_minutes is not None:
+        return current.approximate_rowing_minutes, "fallback_current_training_state_evidence"
+    sessions_per_week = _positive_int(athlete.get("current_rowing_sessions_per_week"))
+    if sessions_per_week is not None:
+        return sessions_per_week * 45, "fallback_explicit_weekly_session_count"
+    return 0, "fallback_default_evidence"
+
+
+def weekly_evidence_for_allocation(profile: Mapping[str, Any], current: CurrentTrainingState) -> dict[str, int | str | None]:
+    """Expose raw/current-state evidence and R3's normalized weekly inputs."""
+    strength, _duration, _duration_source, _mode, strength_source = _strength_inputs(profile, current)
+    rowing, rowing_source = _rowing_weekly_evidence(profile, current)
+    return {
+        "observation_window_days": current.observation_window_days,
+        "raw_observation_rowing_minutes": current.approximate_rowing_minutes,
+        "raw_observation_strength_exposures": current.strength_exposures,
+        "weekly_rowing_minutes": rowing,
+        "weekly_strength_exposures": strength,
+        "rowing_evidence_source": rowing_source,
+        "strength_evidence_source": strength_source,
+    }
 
 
 def _cross_training_eligible(profile: Mapping[str, Any]) -> bool:
@@ -152,13 +214,13 @@ def allocate_training_dose(
     current_state: CurrentTrainingState, state,
 ) -> TrainingAllocationResult:
     """Partition an R2 dose without importing any legacy future target."""
-    current_strength, duration, duration_source, override_mode = _strength_inputs(profile, current_state)
+    current_strength, duration, duration_source, override_mode, strength_evidence_source = _strength_inputs(profile, current_state)
     desired_per_week = _strength_desired_per_week(profile, current_strength, override_mode)
     strength_experience = str((profile.get("training_context") or {}).get("strength_experience") or "none")
     current_strength_state = str((profile.get("training_context") or {}).get("current_strength_state") or "none")
     goal = _goal(profile)
     cross_eligible = _cross_training_eligible(profile)
-    rowing_weekly = _rowing_weekly_evidence(profile, current_state)
+    rowing_weekly, rowing_evidence_source = _rowing_weekly_evidence(profile, current_state)
     raw_segments: list[TrainingAllocationSegment] = []
 
     for segment in recommended_dose.segments:
@@ -170,7 +232,12 @@ def allocate_training_dose(
         )
         taper = segment.recommendation_status == "taper" or phase == "taper"
         exposures = _discrete_exposures(desired_per_week, days)
-        rationale = ["allocation_from_recommended_training_dose", f"strength_duration:{duration_source}"]
+        rationale = [
+            "allocation_from_recommended_training_dose",
+            f"strength_duration:{duration_source}",
+            f"strength_weekly_evidence:{strength_evidence_source}",
+            f"rowing_weekly_evidence:{rowing_evidence_source}",
+        ]
         constraints = list(_segment_context_codes(segment, profile, state))
         if recovery:
             exposures = 0

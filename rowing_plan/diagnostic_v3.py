@@ -14,7 +14,7 @@ from .recommended_training_dose import recent_actual_history_is_sufficient
 from .generation_history import recover_generation_history
 from .replacement_plan_v3 import generate_recommended_training_dose_v3
 from .rowing_quality_v3 import RowingQualityPlanningContext, generate_rowing_quality_plan
-from .training_allocation import generate_training_allocation_v3
+from .training_allocation import generate_training_allocation_v3, weekly_evidence_for_allocation
 from .planning_domain import PhysicalCategory, TrainingModality
 from .training_days import CombinedDayPreferences, DailyTrainingCapacity, generate_training_days_v3
 
@@ -85,7 +85,12 @@ def render_v3_diagnostic_report(report: Mapping[str, Any]) -> str:
     current = report["current_training"]
     lines += [f"Current evidence: source={current['source']} total={current['approximate_total_physical_minutes']} rowing={current['approximate_rowing_minutes']} rowing exposures={current['rowing_exposures']} strength exposures={current['strength_exposures']}",
               "", "R2 TOTAL DOSE", f"Recommended: {report['r2']['recommended_physical_minutes']} min; baseline/current estimate: {current['approximate_total_physical_minutes']} min; capacity is a ceiling, not a quota."]
-    lines += ["", "R3 ALLOCATION"]
+    evidence = report.get("r3_weekly_evidence", {})
+    lines += [
+        "", "R3 WEEKLY EVIDENCE",
+        f"Observation window: {evidence.get('observation_window_days')}; raw rowing={evidence.get('raw_observation_rowing_minutes')} raw strength exposures={evidence.get('raw_observation_strength_exposures')}; normalized weekly rowing={evidence.get('weekly_rowing_minutes')} strength exposures={evidence.get('weekly_strength_exposures')}",
+        "", "R3 ALLOCATION",
+    ]
     for segment in report["r3"]["segments"]:
         lines.append(f"{segment['start_date']}–{segment['end_date']}: total={segment['recommended_physical_minutes']} rowing={segment['rowing_specific_minutes']} strength={segment['strength_minutes']} ({segment['recommended_strength_exposures']}×{segment['expected_strength_duration_minutes']}) general={segment['general_aerobic_minutes']} other={segment['other_physical_minutes']}")
     lines += ["", "R6 QUALITY"]
@@ -232,7 +237,7 @@ def generate_v3_diagnostic_report(
         "available_capacity_minutes": sum(day.usable_minutes for day in days),
         "planning_goals": dict(profile.get("planning_goals", {})), "training_preferences": preferences.to_dict(),
         "rowing_modalities": [item.value for item in rowing_modalities],
-        "current_training": asdict(current), "r2": asdict(r2), "r3": asdict(r3),
+        "current_training": asdict(current), "r3_weekly_evidence": weekly_evidence_for_allocation(profile, current), "r2": asdict(r2), "r3": asdict(r3),
         "r6": [asdict(item) for item in quality], "r4": r4, "r5": r5, "calendar": calendar, "workouts": workouts,
         "conservation": {"r2": r2_total, "r3": r3_total, "r4": r4_total, "r5": r5_total, "pass": r2_total == r3_total == r4_total == r5_total},
         "structural_validation": "PASS" if r4.success and r5.success and r2_total == r3_total == r4_total == r5_total else "FAIL",
@@ -261,7 +266,7 @@ def generate_v3_diagnostic_report(
 
 _PUBLIC_DIAGNOSTIC_KEYS = (
     "planning_date", "planning_end", "available_capacity_minutes",
-    "planning_goals", "training_preferences", "rowing_modalities",
+    "planning_goals", "training_preferences", "rowing_modalities", "r3_weekly_evidence",
     "current_training", "r2", "r3", "r6", "calendar", "workouts",
     "conservation", "structural_validation", "plausibility_reviews",
     "training_plausibility", "persisted_input_audit", "diagnostic_timing_ms",
