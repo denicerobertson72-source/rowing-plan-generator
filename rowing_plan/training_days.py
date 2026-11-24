@@ -676,12 +676,15 @@ def generate_training_days_v3(
             if category is PhysicalCategory.ROWING_SPECIFIC and segment_id in quality_plan_by_segment:
                 quality_plan = quality_plan_by_segment[segment_id]
                 if quality_plan.rowing_specific_minutes != segment.rowing_specific_minutes:
-                    infeasibilities.append(TrainingDayInfeasibility(
-                        "quality_plan_r3_rowing_mismatch", segment_id, category,
-                        abs(quality_plan.rowing_specific_minutes - segment.rowing_specific_minutes),
+                    # R6 refines the composition of R3 rowing minutes; it
+                    # cannot replace R3 as the physical-dose authority.  A
+                    # stale/empty composition budget is therefore observable,
+                    # but must not silently delete the owning R3 allocation.
+                    diagnostics.append(TrainingDayDiagnostic(
+                        "quality_plan_r3_rowing_mismatch", None, segment_id,
+                        f"r6={quality_plan.rowing_specific_minutes};r3={segment.rowing_specific_minutes}",
                     ))
-                else:
-                    place_quality_aware_rowing(segment, segment_id, quality_plan)
+                place_quality_aware_rowing(segment, segment_id, quality_plan)
                 continue
             required = max(0, expected[category] - authority_category_minutes.get((segment_id, category), 0))
             if category is PhysicalCategory.OTHER and required:

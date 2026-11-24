@@ -51,6 +51,21 @@ def _quality_plan(allocation: TrainingAllocation, *, priority=QualityRequirement
     )
 
 
+def _empty_quality_plan(allocation: TrainingAllocation, *, declared_rowing_minutes: int | None = None):
+    """An R6 composition plan with no quality requirements.
+
+    ``declared_rowing_minutes`` deliberately permits a stale R6 summary: R4
+    must continue to honour the owning R3 allocation in that case.
+    """
+    segment = allocation.segments[0]
+    return RowingQualityPlan(
+        allocation_segment_id(segment), segment.start_date, segment.end_date,
+        segment.rowing_specific_minutes if declared_rowing_minutes is None else declared_rowing_minutes,
+        0, (), "test", None, "high", policy_version="r7-test",
+        performance_profile_version="r7-test", basis_fingerprint="r7-test",
+    )
+
+
 def _context():
     return MaterializationContext(phase_id="threshold_development", experience="experienced")
 
@@ -71,9 +86,41 @@ def test_exact_215_partition_quality_residual_and_history_frequency_are_conserve
     assert sum(item.duration_minutes for item in rows) == 215
     assert len(rows) == 4
     assert any(item.quality_requirement_id for item in rows)
+    assert any(item.purpose is TrainingComponentPurpose.EASY_AEROBIC for item in rows)
     assert all(item.duration_minutes >= 25 for item in rows)
     materialized = materialize_training_days_v3(result, context=_context(), allocation=allocation)
     assert materialized.success
+
+
+def test_empty_r6_requirements_do_not_drop_r3_rowing_or_strength_minutes():
+    allocation = _allocation(90, strength=45)
+    # This production-shaped stale R6 budget used to take the mismatch branch
+    # and skip all ordinary rowing placement.
+    result = generate_training_days_v3(
+        allocation, _capacity(70, 70, 70),
+        rowing_quality_plans=(_empty_quality_plan(allocation, declared_rowing_minutes=0),),
+        materialization_context=_context(),
+    )
+
+    assert result.success
+    assert sum(item.duration_minutes for item in _rowing(result)) == 90
+    assert sum(item.duration_minutes for item in result.components if item.physical_category is PhysicalCategory.STRENGTH) == 45
+    assert all(item.purpose is TrainingComponentPurpose.EASY_AEROBIC for item in _rowing(result))
+    assert any(item.code == "quality_plan_r3_rowing_mismatch" for item in result.diagnostics)
+    assert sum(item.duration_minutes for item in result.components) == allocation.recommended_physical_minutes
+
+
+def test_empty_r6_plan_returns_explicit_infeasibility_when_r3_rowing_cannot_fit():
+    allocation = _allocation(75)
+    result = generate_training_days_v3(
+        allocation, _capacity(60),
+        rowing_quality_plans=(_empty_quality_plan(allocation),), materialization_context=_context(),
+    )
+
+    assert not result.success
+    assert any(item.code in {"rowing_partition_infeasible", "r3_category_conservation_mismatch"}
+               for item in result.infeasibilities)
+    assert sum(item.duration_minutes for item in _rowing(result)) != allocation.rowing_specific_minutes
 
 
 def test_small_residual_is_rebalanced_into_the_quality_envelope_never_a_tiny_component():

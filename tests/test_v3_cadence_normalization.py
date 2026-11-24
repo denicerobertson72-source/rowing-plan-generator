@@ -10,6 +10,7 @@ from rowing_plan.planning_domain import (
     PhysicalCategory,
     RecommendedDoseSegment,
     RecommendedTrainingDose,
+    RowingQualityPlan,
     TrainingAllocation,
     TrainingAllocationSegment,
     TrainingComponentPurpose,
@@ -214,3 +215,87 @@ def test_r4_keeps_generated_components_in_owning_cadence_segment_and_preserves_a
         for start, end in calls
         if (start, end) != (allocation.planning_start, allocation.planning_end)
     )
+
+
+def test_six_cadence_segments_preserve_r3_rowing_when_r6_has_empty_stale_budgets():
+    cadence = _cadence_allocation()
+    # Use a materializable ordinary-row duration in every cadence segment.
+    # The separate low-duration contract remains responsible for reporting an
+    # explicit infeasibility rather than inventing a catalog envelope.
+    segments = tuple(
+        TrainingAllocationSegment(
+            item.start_date, item.end_date, 90, 90, 0, 0, 0, 0,
+            0, 0, 0, 45, rationale_codes=("test",),
+        )
+        for item in cadence.segments
+    )
+    allocation = TrainingAllocation(
+        START, END, segments, 90 * len(segments), 90 * len(segments),
+        0, 0, 0, 0, rationale_codes=("test",), confidence="high",
+    )
+    # R6 is composition-only.  Empty/stale R6 budgets must not erase the
+    # physical rowing dose owned by the six R3 cadence segments.
+    empty_plans = tuple(
+        RowingQualityPlan(
+            allocation_segment_id(segment), segment.start_date, segment.end_date,
+            0, 0, (), "test", None, "high", policy_version="test",
+            performance_profile_version="test", basis_fingerprint=f"empty:{index}",
+        )
+        for index, segment in enumerate(allocation.segments)
+    )
+
+    result = generate_training_days_v3(
+        allocation, _capacities(), rowing_quality_plans=empty_plans,
+    )
+
+    assert result.success
+    for segment in allocation.segments:
+        segment_id = allocation_segment_id(segment)
+        segment_components = [
+            component for day in result.days for component in day.components
+            if component.allocation_segment_id == segment_id
+        ]
+        assert sum(item.duration_minutes for item in segment_components
+                   if item.physical_category is PhysicalCategory.ROWING_SPECIFIC) == segment.rowing_specific_minutes
+        assert sum(item.duration_minutes for item in segment_components
+                   if item.physical_category is PhysicalCategory.STRENGTH) == segment.strength_minutes
+        assert sum(item.duration_minutes for item in segment_components) == segment.recommended_physical_minutes
+        assert all(segment.start_date <= day.date <= segment.end_date
+                   for day in result.days for component in day.components
+                   if component.allocation_segment_id == segment_id)
+
+
+def test_persisted_style_38_day_dose_keeps_all_r3_rowing_when_every_r6_plan_is_empty():
+    profile = _profile()
+    for item in profile["weekly_availability"]:
+        item["max_training_minutes"] = 90
+    profile["athlete"].update({
+        "current_weekly_training_minutes": 500,
+        "current_approx_weekly_rowing_minutes": 240,
+    })
+    profile["training_context"]["current_strength_sessions_per_week"] = 3
+    allocation_result = generate_training_allocation_v3(profile, planning_date=START)
+    assert allocation_result.success
+    allocation = allocation_result.allocation
+    empty_plans = tuple(
+        RowingQualityPlan(
+            allocation_segment_id(segment), segment.start_date, segment.end_date,
+            0, 0, (), "test", None, "high", policy_version="test",
+            performance_profile_version="test", basis_fingerprint=f"persisted-empty:{index}",
+        )
+        for index, segment in enumerate(allocation.segments)
+    )
+    capacity = tuple(
+        DailyTrainingCapacity(START + timedelta(days=index), 90)
+        for index in range((END - START).days + 1)
+    )
+
+    result = generate_training_days_v3(allocation, capacity, rowing_quality_plans=empty_plans)
+
+    assert result.success
+    assert allocation.recommended_physical_minutes == 2_714
+    assert sum(day.total_physical_minutes for day in result.days) == allocation.recommended_physical_minutes
+    assert sum(component.duration_minutes for component in result.components
+               if component.physical_category is PhysicalCategory.ROWING_SPECIFIC) == allocation.rowing_specific_minutes
+    assert sum(component.duration_minutes for component in result.components
+               if component.physical_category is PhysicalCategory.STRENGTH) == allocation.strength_minutes
