@@ -13,11 +13,13 @@ from typing import Any, Mapping
 from .planning_domain import (
     CurrentTrainingSource,
     CurrentTrainingState,
+    GeneralAerobicModalityCapability,
     RecommendedTrainingDose,
     TrainingAllocation,
     TrainingAllocationInfeasibility,
     TrainingAllocationResult,
     TrainingAllocationSegment,
+    TrainingModality,
 )
 from .planning_normalization import NormalizedPlanningContext, normalize_planning_inputs
 from .planning_profile import normalize_current_training_state
@@ -167,13 +169,49 @@ def weekly_evidence_for_allocation(profile: Mapping[str, Any], current: CurrentT
     }
 
 
-def _cross_training_eligible(profile: Mapping[str, Any]) -> bool:
+_GENERAL_AEROBIC_MODALITIES = {
+    "bike": TrainingModality.BIKE,
+    "elliptical": TrainingModality.ELLIPTICAL,
+    "stair_climber": TrainingModality.STAIR_CLIMBER,
+    "running": TrainingModality.RUNNING,
+}
+
+
+def general_aerobic_capabilities(profile: Mapping[str, Any]) -> tuple[GeneralAerobicModalityCapability, ...]:
+    """Adapt persisted cross-training settings into R3 capability evidence.
+
+    Disabled and explicitly avoided modalities are intentionally absent.  A
+    profile currently has no date-specific cross-training-equipment field, so
+    this function represents only the athlete-approved capability that exists
+    in persisted input; R4 applies daily capacity/combined-day restrictions.
+    """
     cross = profile.get("cross_training", {}) if isinstance(profile.get("cross_training"), Mapping) else {}
     modes = cross.get("modalities", {}) if isinstance(cross.get("modalities"), Mapping) else {}
-    return any(
-        isinstance(item, Mapping) and item.get("enabled") is True and item.get("preference", "neutral") != "avoid"
-        for item in modes.values()
-    )
+    values = []
+    for key, modality in _GENERAL_AEROBIC_MODALITIES.items():
+        item = modes.get(key)
+        if not isinstance(item, Mapping) or item.get("enabled") is not True:
+            continue
+        preference = str(item.get("preference", "neutral"))
+        if preference == "avoid":
+            continue
+        familiarity = item.get("familiarity")
+        familiarity = familiarity if familiarity in {None, "new", "some_experience", "regular"} else None
+        values.append(GeneralAerobicModalityCapability(
+            modality=modality,
+            familiarity=familiarity,
+            preference=preference if preference in {"prefer", "neutral"} else "neutral",
+            provenance=(
+                f"profile_cross_training:{key}:enabled",
+                f"profile_cross_training:{key}:preference:{preference}",
+                f"profile_cross_training:{key}:familiarity:{familiarity or 'unspecified'}",
+            ),
+        ))
+    return tuple(sorted(values, key=lambda item: item.modality.value))
+
+
+def _cross_training_eligible(profile: Mapping[str, Any]) -> bool:
+    return bool(general_aerobic_capabilities(profile))
 
 
 def _strength_desired_per_week(
@@ -219,7 +257,8 @@ def allocate_training_dose(
     strength_experience = str((profile.get("training_context") or {}).get("strength_experience") or "none")
     current_strength_state = str((profile.get("training_context") or {}).get("current_strength_state") or "none")
     goal = _goal(profile)
-    cross_eligible = _cross_training_eligible(profile)
+    cross_capabilities = general_aerobic_capabilities(profile)
+    cross_eligible = bool(cross_capabilities)
     rowing_weekly, rowing_evidence_source = _rowing_weekly_evidence(profile, current_state)
     raw_segments: list[TrainingAllocationSegment] = []
 
@@ -301,6 +340,7 @@ def allocate_training_dose(
             minimum_strength_exposures=min_strength, maximum_strength_exposures=max_strength,
             expected_strength_duration_minutes=duration,
             rationale_codes=tuple(rationale), constraints=tuple(constraints),
+            general_aerobic_capabilities=cross_capabilities,
         ))
 
     segments = []

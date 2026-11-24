@@ -330,6 +330,33 @@ class RecommendedTrainingDose:
 
 
 @dataclass(frozen=True)
+class GeneralAerobicModalityCapability:
+    """An athlete-approved, non-rowing aerobic modality for R3/R4.
+
+    This is capability evidence, not a prescription.  R3 carries it alongside
+    an already-authorized general-aerobic allocation and R4 resolves one
+    concrete modality when it dates the component.
+    """
+
+    modality: TrainingModality
+    familiarity: str | None = None
+    preference: str = "neutral"
+    provenance: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.modality not in {
+            TrainingModality.BIKE, TrainingModality.ELLIPTICAL,
+            TrainingModality.STAIR_CLIMBER, TrainingModality.RUNNING,
+        }:
+            raise ValueError("general_aerobic_modality_capability_is_invalid")
+        if self.familiarity not in {None, "new", "some_experience", "regular"}:
+            raise ValueError("general_aerobic_modality_familiarity_is_invalid")
+        if self.preference not in {"prefer", "neutral"}:
+            raise ValueError("general_aerobic_modality_preference_is_invalid")
+        object.__setattr__(self, "provenance", tuple(sorted(set(self.provenance))))
+
+
+@dataclass(frozen=True)
 class TrainingAllocationSegment:
     """One exact physical-category partition of an R2 dose segment."""
 
@@ -348,6 +375,7 @@ class TrainingAllocationSegment:
     rationale_codes: tuple[str, ...] = ()
     constraints: tuple[str, ...] = ()
     other_provenance: tuple[str, ...] = ()
+    general_aerobic_capabilities: tuple[GeneralAerobicModalityCapability, ...] = ()
 
     def __post_init__(self) -> None:
         values = (
@@ -376,6 +404,10 @@ class TrainingAllocationSegment:
         object.__setattr__(self, "rationale_codes", tuple(sorted(set(self.rationale_codes))))
         object.__setattr__(self, "constraints", tuple(sorted(set(self.constraints))))
         object.__setattr__(self, "other_provenance", tuple(sorted(set(self.other_provenance))))
+        capabilities = tuple(sorted(self.general_aerobic_capabilities, key=lambda item: item.modality.value))
+        if len({item.modality for item in capabilities}) != len(capabilities):
+            raise ValueError("training_allocation_segment_general_aerobic_modalities_must_be_unique")
+        object.__setattr__(self, "general_aerobic_capabilities", capabilities)
 
 
 @dataclass(frozen=True)

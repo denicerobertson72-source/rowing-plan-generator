@@ -2,7 +2,9 @@
 
 This is deliberately a small, deterministic placement layer.  It consumes the
 authoritative R3 allocation exactly; it neither selects catalog workouts nor
-chooses a cross-training modality or rowing intensity composition.
+rowing intensity composition.  It resolves an athlete-approved general-aerobic
+modality because that decision needs the dated placement context, not another
+physical-dose allocation.
 """
 from __future__ import annotations
 
@@ -13,6 +15,7 @@ from typing import Iterable, Mapping
 
 from .planning_domain import (
     ComponentAuthority,
+    GeneralAerobicModalityCapability,
     PhysicalCategory,
     RaceEvent,
     TrainingAllocation,
@@ -169,6 +172,33 @@ def _default_purpose(category: PhysicalCategory) -> TrainingComponentPurpose:
         PhysicalCategory.GENERAL_AEROBIC: TrainingComponentPurpose.EASY_AEROBIC,
         PhysicalCategory.OTHER: TrainingComponentPurpose.RECOVERY,
     }[category]
+
+
+_GENERAL_AEROBIC_PREFERENCE = {"prefer": 0, "neutral": 1}
+_GENERAL_AEROBIC_FAMILIARITY = {"regular": 0, "some_experience": 1, "new": 2, None: 3}
+
+
+def _resolve_general_aerobic_modality(
+    capabilities: tuple[GeneralAerobicModalityCapability, ...],
+) -> GeneralAerobicModalityCapability | None:
+    """Choose only an R3-carried athlete-approved modality, deterministically.
+
+    Preference is the primary athlete direction, familiarity is the stable
+    tie-break, and modality name makes otherwise equal profile input fully
+    deterministic.  R4 owns this selection because it creates the dated
+    component; R3 remains the sole authority for *whether* general-aerobic
+    minutes exist.
+    """
+    if not capabilities:
+        return None
+    return min(
+        capabilities,
+        key=lambda item: (
+            _GENERAL_AEROBIC_PREFERENCE[item.preference],
+            _GENERAL_AEROBIC_FAMILIARITY[item.familiarity],
+            item.modality.value,
+        ),
+    )
 
 
 _QUALITY_PURPOSE_BY_FAMILY = {
@@ -388,6 +418,7 @@ def generate_training_days_v3(
     def append_generated(day: date, *, lineage: str, segment_id: str, category: PhysicalCategory,
                          minutes: int, purpose: TrainingComponentPurpose,
                          quality: RowingComponentRequirement | None = None,
+                         modality: TrainingModality | None = None,
                          capability_provenance: tuple[str, ...] = ()) -> None:
         permitted = ((TrainingModality.ERG, TrainingModality.ON_WATER) if category is PhysicalCategory.ROWING_SPECIFIC
                      else (TrainingModality.BIKE, TrainingModality.ELLIPTICAL, TrainingModality.STAIR_CLIMBER, TrainingModality.RUNNING)
@@ -395,7 +426,7 @@ def generate_training_days_v3(
         daily_components[day].append(_make_component(
             lineage=lineage, segment_id=segment_id, category=category, minutes=minutes,
             purpose=purpose, authority=ComponentAuthority.GENERATED,
-            sequence=len(daily_components[day]) + 1, permitted_modalities=permitted,
+            sequence=len(daily_components[day]) + 1, modality=modality, permitted_modalities=permitted,
             rationale_codes=("r3_allocation_component",),
             quality_requirement_id=quality.requirement_id if quality else None,
             quality_exposure_id=quality.exposure_id if quality else None,
@@ -842,6 +873,19 @@ def generate_training_days_v3(
                 place_quality_aware_rowing(segment, segment_id, quality_plan)
                 continue
             required = max(0, expected[category] - authority_category_minutes.get((segment_id, category), 0))
+            general_capability = None
+            if category is PhysicalCategory.GENERAL_AEROBIC and required:
+                general_capability = _resolve_general_aerobic_modality(segment.general_aerobic_capabilities)
+                if general_capability is None:
+                    infeasibilities.append(TrainingDayInfeasibility(
+                        "general_aerobic_modality_unresolved", segment_id, category, required,
+                        "r3_authorized_general_aerobic_requires_enabled_non_avoided_profile_modality",
+                    ))
+                    diagnostics.append(TrainingDayDiagnostic(
+                        "general_aerobic_modality_unresolved", None, segment_id,
+                        "no_enabled_non_avoided_profile_cross_training_modality",
+                    ))
+                    continue
             if category is PhysicalCategory.OTHER and required:
                 split_allowed = any(code in {"allow_split", "splittable"} for code in segment.other_provenance)
                 one_day = eligible_days(segment, category, required)
@@ -861,7 +905,18 @@ def generate_training_days_v3(
                 chosen = candidates[0]
                 minutes = min(required, remaining(chosen))
                 append_generated(chosen, lineage=f"{segment_id}:{category.value}:{index}", segment_id=segment_id,
-                                 category=category, minutes=minutes, purpose=_default_purpose(category))
+                                 category=category, minutes=minutes, purpose=_default_purpose(category),
+                                 modality=general_capability.modality if general_capability else None,
+                                 capability_provenance=(
+                                     ("r4:general_aerobic_modality_resolution", *general_capability.provenance)
+                                     if general_capability else ()
+                                 ))
+                if general_capability:
+                    diagnostics.append(TrainingDayDiagnostic(
+                        "general_aerobic_modality_selected", chosen, segment_id,
+                        f"modality={general_capability.modality.value};preference={general_capability.preference};"
+                        f"familiarity={general_capability.familiarity or 'unspecified'}",
+                    ))
                 required -= minutes
                 index += 1
 

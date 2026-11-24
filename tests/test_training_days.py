@@ -2,6 +2,7 @@ from datetime import date, timedelta
 
 from rowing_plan.planning_domain import (
     ComponentAuthority,
+    GeneralAerobicModalityCapability,
     PhysicalCategory,
     RaceEvent,
     TrainingAllocation,
@@ -24,7 +25,7 @@ START = date(2026, 1, 5)
 
 
 def allocation(*, days=1, rowing=0, strength_exposures=0, strength_duration=45,
-               general=0, other=0, other_provenance=()):
+               general=0, other=0, other_provenance=(), general_capabilities=None):
     end = START + timedelta(days=days - 1)
     strength = strength_exposures * strength_duration
     total = rowing + strength + general + other
@@ -32,6 +33,10 @@ def allocation(*, days=1, rowing=0, strength_exposures=0, strength_duration=45,
         START, end, total, rowing, strength, general, other, 0,
         strength_exposures, 0, strength_exposures, strength_duration,
         rationale_codes=("test",), other_provenance=other_provenance,
+        general_aerobic_capabilities=(
+            (GeneralAerobicModalityCapability(TrainingModality.STAIR_CLIMBER, "regular", "neutral", ("test",)),)
+            if general and general_capabilities is None else tuple(general_capabilities or ())
+        ),
     )
     return TrainingAllocation(
         START, end, (segment,), total, rowing, strength, general, other,

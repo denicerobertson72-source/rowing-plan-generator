@@ -244,7 +244,10 @@ def generate_v3_diagnostic_report(
                          "components": [{"component_id": item.component_id, "sequence": item.sequence, "category": item.physical_category.value,
                                          "purpose": item.purpose.value, "modality": _enum(item.modality), "physical_minutes": item.duration_minutes,
                                          "quality_work_minutes": item.quality_work_minutes, "quality_requirement_id": item.quality_requirement_id,
-                                         "authority": item.authority.value, "combined_day": day.combined_day} for item in day.components]})
+                                         "authority": item.authority.value, "combined_day": day.combined_day,
+                                         "permitted_modalities": [_enum(value) for value in item.permitted_modalities],
+                                         "capability_provenance": list(item.capability_provenance),
+                                         "rationale_codes": list(item.rationale_codes)} for item in day.components]})
     workouts = []
     for result in r5.results:
         materialized = result.materialized
@@ -253,6 +256,7 @@ def generate_v3_diagnostic_report(
                          "purpose": materialized.purpose.value if materialized else None,
                          "archetype_or_placeholder": (materialized.catalog_archetype_id or "exact_duration_placeholder") if materialized else result.failure.reason_code,
                          "physiological_work": asdict(materialized.physiological_work) if materialized and materialized.physiological_work else None,
+                         "modality": _enum(materialized.modality) if materialized else None,
                          "rationale": list(materialized.selection_rationale_codes) if materialized else []})
     rowing = [component for day in r4.days for component in day.components if component.physical_category is PhysicalCategory.ROWING_SPECIFIC]
     strength = [component for day in r4.days for component in day.components if component.physical_category is PhysicalCategory.STRENGTH]
