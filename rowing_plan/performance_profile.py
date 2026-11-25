@@ -117,12 +117,23 @@ def build_athlete_performance_profile(profile: Mapping[str, Any], *, as_of: date
             if raw.get("protocol") not in _PROTOCOLS:
                 continue
             valid = raw.get("valid_for_profile") is not False and raw.get("validity") in (None, "valid")
+            provenance = ["profile.tests.testing_blocks"]
+            if (
+                raw.get("protocol") == "seven_stroke_peak"
+                and raw.get("peak_watts") is None
+                and raw.get("average_watts") is not None
+            ):
+                # Earlier Profile payloads used ``average_watts`` as a
+                # generic manual-power field.  The protocol itself declares
+                # this value to be peak power; retain that source fact rather
+                # than changing the persisted athlete-owned row.
+                provenance.append("seven_stroke_protocol_declares_peak_power_from_legacy_average_watts_storage")
             evidence = PerformanceTestEvidence(
                 str(raw.get("id") or f"{raw.get('protocol')}:{raw.get('test_date') or 'undated'}"),
                 str(raw["protocol"]), _parsed(raw.get("test_date")), _watts(raw),
                 float(raw["time_seconds"]) if raw.get("time_seconds") is not None else None,
                 valid, raw.get("valid_for_profile") is True,
-                ("profile.tests.testing_blocks",),
+                tuple(provenance),
             )
             entries.append(evidence)
             if valid and (not current.get(evidence.protocol) or (evidence.test_date or date.min) >= (current[evidence.protocol].test_date or date.min)):

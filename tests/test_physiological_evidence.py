@@ -74,6 +74,35 @@ def test_complementary_winter_battery_preserves_distinct_direct_and_proxy_domain
     assert "complementary_physiological_evidence_available" in evidence.capability_description
 
 
+def test_legacy_seven_stroke_peak_protocol_normalizes_generic_average_storage_without_mutating_source():
+    profile = _profile((_test("seven", "seven_stroke_peak", average_watts=287),))
+    source = profile["tests"]["testing_blocks"][0]["performance_tests"][0]
+    evidence = build_physiological_evidence_profile(profile, as_of=AS_OF)
+    measurement = evidence.measurements[0]
+    assert source == {"id": "seven", "protocol": "seven_stroke_peak", "test_date": "2026-01-04",
+                      "valid_for_profile": True, "source": "manual", "average_watts": 287}
+    assert [(item.key, item.value) for item in measurement.outcomes] == [("peak_watts", 287)]
+    assert "seven_stroke_protocol_declares_peak_power_from_legacy_average_watts_storage" in measurement.provenance
+    assert dict(measurement.protocol_metadata) == {
+        "normalized_power_field": "peak_watts", "source_power_field": "average_watts",
+    }
+    assert _domains(evidence)["neuromuscular_peak_power"].evidence_status == "available"
+
+
+def test_explicit_seven_stroke_peak_and_ambiguous_historical_average_remain_distinct():
+    explicit = build_physiological_evidence_profile(
+        _profile((_test("seven-explicit", "seven_stroke_peak", peak_watts=300),)), as_of=AS_OF,
+    ).measurements[0]
+    ambiguous_evidence = build_physiological_evidence_profile(
+        _profile((_test("ambiguous", "other_historical_protocol", average_watts=300),)), as_of=AS_OF,
+    )
+    ambiguous = ambiguous_evidence.measurements[0]
+    assert [(item.key, item.value) for item in explicit.outcomes] == [("peak_watts", 300)]
+    assert "seven_stroke_protocol_declares_peak_power_from_legacy_average_watts_storage" not in explicit.provenance
+    assert [(item.key, item.value) for item in ambiguous.outcomes] == [("average_watts", 300)]
+    assert _domains(ambiguous_evidence)["neuromuscular_peak_power"].evidence_status == "missing"
+
+
 def test_maximal_and_submaximal_r20_are_distinct_and_legacy_r20_does_not_invent_intent():
     maximal = build_physiological_evidence_profile(_profile((
         _test("r20-max", "thirty_min_rate_capped_maximal", average_watts=150, duration_seconds=1800,

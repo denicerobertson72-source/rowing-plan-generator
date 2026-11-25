@@ -29,6 +29,28 @@ def test_performance_profile_keeps_raw_test_domains_and_relative_relationships_s
     assert profile.evidence_completeness == "complete"
 
 
+def test_legacy_seven_stroke_average_storage_keeps_legacy_peak_ratio_compatibility():
+    legacy = _profile((
+        {"id": "2k", "protocol": "two_k", "time_seconds": 420, "test_date": "2026-10-20", "valid_for_profile": True},
+        _test("60", "sixty_second", 430), _test("seven", "seven_stroke_peak", 700),
+    ))
+    explicit = _profile((
+        {"id": "2k", "protocol": "two_k", "time_seconds": 420, "test_date": "2026-10-20", "valid_for_profile": True},
+        _test("60", "sixty_second", 430),
+        {"id": "seven", "protocol": "seven_stroke_peak", "peak_watts": 700,
+         "test_date": "2026-10-20", "valid_for_profile": True},
+    ))
+    legacy_profile = build_athlete_performance_profile(legacy, as_of=AS_OF)
+    explicit_profile = build_athlete_performance_profile(explicit, as_of=AS_OF)
+    assert legacy["tests"]["testing_blocks"][0]["performance_tests"][-1]["average_watts"] == 700
+    assert legacy_profile.seven_stroke_watts == explicit_profile.seven_stroke_watts == 700
+    assert legacy_profile.relationships == explicit_profile.relationships
+    legacy_evidence = next(item for item in legacy_profile.tests if item.test_id == "seven")
+    explicit_evidence = next(item for item in explicit_profile.tests if item.test_id == "seven")
+    assert "seven_stroke_protocol_declares_peak_power_from_legacy_average_watts_storage" in legacy_evidence.provenance
+    assert "seven_stroke_protocol_declares_peak_power_from_legacy_average_watts_storage" not in explicit_evidence.provenance
+
+
 def test_missing_test_evidence_stays_unknown_and_season_focus_still_works():
     performance = build_athlete_performance_profile(_profile(), as_of=AS_OF)
     limiter = derive_performance_limiter(performance)

@@ -7,6 +7,7 @@ from time import perf_counter
 from typing import Any, Callable, Mapping
 
 from .materialization_v3 import MaterializationContext, materialize_training_days_v3
+from .development_recommendation import build_development_recommendation
 from .performance_profile import build_athlete_performance_profile, derive_performance_limiter, derive_training_focus
 from .physiological_evidence import build_physiological_evidence_profile
 from .planning_profile import normalize_available_training_capacity, normalize_current_training_state
@@ -363,6 +364,18 @@ def render_v3_diagnostic_report(report: Mapping[str, Any]) -> str:
                 f"measurements={item['measurement_ids']} age_days={item['ages_days']} "
                 f"comparability={item['comparability']}"
             )
+    recommendation = report.get("development_recommendation", {})
+    if recommendation:
+        lines += ["", "EVIDENCE-INFORMED DEVELOPMENTAL RECOMMENDATION"]
+        lines.append(
+            f"Primary={recommendation['primary_emphasis']}; secondary={recommendation['secondary_emphasis']}; "
+            f"type={recommendation['recommendation_type']}; confidence={recommendation['confidence']}"
+        )
+        lines.append("Diagnostic-only: R6 prescription remains unchanged on its legacy path.")
+        if recommendation.get("next_most_informative_assessments"):
+            lines.append("Assessment considerations: " + ", ".join(
+                item["protocol"] for item in recommendation["next_most_informative_assessments"]
+            ))
     for segment in report["r3"]["segments"]:
         lines.append(f"{segment['start_date']}–{segment['end_date']}: total={segment['recommended_physical_minutes']} rowing={segment['rowing_specific_minutes']} strength={segment['strength_minutes']} ({segment['recommended_strength_exposures']}×{segment['expected_strength_duration_minutes']}) general={segment['general_aerobic_minutes']} other={segment['other_physical_minutes']}")
     lines += ["", "DATED PHASE / RECOVERY CONTEXT"]
@@ -477,6 +490,11 @@ def generate_v3_diagnostic_report(
     performance = build_athlete_performance_profile(profile, as_of=r2.planning_start)
     limiter = derive_performance_limiter(performance, coach_focus=profile.get("preferences", {}).get("development_focus"))
     physiological_evidence = build_physiological_evidence_profile(profile, as_of=r2.planning_start)
+    development_recommendation = build_development_recommendation(
+        profile, evidence=physiological_evidence, planning_date=r2.planning_start,
+        phase_context=state.phase_context, recovery_constraints=state.recovery_constraints,
+        current_training=current, next_race_context=state.next_race_context,
+    )
     record_timing("performance_profile_focus", performance_started)
     r6_started = perf_counter()
     completed_quality = _completed_quality_exposures(normalized.historical_facts)
@@ -596,10 +614,11 @@ def generate_v3_diagnostic_report(
                 "status": "legacy_compatibility_heuristic_not_physiological_diagnosis",
                 "limitations": [
                     "heterogeneous_within_athlete_ratios_are_not_a_common_deficit_scale",
-                    "future_developmental_recommendation_belongs_to_r9f3c",
+                    "not_used_by_r9f3c_developmental_recommendation",
                 ],
             },
         },
+        "development_recommendation": development_recommendation.to_dict(),
         "r3_weekly_evidence": weekly_evidence_for_allocation(profile, current), "r2": asdict(r2), "r3": asdict(r3),
         "r3_cadence_feasibility": [
             {
@@ -664,7 +683,7 @@ def generate_v3_diagnostic_report(
 
 _PUBLIC_DIAGNOSTIC_KEYS = (
     "planning_date", "planning_end", "available_capacity_minutes",
-    "planning_goals", "training_preferences", "rowing_modalities", "r2_baseline_evidence", "physiological_evidence", "r3_weekly_evidence",
+    "planning_goals", "training_preferences", "rowing_modalities", "r2_baseline_evidence", "physiological_evidence", "development_recommendation", "r3_weekly_evidence",
     "current_training", "dated_context", "recovery_context_summary", "r2", "r3", "r3_cadence_feasibility", "r6", "r6_results", "r4_status", "calendar", "workouts",
     "conservation", "structural_validation", "plausibility_reviews",
     "training_plausibility", "persisted_input_audit", "diagnostic_timing_ms",

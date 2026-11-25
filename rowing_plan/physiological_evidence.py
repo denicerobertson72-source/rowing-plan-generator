@@ -13,7 +13,7 @@ from typing import Any, Iterable, Mapping
 from .power_profile import testing_blocks
 
 
-EVIDENCE_ARCHITECTURE_VERSION = "r9f3b-evidence-1"
+EVIDENCE_ARCHITECTURE_VERSION = "r9f3b-evidence-2"
 
 _PROTOCOLS = {
     "two_k": "two_k_time_trial",
@@ -202,6 +202,7 @@ class PhysiologicalEvidenceProfile:
     episodes: tuple[AssessmentEpisode, ...]
     domains: tuple[EvidenceDomainAssessment, ...]
     capability_description: tuple[str, ...]
+    coverage_description: str
     provenance: tuple[str, ...] = (EVIDENCE_ARCHITECTURE_VERSION,)
 
     def to_dict(self) -> dict[str, Any]:
@@ -256,7 +257,21 @@ def _validity(raw: Mapping[str, Any]) -> str:
     return value if value in {"valid", "questionable", "invalid", "unknown"} else "unknown"
 
 
-def _outcomes(raw: Mapping[str, Any]) -> tuple[AssessmentOutcome, ...]:
+def _outcomes(raw: Mapping[str, Any], raw_protocol: str) -> tuple[AssessmentOutcome, ...]:
+    """Return typed outcomes without mutating the athlete-owned source row.
+
+    Older profile versions stored every manually entered power value in
+    ``average_watts``.  The explicit ``seven_stroke_peak`` protocol and its
+    original Profile label establish that this particular legacy value is the
+    peak-power result, not a seven-stroke average.  The normalized evidence
+    therefore names it ``peak_watts`` while measurement provenance records
+    the legacy storage field.  Other protocols retain their stored semantics.
+    """
+    legacy_seven_stroke_peak = (
+        raw_protocol in {"seven_stroke_peak", "seven_stroke_peak_power"}
+        and raw.get("peak_watts") is None
+        and raw.get("average_watts") is not None
+    )
     fields = (
         ("time_seconds", "s"), ("result_seconds", "s"),
         ("average_watts", "W"), ("peak_watts", "W"),
@@ -265,7 +280,13 @@ def _outcomes(raw: Mapping[str, Any]) -> tuple[AssessmentOutcome, ...]:
         ("peak_rate_spm", "spm"), ("average_hr", "bpm"),
         ("peak_hr", "bpm"), ("rpe", "0-10"),
     )
-    values = [AssessmentOutcome(key, raw[key], unit) for key, unit in fields if raw.get(key) is not None]
+    values = [
+        AssessmentOutcome(key, raw[key], unit)
+        for key, unit in fields
+        if raw.get(key) is not None and not (legacy_seven_stroke_peak and key == "average_watts")
+    ]
+    if legacy_seven_stroke_peak:
+        values.append(AssessmentOutcome("peak_watts", raw["average_watts"], "W"))
     return tuple(values)
 
 
@@ -295,16 +316,30 @@ def normalize_assessment_measurements(profile: Mapping[str, Any]) -> tuple[Asses
             )
             if modality == "on_water" and not any(raw.get(key) not in (None, "") for key in condition_keys):
                 limits.append("on_water_conditions_not_reported")
+            legacy_seven_stroke_peak = (
+                raw_protocol in {"seven_stroke_peak", "seven_stroke_peak_power"}
+                and raw.get("peak_watts") is None
+                and raw.get("average_watts") is not None
+            )
+            provenance = ["profile.tests.testing_blocks", f"testing_block:{block.get('id') or block_index}"]
+            protocol_metadata = list(_metadata(raw, (
+                "rate_cap_spm", "rate_compliance", "power_source", "power_calibration", "test_type",
+            )))
+            if legacy_seven_stroke_peak:
+                provenance.append("seven_stroke_protocol_declares_peak_power_from_legacy_average_watts_storage")
+                protocol_metadata.extend((
+                    ("normalized_power_field", "peak_watts"),
+                    ("source_power_field", "average_watts"),
+                ))
             values.append(AssessmentMeasurement(
                 str(raw_id), protocol, raw_protocol, _text(raw.get("protocol_version")), modality,
                 date_value, _text(raw.get("source")), _validity(raw),
                 str(raw.get("effort_intent") or ("race" if modality == "race_performance" else "unknown")),
-                _outcomes(raw), _nonnegative_int(duration), _nonnegative_int(raw.get("distance_meters")),
+                _outcomes(raw, raw_protocol), _nonnegative_int(duration), _nonnegative_int(raw.get("distance_meters")),
                 _metadata(raw, ("erg_model", "drag_factor", "boat_class", "sculling_or_sweep", "rigging")),
                 _metadata(raw, ("course", "direction", "speed_reference", "wind", "current", "water_conditions", "weather", "crew_context", "interruptions")),
                 data_quality,
-                _metadata(raw, ("rate_cap_spm", "rate_compliance", "power_source", "power_calibration", "test_type")),
-                ("profile.tests.testing_blocks", f"testing_block:{block.get('id') or block_index}"), tuple(limits),
+                tuple(protocol_metadata), tuple(provenance), tuple(limits),
             ))
     return tuple(sorted(values, key=lambda item: (item.assessment_date or date.min, item.measurement_id)))
 
@@ -441,9 +476,11 @@ def _capability(measurements: tuple[AssessmentMeasurement, ...], domains: tuple[
     if measurements:
         values.append("basic_performance_evidence_available")
     if len({item.domain for item in available}) > 1:
-        values.append("physiological_profile_complementary_evidence_available")
-        # Retain the earlier concise diagnostic label for consumers that were
-        # introduced during this uncommitted milestone.
+        # Complementary assessed domains do not establish a comprehensive
+        # physiological profile.  The domain coverage is reported separately.
+        values.append("complementary_performance_evidence_available")
+        # Preserve the R9F.3b diagnostic token for existing consumers; the
+        # new coverage_description prevents it from implying completeness.
         values.append("complementary_physiological_evidence_available")
     if any(
         item.longitudinal_consistency == "repeated_measurements_available"
@@ -456,8 +493,20 @@ def _capability(measurements: tuple[AssessmentMeasurement, ...], domains: tuple[
     return tuple(values)
 
 
+def _coverage_description(domains: tuple[EvidenceDomainAssessment, ...]) -> str:
+    """Describe represented domains without turning a count into a score."""
+    if not any(item.evidence_status == "available" for item in domains):
+        return "no_formal_domain_evidence"
+    if any(item.evidence_status == "missing" for item in domains):
+        return "partial_domain_coverage_not_comprehensive"
+    return "broad_domain_coverage_without_prescriptive_interpretation"
+
+
 def build_physiological_evidence_profile(profile: Mapping[str, Any], *, as_of: date) -> PhysiologicalEvidenceProfile:
     measurements = normalize_assessment_measurements(profile)
     episodes = normalize_assessment_episodes(profile, measurements)
     domains = _domain_assessments(measurements, as_of=as_of)
-    return PhysiologicalEvidenceProfile(measurements, episodes, domains, _capability(measurements, domains))
+    return PhysiologicalEvidenceProfile(
+        measurements, episodes, domains, _capability(measurements, domains),
+        _coverage_description(domains),
+    )
