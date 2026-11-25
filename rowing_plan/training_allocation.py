@@ -531,9 +531,12 @@ def reconcile_training_allocation_for_cadence_feasibility(
     reconciled: list[TrainingAllocationSegment] = []
 
     for segment in allocation.segments:
+        segment_context = materialization_context.for_allocation_segment(
+            f"r3:{segment.start_date.isoformat()}:{segment.end_date.isoformat()}"
+        )
         original = evaluate_cadence_category_feasibility(
             segment, capacity, authorities=authorities, preferences=preferences,
-            restrictions=restrictions, materialization_context=materialization_context,
+            restrictions=restrictions, materialization_context=segment_context,
             current_training_state=current_training_state,
         )
         if original.feasible:
@@ -578,7 +581,7 @@ def reconcile_training_allocation_for_cadence_feasibility(
                 )
                 feasibility = evaluate_cadence_category_feasibility(
                     candidate, capacity, authorities=authorities, preferences=preferences,
-                    restrictions=restrictions, materialization_context=materialization_context,
+                    restrictions=restrictions, materialization_context=segment_context,
                     current_training_state=current_training_state,
                 )
                 if feasibility.feasible:

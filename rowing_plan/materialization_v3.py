@@ -7,7 +7,7 @@ and reservation-minute adaptations are not inputs to this path.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterable, Mapping
 
 from .planning_domain import (
@@ -58,11 +58,35 @@ class MaterializationContext:
     available_rowing_modalities: tuple[TrainingModality, ...] = _ROWING_MODALITIES
     selector_history: tuple[Mapping[str, object], ...] = ()
     catalog_version: str = ARCHETYPE_LIBRARY_VERSION
+    # The reset diagnostic may carry several R9B cadence segments from
+    # different validated season phases.  R4/R5 still receive one context
+    # object, so this immutable lookup keeps every component bound to its own
+    # R3 lineage rather than silently applying the first block's phase.
+    segment_phase_contexts: tuple[tuple[str, str, str], ...] = ()
 
     def __post_init__(self) -> None:
         allowed = tuple(item for item in self.available_rowing_modalities if item in _ROWING_MODALITIES)
         object.__setattr__(self, "available_rowing_modalities", allowed or _ROWING_MODALITIES)
         object.__setattr__(self, "selector_history", tuple(self.selector_history))
+        contexts = tuple(sorted(self.segment_phase_contexts, key=lambda item: item[0]))
+        if any(len(item) != 3 or not all(isinstance(value, str) and value for value in item) for item in contexts):
+            raise ValueError("materialization_segment_phase_context_is_invalid")
+        if len({item[0] for item in contexts}) != len(contexts):
+            raise ValueError("materialization_segment_phase_contexts_must_be_unique")
+        object.__setattr__(self, "segment_phase_contexts", contexts)
+
+    def for_allocation_segment(self, allocation_segment_id: str) -> "MaterializationContext":
+        """Return the phase/race context owned by one exact R3 segment.
+
+        Callers without a dated mapping keep their existing single-context
+        behavior.  The lookup intentionally clears itself on the returned
+        context so it cannot affect fingerprinting or selection recursively.
+        """
+        matched = next((item for item in self.segment_phase_contexts if item[0] == allocation_segment_id), None)
+        if matched is None:
+            return self
+        _segment_id, phase_id, race_type = matched
+        return replace(self, phase_id=phase_id, race_type=race_type, segment_phase_contexts=())
 
 
 @dataclass(frozen=True)
@@ -568,7 +592,11 @@ def materialize_training_days_v3(
     allocation: TrainingAllocation | None = None,
 ) -> MaterializedTrainingDayPlanResult:
     results = tuple(
-        materialize_training_component_v3(component, context=context, quality_work_minutes=component.quality_work_minutes)
+        materialize_training_component_v3(
+            component,
+            context=context.for_allocation_segment(component.allocation_segment_id),
+            quality_work_minutes=component.quality_work_minutes,
+        )
         for day in plan.days for component in day.components
     )
     return MaterializedTrainingDayPlanResult(results, reconcile_materialized_training_days_v3(plan, results, allocation=allocation))

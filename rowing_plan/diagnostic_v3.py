@@ -13,12 +13,17 @@ from .planning_normalization import normalize_planning_inputs
 from .recommended_training_dose import r2_baseline_evidence, recent_actual_history_is_sufficient
 from .generation_history import recover_generation_history
 from .replacement_plan_v3 import generate_recommended_training_dose_v3
-from .rowing_quality_v3 import RowingQualityPlanningContext, generate_rowing_quality_plan
+from .rowing_quality_v3 import CompletedQualityExposure, RowingQualityPlanningContext, generate_rowing_quality_plan
 from .training_allocation import (
     generate_training_allocation_v3,
     weekly_evidence_for_allocation,
 )
-from .planning_domain import PhysicalCategory, TrainingModality
+from .periodization import build_season_phases, race_dates
+from .physiological_state import reduce_physiological_state
+from .planning_domain import (
+    HistoricalFactType, PhysicalCategory, RowingQualityInfeasibility,
+    RowingQualityPlanResult, TrainingModality, TrainingRole,
+)
 from .training_days import CombinedDayPreferences, DailyTrainingCapacity, generate_training_days_v3
 
 
@@ -33,6 +38,49 @@ class PersistedDiagnosticInput:
     workout_logs: tuple[Mapping[str, Any], ...]
     workout_logs_by_plan: Mapping[str, tuple[Mapping[str, Any], ...]]
     weekly_overrides: tuple[Mapping[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class DatedSegmentContext:
+    """Auditable, non-prescriptive context for one exact R9B cadence segment.
+
+    R2 retains physical-dose authority and R3 retains category authority.  This
+    value only supplies the already-validated dated phase/race/recovery facts
+    needed by R3 envelope checks and R6--R5 composition/materialization.
+    """
+
+    allocation_segment_id: str
+    start_date: date
+    end_date: date
+    phase_id: str | None
+    phase_provenance: str
+    phase_reason: str | None
+    phase_span_count: int
+    race_type: str = "general"
+    race_dates: tuple[date, ...] = ()
+    days_to_race: int | None = None
+    race_count: int = 0
+    recovery_active: bool = False
+    recovery_constraint_codes: tuple[str, ...] = ()
+    fixed_rest_dates: tuple[date, ...] = ()
+    flexible_rest_sessions_per_week: int = 0
+    completed_quality_exposure_count: int = 0
+    completed_strength_exposure_count: int = 0
+    completed_race_exposure_count: int = 0
+    evidence_limitations: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.end_date < self.start_date or self.phase_span_count < 0 or self.race_count < 0:
+            raise ValueError("dated_segment_context_values_are_invalid")
+        object.__setattr__(self, "race_dates", tuple(sorted(set(self.race_dates))))
+        object.__setattr__(self, "recovery_constraint_codes", tuple(sorted(set(self.recovery_constraint_codes))))
+        object.__setattr__(self, "fixed_rest_dates", tuple(sorted(set(self.fixed_rest_dates))))
+        object.__setattr__(self, "evidence_limitations", tuple(sorted(set(self.evidence_limitations))))
+
+    @property
+    def operational_phase_id(self) -> str:
+        """A materializer-safe phase only when dated phase evidence is singular."""
+        return self.phase_id or "general_preparation"
 
 
 def load_persisted_diagnostic_input(
@@ -107,6 +155,179 @@ def _rowing_modalities(capacity) -> tuple[TrainingModality, ...]:
     return values or (TrainingModality.ERG, TrainingModality.ON_WATER)
 
 
+def _segment_id(start: date, end: date) -> str:
+    return f"r3:{start.isoformat()}:{end.isoformat()}"
+
+
+def _quality_band(fact: Any) -> str | None:
+    actual = fact.completed_actual or {}
+    planned = fact.planned_prescription or {}
+    value = actual.get("actual_intensity") or actual.get("intensity_band") or actual.get("band") or planned.get("band")
+    band = str(value).upper() if value else None
+    return band if band in {"AT", "TR", "AN", "PP"} else None
+
+
+def _completed_quality_exposures(facts) -> tuple[CompletedQualityExposure, ...]:
+    """Adapt completed facts into R6 spacing evidence without inventing credit."""
+    values = []
+    for fact in facts:
+        if fact.type is HistoricalFactType.RACE_FACT:
+            values.append(CompletedQualityExposure(fact.date, "RACE", fact.physiological_credit.minutes, is_race=True))
+            continue
+        if fact.completed_actual is None or fact.physiological_credit.role is not TrainingRole.QUALITY:
+            continue
+        values.append(CompletedQualityExposure(
+            fact.date, _quality_band(fact) or "UNCERTAIN_QUALITY", fact.physiological_credit.minutes,
+        ))
+    return tuple(sorted(values, key=lambda item: (item.completed_date, item.physiological_band, item.work_minutes, item.is_race)))
+
+
+def _flexible_rest_sessions(profile: Mapping[str, Any]) -> int:
+    activities = profile.get("recurring_activities", ())
+    if not isinstance(activities, (tuple, list)):
+        return 0
+    return sum(
+        int(item.get("sessions_per_week", 0) or 0)
+        for item in activities
+        if isinstance(item, Mapping)
+        and item.get("activity_type") == "rest"
+        and item.get("scheduling_status") == "flexible"
+    )
+
+
+def _segment_contexts(
+    profile: Mapping[str, Any], *, segments, state, days,
+) -> tuple[DatedSegmentContext, ...]:
+    """Derive dated context from existing periodization and history facts.
+
+    R2 already splits at season/recovery boundaries.  The defensive
+    multi-phase branch deliberately emits a limitation rather than choosing a
+    phase silently; later policy can define how a mixed segment should behave.
+    """
+    phases = build_season_phases(dict(profile))
+    races = tuple(item for item in profile.get("races", ()) if isinstance(item, Mapping))
+    fixed_rest = {item.date for item in days if item.fixed_rest}
+    flexible_rest = _flexible_rest_sessions(profile)
+    contexts = []
+    for segment in segments:
+        overlaps = [
+            item for item in phases
+            if item["start_date"] <= segment.end_date.isoformat()
+            and item["end_date"] >= segment.start_date.isoformat()
+        ]
+        phase_types = tuple(sorted({str(item["phase_type"]) for item in overlaps}))
+        limitation = []
+        if len(phase_types) == 1:
+            phase_id = phase_types[0]
+            phase_provenance = "season_phase"
+            phase_reason = str(overlaps[0].get("reason") or "")
+        elif not overlaps:
+            phase_id = None
+            phase_provenance = "fallback_missing_season_phase"
+            phase_reason = None
+            limitation.append("no_season_phase_for_segment")
+        else:
+            phase_id = None
+            phase_provenance = "unresolved_multi_phase_segment"
+            phase_reason = None
+            limitation.append("multi_phase_segment_requires_policy")
+        dated_races = tuple(sorted({
+            race_day
+            for race in races for race_day in race_dates(dict(race))
+            if segment.start_date <= race_day <= segment.end_date
+        }))
+        future_races = tuple(sorted(
+            (
+                (race_day, race)
+                for race in races for race_day in race_dates(dict(race))
+                if race_day >= segment.start_date
+            ),
+            key=lambda item: (item[0], str(item[1].get("event_name", "race")), str(item[1].get("race_type", ""))),
+        ))
+        next_race_day, next_race = future_races[0] if future_races else (None, None)
+        recovery = tuple(
+            item for item in state.recovery_constraints
+            if item.start_date <= segment.end_date and item.end_date >= segment.start_date
+        )
+        if phase_id is None:
+            limitation.append("materialization_phase_fallback_general_preparation")
+        if not races:
+            limitation.append("no_race_dates_configured")
+        contexts.append(DatedSegmentContext(
+            _segment_id(segment.start_date, segment.end_date), segment.start_date, segment.end_date,
+            phase_id, phase_provenance, phase_reason, len(phase_types),
+            race_type=str((next_race or {}).get("race_type") or "general"),
+            race_dates=dated_races,
+            days_to_race=((next_race_day - segment.start_date).days if next_race_day else None),
+            race_count=len(dated_races),
+            recovery_active=bool(recovery) or phase_id == "post_race_recovery",
+            recovery_constraint_codes=tuple(item.rationale or item.source for item in recovery),
+            fixed_rest_dates=tuple(day for day in fixed_rest if segment.start_date <= day <= segment.end_date),
+            flexible_rest_sessions_per_week=flexible_rest,
+            completed_quality_exposure_count=state.completed_quality_exposure.exposures,
+            completed_strength_exposure_count=state.completed_strength_exposure.exposures,
+            completed_race_exposure_count=state.completed_race_exposure.exposures,
+            evidence_limitations=tuple(limitation),
+        ))
+    return tuple(contexts)
+
+
+def _context_payload(context: DatedSegmentContext) -> dict[str, Any]:
+    return {
+        "allocation_segment_id": context.allocation_segment_id,
+        "start_date": context.start_date.isoformat(), "end_date": context.end_date.isoformat(),
+        "phase_id": context.phase_id, "phase_provenance": context.phase_provenance,
+        "phase_reason": context.phase_reason, "phase_span_count": context.phase_span_count,
+        "race_context": {
+            "race_type": context.race_type, "race_dates": [item.isoformat() for item in context.race_dates],
+            "days_to_race": context.days_to_race, "race_count": context.race_count,
+        },
+        "recovery_context": {
+            "active": context.recovery_active,
+            "constraint_codes": list(context.recovery_constraint_codes),
+            "fixed_rest_dates": [item.isoformat() for item in context.fixed_rest_dates],
+            "flexible_rest_sessions_per_week": context.flexible_rest_sessions_per_week,
+        },
+        "completed_exposure_evidence": {
+            "quality_exposures": context.completed_quality_exposure_count,
+            "strength_exposures": context.completed_strength_exposure_count,
+            "race_exposures": context.completed_race_exposure_count,
+        },
+        "evidence_limitations": list(context.evidence_limitations),
+    }
+
+
+def _r6_result_payload(result, context: DatedSegmentContext) -> dict[str, Any]:
+    plan = result.plan
+    infeasibilities = [
+        {"code": item.code, "allocation_segment_id": item.allocation_segment_id, "detail": dict(item.detail)}
+        for item in result.infeasibilities
+    ]
+    if result.infeasibilities:
+        outcome = "infeasible"
+    elif (
+        context.recovery_active or context.recovery_constraint_codes
+        or context.phase_id in {"race", "post_race_recovery"}
+    ):
+        outcome = "intentional_phase_policy_suppression"
+    elif plan is not None and not plan.requirements:
+        outcome = "no_quality_requirement_generated"
+    else:
+        outcome = "requirements_generated"
+    return {
+        "success": result.success,
+        "outcome": outcome,
+        "plan": asdict(plan) if plan is not None else None,
+        "infeasibilities": infeasibilities,
+        "diagnostics": {
+            "phase_id": context.phase_id,
+            "phase_provenance": context.phase_provenance,
+            "recovery_active": context.recovery_active,
+            "r3_rowing_allocation_minutes": plan.rowing_specific_minutes if plan else None,
+        },
+    }
+
+
 def render_v3_diagnostic_report(report: Mapping[str, Any]) -> str:
     """Render the pure report without adding a second planning representation."""
     lines = ["ATHLETE CONTEXT", f"Planning block: {report['planning_date']} to {report['planning_end']}",
@@ -123,8 +344,21 @@ def render_v3_diagnostic_report(report: Mapping[str, Any]) -> str:
     ]
     for segment in report["r3"]["segments"]:
         lines.append(f"{segment['start_date']}–{segment['end_date']}: total={segment['recommended_physical_minutes']} rowing={segment['rowing_specific_minutes']} strength={segment['strength_minutes']} ({segment['recommended_strength_exposures']}×{segment['expected_strength_duration_minutes']}) general={segment['general_aerobic_minutes']} other={segment['other_physical_minutes']}")
+    lines += ["", "DATED PHASE / RECOVERY CONTEXT"]
+    for item in report.get("dated_context", ()):
+        race = item["race_context"]
+        recovery = item["recovery_context"]
+        lines.append(
+            f"{item['start_date']}–{item['end_date']}: phase={item['phase_id'] or 'unresolved'} "
+            f"({item['phase_provenance']}); race_days={race['race_dates']}; "
+            f"recovery={recovery['active']}; fixed_rest={recovery['fixed_rest_dates']}"
+        )
     lines += ["", "R6 QUALITY"]
-    for plan in report["r6"]:
+    for result in report.get("r6_results", ()):
+        plan = result.get("plan")
+        lines.append(f"{result['outcome']}: success={result['success']} infeasibilities={[item['code'] for item in result['infeasibilities']]}")
+        if plan is None:
+            continue
         lines.append(f"R3 rowing physical={plan['rowing_specific_minutes']} low-intensity guard={plan['low_intensity_guard_minutes']}")
         for requirement in plan["requirements"]:
             lines.append(f"{requirement['priority']} {requirement['physiological_band']}: {requirement['desired_work_minutes']} work min, exposures={requirement['target_exposures']}, physical envelopes={requirement['compatible_envelopes']}")
@@ -177,23 +411,6 @@ def generate_v3_diagnostic_report(
         )
         for index in range((r2.planning_end - r2.planning_start).days + 1)
     )
-    r3_started = perf_counter()
-    r3_result = generate_training_allocation_v3(
-        profile, planning_date=planning_date, recommended_dose=r2,
-        prior_plan=prior_plan, history_actuals=history_actuals,
-        locked_sessions=locked_sessions, future_placements=future_placements,
-        cadence_capacity=days,
-        cadence_preferences=preferences,
-        cadence_materialization_context=MaterializationContext(
-            phase_id="general_preparation",
-            experience=str(profile.get("athlete", {}).get("experience_level", "intermediate")),
-            available_rowing_modalities=rowing_modalities,
-        ),
-    )
-    if r3_result.allocation is None:
-        raise ValueError("r3_cadence_category_envelope_infeasible")
-    r3 = r3_result.allocation
-    record_timing("r3_allocation", r3_started)
     normalization_started = perf_counter()
     normalized = normalize_planning_inputs(
         profile, planning_date=r2.planning_start, prior_plan=prior_plan,
@@ -206,28 +423,85 @@ def generate_v3_diagnostic_report(
             normalized.historical_facts, planning_start=r2.planning_start,
         ), observation_window_days=21,
     )
+    state = reduce_physiological_state(normalized, profile=profile)
     baseline_evidence = r2_baseline_evidence(
         profile, current, normalized.historical_facts, planning_start=r2.planning_start,
     )
+    segment_contexts = _segment_contexts(profile, segments=r2.segments, state=state, days=days)
+    segment_context_by_id = {item.allocation_segment_id: item for item in segment_contexts}
+    materialization_context = MaterializationContext(
+        phase_id="general_preparation",
+        experience=str(profile.get("athlete", {}).get("experience_level", "intermediate")),
+        available_rowing_modalities=rowing_modalities,
+        segment_phase_contexts=tuple(
+            (item.allocation_segment_id, item.operational_phase_id, item.race_type)
+            for item in segment_contexts
+        ),
+    )
     record_timing("current_training_history_normalization", normalization_started)
+    r3_started = perf_counter()
+    r3_result = generate_training_allocation_v3(
+        profile, planning_date=planning_date, recommended_dose=r2,
+        prior_plan=prior_plan, history_actuals=history_actuals,
+        locked_sessions=locked_sessions, future_placements=future_placements,
+        cadence_capacity=days,
+        cadence_preferences=preferences,
+        cadence_materialization_context=materialization_context,
+    )
+    if r3_result.allocation is None:
+        raise ValueError("r3_cadence_category_envelope_infeasible")
+    r3 = r3_result.allocation
+    record_timing("r3_allocation", r3_started)
     performance_started = perf_counter()
     performance = build_athlete_performance_profile(profile, as_of=r2.planning_start)
     limiter = derive_performance_limiter(performance, coach_focus=profile.get("preferences", {}).get("development_focus"))
-    focus = derive_training_focus(limiter, phase="general_preparation")
     record_timing("performance_profile_focus", performance_started)
     r6_started = perf_counter()
-    quality = tuple(generate_rowing_quality_plan(
-        segment, allocation_segment_id=f"r3:{segment.start_date.isoformat()}:{segment.end_date.isoformat()}",
-        performance=performance, limiter=limiter, focus=focus,
-        context=RowingQualityPlanningContext(r2.planning_start, experience=str(profile.get("athlete", {}).get("experience_level", "intermediate")), available_rowing_modalities=rowing_modalities),
-    ).plan for segment in r3.segments)
+    completed_quality = _completed_quality_exposures(normalized.historical_facts)
+    quality_results = []
+    for segment in r3.segments:
+        segment_id = _segment_id(segment.start_date, segment.end_date)
+        dated_context = segment_context_by_id[segment_id]
+        if dated_context.phase_id is None:
+            quality_results.append(RowingQualityPlanResult(
+                None,
+                (RowingQualityInfeasibility(
+                    "multi_phase_segment_phase_policy_unresolved", segment_id,
+                    {"phase_provenance": dated_context.phase_provenance,
+                     "evidence_limitations": dated_context.evidence_limitations},
+                ),),
+            ))
+            continue
+        quality_context = RowingQualityPlanningContext(
+            segment.start_date,
+            phase_id=dated_context.operational_phase_id,
+            race_type=dated_context.race_type,
+            days_to_race=dated_context.days_to_race,
+            race_count=dated_context.race_count,
+            recovery_active=dated_context.recovery_active,
+            hard_restriction_codes=dated_context.recovery_constraint_codes,
+            experience=str(profile.get("athlete", {}).get("experience_level", "intermediate")),
+            available_rowing_modalities=rowing_modalities,
+        )
+        focus = derive_training_focus(
+            limiter, phase=quality_context.phase_id, race_type=quality_context.race_type,
+            days_to_race=quality_context.days_to_race,
+            recovery_active=quality_context.recovery_active,
+        )
+        quality_results.append(generate_rowing_quality_plan(
+            segment, allocation_segment_id=segment_id,
+            performance=performance, limiter=limiter, focus=focus,
+            context=quality_context, completed_exposures=completed_quality,
+        ))
+    quality_results = tuple(quality_results)
+    quality = tuple(item.plan for item in quality_results if item.plan is not None)
     record_timing("r6_rowing_quality", r6_started)
     # Winter ERG is an explicit athlete environment, not an auto-selected
     # cross-training modality.
     r4_started = perf_counter()
     r4 = generate_training_days_v3(
         r3, days, rowing_quality_plans=quality,
-        materialization_context=MaterializationContext(phase_id="general_preparation", experience=str(profile.get("athlete", {}).get("experience_level", "intermediate")), available_rowing_modalities=rowing_modalities),
+        materialization_context=materialization_context,
         current_training_state=current,
         preferences=preferences,
     )
@@ -236,11 +510,7 @@ def generate_v3_diagnostic_report(
     r5_started = perf_counter()
     r5 = materialize_training_days_v3(
         r4,
-        context=MaterializationContext(
-            phase_id="general_preparation",
-            experience=str(profile.get("athlete", {}).get("experience_level", "intermediate")),
-            available_rowing_modalities=rowing_modalities,
-        ),
+        context=materialization_context,
         allocation=r3,
     )
     record_timing("r5_materialization", r5_started)
@@ -285,6 +555,15 @@ def generate_v3_diagnostic_report(
         "available_capacity_minutes": sum(day.usable_minutes for day in days),
         "planning_goals": dict(profile.get("planning_goals", {})), "training_preferences": preferences.to_dict(),
         "rowing_modalities": [item.value for item in rowing_modalities],
+        "dated_context": [_context_payload(item) for item in segment_contexts],
+        "recovery_context_summary": {
+            "completed_quality_exposure_count": len(completed_quality),
+            "completed_strength_exposure_count": state.completed_strength_exposure.exposures,
+            "completed_race_exposure_count": state.completed_race_exposure.exposures,
+            "active_recovery_constraint_count": len(state.recovery_constraints),
+            "flexible_rest_sessions_per_week": _flexible_rest_sessions(profile),
+            "readiness_auto_adjustment": "not_applied",
+        },
         "current_training": asdict(current), "r2_baseline_evidence": baseline_evidence,
         "r3_weekly_evidence": weekly_evidence_for_allocation(profile, current), "r2": asdict(r2), "r3": asdict(r3),
         "r3_cadence_feasibility": [
@@ -315,7 +594,12 @@ def generate_v3_diagnostic_report(
             }
             for segment in r3.segments
         ],
-        "r6": [asdict(item) for item in quality], "r4": r4, "r4_status": r4_status,
+        "r6": [asdict(item) for item in quality],
+        "r6_results": [
+            _r6_result_payload(result, segment_context_by_id[result.plan.allocation_segment_id if result.plan else result.infeasibilities[0].allocation_segment_id])
+            for result in quality_results
+        ],
+        "r4": r4, "r4_status": r4_status,
         "r5": r5, "calendar": calendar, "workouts": workouts,
         "conservation": {"r2": r2_total, "r3": r3_total, "r4": r4_total, "r5": r5_total, "pass": r2_total == r3_total == r4_total == r5_total},
         "structural_validation": "PASS" if r4.success and r5.success and r2_total == r3_total == r4_total == r5_total else "FAIL",
@@ -327,6 +611,7 @@ def generate_v3_diagnostic_report(
             "r2_segment_count": len(r2.segments),
             "r3_segment_count": len(r3.segments),
             "r6_requirement_count": sum(len(item.requirements) for item in quality),
+            "r6_infeasibility_count": sum(len(item.infeasibilities) for item in quality_results),
             "r4_day_count": len(r4.days),
             "r4_component_count": sum(len(day.components) for day in r4.days),
             "r5_result_count": len(r5.results),
@@ -345,7 +630,7 @@ def generate_v3_diagnostic_report(
 _PUBLIC_DIAGNOSTIC_KEYS = (
     "planning_date", "planning_end", "available_capacity_minutes",
     "planning_goals", "training_preferences", "rowing_modalities", "r2_baseline_evidence", "r3_weekly_evidence",
-    "current_training", "r2", "r3", "r3_cadence_feasibility", "r6", "r4_status", "calendar", "workouts",
+    "current_training", "dated_context", "recovery_context_summary", "r2", "r3", "r3_cadence_feasibility", "r6", "r6_results", "r4_status", "calendar", "workouts",
     "conservation", "structural_validation", "plausibility_reviews",
     "training_plausibility", "persisted_input_audit", "diagnostic_timing_ms",
     "diagnostic_counts", "human_readable",

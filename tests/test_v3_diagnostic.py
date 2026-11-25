@@ -60,6 +60,8 @@ def test_reset_spine_diagnostic_separates_capacity_conservation_and_plausibility
     assert public["calendar"] == report["calendar"]
     assert public["workouts"] == report["workouts"]
     assert public["r3_weekly_evidence"] == report["r3_weekly_evidence"]
+    assert public["r6_results"] == report["r6_results"]
+    assert public["dated_context"] == report["dated_context"]
     assert json.loads(json.dumps(jsonable_encoder(public)))["conservation"]["pass"] is True
 
 
@@ -131,6 +133,9 @@ def test_persisted_diagnostic_consumes_the_canonical_completed_history_path():
     assert report["persisted_input_audit"]["weekly_overrides_planner_input"] is False
     assert report["persisted_input_audit"]["performance_tests_source"] == "persisted_profile"
     assert report["persisted_input_audit"]["race_context_source"] == "persisted_profile"
+    assert report["dated_context"]
+    assert all(item["phase_provenance"] == "season_phase" for item in report["dated_context"])
+    assert report["r6_results"]
     assert report["conservation"]["pass"]
 
 
@@ -200,4 +205,104 @@ def test_persisted_style_sparse_actuals_do_not_dilute_explicit_r2_weekly_total_b
     assert evidence["selected_baseline_source"] == "explicit_weekly_total_training_estimate"
     assert evidence["insufficient_actual_history_not_used_for_dose"] is True
     assert report["r2"]["recommended_physical_minutes"] == 2_714
+    assert report["conservation"]["pass"]
+
+
+def _quality_context_profile(*, planning_end="2026-12-27", races=True):
+    profile = synthetic_profile()
+    profile["season"] = {
+        "start_date": "2026-11-16", "end_date": planning_end,
+        "current_weekly_endurance_minutes": 210, "target_peak_weekly_endurance_minutes": 270,
+    }
+    profile["recurring_activities"] = []
+    profile["tests"] = {"testing_blocks": [{"performance_tests": [
+        {"protocol": "two_k", "test_date": "2026-11-01", "time_seconds": 496, "valid_for_profile": True},
+        {"protocol": "sixty_second", "test_date": "2026-11-01", "average_watts": 220, "valid_for_profile": True},
+        {"protocol": "seven_stroke_peak", "test_date": "2026-11-01", "average_watts": 287, "valid_for_profile": True},
+    ]}]}
+    profile["races"] = ([{
+        "event_name": "Context race", "start_date": "2026-12-20", "end_date": "2026-12-20",
+        "priority": "B", "race_type": "head_5k",
+    }] if races else [])
+    return profile
+
+
+def test_diagnostic_uses_each_segment_actual_phase_for_r6_r4_and_r5():
+    report = generate_v3_diagnostic_report(
+        _quality_context_profile(), planning_date=date(2026, 11, 16),
+    )
+
+    contexts = {item["allocation_segment_id"]: item for item in report["dated_context"]}
+    threshold = next(item for item in report["r6_results"] if item["plan"] and item["plan"]["segment_start"] == date(2026, 11, 16))
+    threshold_context = contexts[threshold["plan"]["allocation_segment_id"]]
+    assert threshold_context["phase_id"] == "threshold_development"
+    assert threshold_context["phase_provenance"] == "season_phase"
+    assert threshold["success"] and threshold["outcome"] == "requirements_generated"
+    assert threshold["plan"]["requirements"][0]["physiological_band"] == "AT"
+    assert any(item["purpose"] == "threshold" and item["status"] == "success" for item in report["workouts"])
+    assert len({item["phase_id"] for item in report["dated_context"]}) > 2
+    assert report["conservation"]["pass"]
+
+
+def test_general_preparation_catalog_conflict_is_reported_not_disguised_as_successful_easy_quality():
+    report = generate_v3_diagnostic_report(
+        _quality_context_profile(planning_end="2026-11-22", races=False), planning_date=date(2026, 11, 16),
+    )
+
+    result = report["r6_results"][0]
+    assert report["dated_context"][0]["phase_id"] == "general_preparation"
+    assert report["dated_context"][0]["phase_provenance"] == "season_phase"
+    assert "no_race_dates_configured" in report["dated_context"][0]["evidence_limitations"]
+    assert result["success"] is False
+    assert result["outcome"] == "infeasible"
+    assert [item["code"] for item in result["infeasibilities"]] == ["no_r5_compatible_quality_envelope"]
+    assert result["plan"]["requirements"] == ()
+    # R4 still honours physical R3 minutes as ordinary rowing; it does not
+    # claim that R6 successfully prescribed a quality exposure.
+    assert report["conservation"]["pass"]
+
+
+def test_diagnostic_represents_race_taper_recovery_fixed_and_flexible_rest_context_without_placing_flexible_rest():
+    profile = _quality_context_profile()
+    for item in profile["weekly_availability"]:
+        item["fixed_rest"] = item["weekday"] == "wednesday"
+    profile["recurring_activities"] = [{
+        "activity_id": "flex-rest", "activity_type": "rest", "sessions_per_week": 1,
+        "scheduling_status": "flexible", "fixed_days": [], "preferred_days": ["friday"],
+        "allowed_days": ["friday", "saturday"], "prohibited_days": [], "planner_may_choose_day": True,
+    }]
+    report = generate_v3_diagnostic_report(profile, planning_date=date(2026, 11, 16))
+
+    contexts = report["dated_context"]
+    assert any(item["phase_id"] == "taper" for item in contexts)
+    recovery = next(item for item in contexts if item["phase_id"] == "post_race_recovery")
+    assert recovery["recovery_context"]["active"] is True
+    assert any(item["recovery_context"]["fixed_rest_dates"] for item in contexts)
+    assert {item["recovery_context"]["flexible_rest_sessions_per_week"] for item in contexts} == {1}
+    assert report["recovery_context_summary"]["readiness_auto_adjustment"] == "not_applied"
+
+
+def test_completed_quality_strength_and_race_evidence_are_auditable_context_not_new_prescription():
+    profile = _quality_context_profile(planning_end="2026-11-22", races=False)
+    profile["races"] = [{
+        "event_name": "Past race", "start_date": "2026-11-14", "end_date": "2026-11-14",
+        "priority": "B", "race_type": "head_5k",
+    }]
+    prior_plan = {"sessions": [
+        {"date": "2026-11-10", "session_id": "THRESHOLD", "mode": "erg", "band": "AT", "total_training_minutes": 45},
+        {"date": "2026-11-12", "session_id": "LIFT", "mode": "strength", "total_training_minutes": 45},
+    ]}
+    actuals = {
+        "2026-11-10:THRESHOLD:erg": {"status": "completed", "activity_type": "erg", "actual_duration_min": 45, "actual_intensity": "AT"},
+        "2026-11-12:LIFT:strength": {"status": "completed", "activity_type": "strength", "actual_duration_min": 45},
+    }
+    report = generate_v3_diagnostic_report(
+        profile, planning_date=date(2026, 11, 16), prior_plan=prior_plan, history_actuals=actuals,
+    )
+
+    context = report["dated_context"][0]
+    evidence = context["completed_exposure_evidence"]
+    assert evidence == {"quality_exposures": 2, "strength_exposures": 1, "race_exposures": 1}
+    assert context["recovery_context"]["active"] is True
+    assert report["r6_results"][0]["outcome"] == "intentional_phase_policy_suppression"
     assert report["conservation"]["pass"]

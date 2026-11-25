@@ -600,14 +600,17 @@ def generate_training_days_v3(
 
         return min(alternatives, key=score)
 
-    rowing_duration_feasibility: dict[tuple[TrainingComponentPurpose, int], bool] = {}
+    rowing_duration_feasibility: dict[tuple[str, TrainingComponentPurpose, int], bool] = {}
 
-    def ordinary_rowing_duration_is_feasible(purpose: TrainingComponentPurpose, duration: int) -> bool:
+    def context_for_segment(segment_id: str) -> MaterializationContext:
+        return materialization_context.for_allocation_segment(segment_id)
+
+    def ordinary_rowing_duration_is_feasible(segment_id: str, purpose: TrainingComponentPurpose, duration: int) -> bool:
         """Cache R5's exact-envelope answer for bounded R4 feasibility work."""
-        key = (purpose, duration)
+        key = (segment_id, purpose, duration)
         if key not in rowing_duration_feasibility:
             rowing_duration_feasibility[key] = bool(preflight_rowing_duration_v3(
-                purpose, duration_minutes=duration, context=materialization_context,
+                purpose, duration_minutes=duration, context=context_for_segment(segment_id),
             ))
         return rowing_duration_feasibility[key]
 
@@ -650,7 +653,7 @@ def generate_training_days_v3(
         for current_day in candidates:
             options = [
                 duration for duration in range(1, remaining(current_day) + 1)
-                if ordinary_rowing_duration_is_feasible(purpose, duration)
+                if ordinary_rowing_duration_is_feasible(segment_id, purpose, duration)
             ]
             totals |= {
                 total + duration
@@ -669,7 +672,7 @@ def generate_training_days_v3(
             remaining(current_day)
             for current_day in segment_days
             if remaining(current_day) and not any(
-                ordinary_rowing_duration_is_feasible(purpose, duration)
+                ordinary_rowing_duration_is_feasible(segment_id, purpose, duration)
                 for duration in range(1, remaining(current_day) + 1)
             )
         )
@@ -733,7 +736,7 @@ def generate_training_days_v3(
             if key not in low_duration_feasibility:
                 low_duration_feasibility[key] = preflight_rowing_duration_v3(
                     purpose, duration_minutes=duration,
-                    context=materialization_context,
+                    context=context_for_segment(segment_id),
                 )
             return low_duration_feasibility[key]
 
@@ -841,7 +844,7 @@ def generate_training_days_v3(
                     preflight = preflight_quality_duration_v3(
                         requirement.purpose, physiological_band=requirement.physiological_band,
                         work_minutes=requirement.desired_work_minutes, duration_minutes=duration,
-                        context=materialization_context,
+                        context=context_for_segment(segment_id),
                     )
                     if preflight.feasible:
                         possibilities.append((candidate_key(current_day, duration), current_day, duration, preflight.capability_ids))
