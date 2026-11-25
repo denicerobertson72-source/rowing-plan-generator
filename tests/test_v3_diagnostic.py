@@ -62,6 +62,11 @@ def test_reset_spine_diagnostic_separates_capacity_conservation_and_plausibility
     assert public["r3_weekly_evidence"] == report["r3_weekly_evidence"]
     assert public["r6_results"] == report["r6_results"]
     assert public["dated_context"] == report["dated_context"]
+    ledger = public["training_exposure_ledger"]
+    assert ledger["diagnostic_only"] is True
+    assert ledger["prescription_behavior"] == "unchanged"
+    assert ledger["reported_training_baseline"]["dated_exposures_created"] == 0
+    assert ledger["sequence_policy_inventory"]
     assert json.loads(json.dumps(jsonable_encoder(public)))["conservation"]["pass"] is True
 
 
@@ -137,6 +142,7 @@ def test_persisted_diagnostic_consumes_the_canonical_completed_history_path():
     assert all(item["phase_provenance"] == "season_phase" for item in report["dated_context"])
     assert report["r6_results"]
     assert report["conservation"]["pass"]
+    assert report["training_exposure_ledger"]["privacy"]["private_readiness_used"] is False
     evidence = report["physiological_evidence"]
     assert evidence["legacy_limiter"]["status"] == "legacy_compatibility_heuristic_not_physiological_diagnosis"
     assert public_v3_diagnostic_payload(report)["physiological_evidence"] == evidence

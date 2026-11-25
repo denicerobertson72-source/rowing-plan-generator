@@ -22,6 +22,7 @@ from .training_allocation import (
 )
 from .periodization import build_season_phases, race_dates
 from .physiological_state import reduce_physiological_state
+from .training_exposure_ledger import build_continuous_training_exposure_ledger
 from .planning_domain import (
     HistoricalFactType, PhysicalCategory, RowingQualityInfeasibility,
     RowingQualityPlanResult, TrainingModality, TrainingRole,
@@ -376,6 +377,22 @@ def render_v3_diagnostic_report(report: Mapping[str, Any]) -> str:
             lines.append("Assessment considerations: " + ", ".join(
                 item["protocol"] for item in recommendation["next_most_informative_assessments"]
             ))
+    exposure_ledger = report.get("training_exposure_ledger", {})
+    if exposure_ledger:
+        race = exposure_ledger["race_reconciliation"]
+        rolling = exposure_ledger["rolling_completed_summaries"]
+        lines += ["", "CONTINUOUS TRAINING EXPOSURE LEDGER"]
+        lines.append(
+            f"Diagnostic-only exposures={len(exposure_ledger['exposures'])}; "
+            f"completed 7d={rolling['7d']['completed_physical_minutes']} min; "
+            f"completed 14d={rolling['14d']['completed_physical_minutes']} min."
+        )
+        lines.append(
+            f"Race occurrences all-history={race['completed_race_occurrence_count_all_history']}; "
+            f"trailing recovery races={race['trailing_14d_recovery_race_exposure_count']}; "
+            f"scope_difference={race['scope_difference_explained']}."
+        )
+        lines.append("Ledger records evidence and uncertainty only; it does not alter dose, spacing, or prescription.")
     for segment in report["r3"]["segments"]:
         lines.append(f"{segment['start_date']}–{segment['end_date']}: total={segment['recommended_physical_minutes']} rowing={segment['rowing_specific_minutes']} strength={segment['strength_minutes']} ({segment['recommended_strength_exposures']}×{segment['expected_strength_duration_minutes']}) general={segment['general_aerobic_minutes']} other={segment['other_physical_minutes']}")
     lines += ["", "DATED PHASE / RECOVERY CONTEXT"]
@@ -583,6 +600,17 @@ def generate_v3_diagnostic_report(
                          "rationale": list(materialized.selection_rationale_codes) if materialized else []})
     rowing = [component for day in r4.days for component in day.components if component.physical_category is PhysicalCategory.ROWING_SPECIFIC]
     strength = [component for day in r4.days for component in day.components if component.physical_category is PhysicalCategory.STRENGTH]
+    exposure_ledger = build_continuous_training_exposure_ledger(
+        normalized_context=normalized,
+        physiological_state=state,
+        current_training=current,
+        training_days=r4,
+        physiological_evidence=physiological_evidence,
+        allocation_segments=r3.segments,
+        planning_start=r2.planning_start,
+        planning_end=r2.planning_end,
+        profile=profile,
+    )
     reviews = {
         "TOTAL_LOAD": {"rating": "GOOD" if r2_total <= capacity.total_available_minutes else "PROBLEM", "facts": f"{r2_total} recommended vs {current.approximate_total_physical_minutes} current evidence and {capacity.total_available_minutes} capacity"},
         "STRENGTH": {"rating": "QUESTIONABLE" if len(strength) < (current.strength_exposures or 0) else "GOOD", "facts": f"{len(strength)} planned exposures vs {current.strength_exposures} current"},
@@ -619,6 +647,7 @@ def generate_v3_diagnostic_report(
             },
         },
         "development_recommendation": development_recommendation.to_dict(),
+        "training_exposure_ledger": exposure_ledger,
         "r3_weekly_evidence": weekly_evidence_for_allocation(profile, current), "r2": asdict(r2), "r3": asdict(r3),
         "r3_cadence_feasibility": [
             {
@@ -669,6 +698,7 @@ def generate_v3_diagnostic_report(
             "r4_day_count": len(r4.days),
             "r4_component_count": sum(len(day.components) for day in r4.days),
             "r5_result_count": len(r5.results),
+            "training_exposure_ledger_count": len(exposure_ledger["exposures"]),
         })
     record_timing("report_primitive_conversion", primitive_started)
     rendering_started = perf_counter()
@@ -683,7 +713,7 @@ def generate_v3_diagnostic_report(
 
 _PUBLIC_DIAGNOSTIC_KEYS = (
     "planning_date", "planning_end", "available_capacity_minutes",
-    "planning_goals", "training_preferences", "rowing_modalities", "r2_baseline_evidence", "physiological_evidence", "development_recommendation", "r3_weekly_evidence",
+    "planning_goals", "training_preferences", "rowing_modalities", "r2_baseline_evidence", "physiological_evidence", "development_recommendation", "training_exposure_ledger", "r3_weekly_evidence",
     "current_training", "dated_context", "recovery_context_summary", "r2", "r3", "r3_cadence_feasibility", "r6", "r6_results", "r4_status", "calendar", "workouts",
     "conservation", "structural_validation", "plausibility_reviews",
     "training_plausibility", "persisted_input_audit", "diagnostic_timing_ms",
