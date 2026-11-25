@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AssessmentEpisode",
+  "type": "object",
+  "required": ["id", "purpose", "measurement_ids"],
+  "properties": {
+    "id": {"type": "string"},
+    "purpose": {"type": "string"},
+    "start_date": {"type": ["string", "null"], "format": "date"},
+    "end_date": {"type": ["string", "null"], "format": "date"},
+    "measurement_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "season_context": {"type": ["string", "null"]},
+    "developmental_context": {"type": ["string", "null"]},
+    "comparability_notes": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": false
+}

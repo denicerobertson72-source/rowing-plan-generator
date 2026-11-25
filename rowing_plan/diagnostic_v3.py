@@ -8,6 +8,7 @@ from typing import Any, Callable, Mapping
 
 from .materialization_v3 import MaterializationContext, materialize_training_days_v3
 from .performance_profile import build_athlete_performance_profile, derive_performance_limiter, derive_training_focus
+from .physiological_evidence import build_physiological_evidence_profile
 from .planning_profile import normalize_available_training_capacity, normalize_current_training_state
 from .planning_normalization import normalize_planning_inputs
 from .recommended_training_dose import r2_baseline_evidence, recent_actual_history_is_sufficient
@@ -342,6 +343,26 @@ def render_v3_diagnostic_report(report: Mapping[str, Any]) -> str:
         f"Observation window: {evidence.get('observation_window_days')}; raw rowing={evidence.get('raw_observation_rowing_minutes')} raw strength exposures={evidence.get('raw_observation_strength_exposures')}; normalized weekly rowing={evidence.get('weekly_rowing_minutes')} strength exposures={evidence.get('weekly_strength_exposures')}",
         "", "R3 ALLOCATION",
     ]
+    physiological_evidence = report.get("physiological_evidence", {})
+    if physiological_evidence:
+        lines += ["", "PHYSIOLOGICAL MEASUREMENT EVIDENCE"]
+        lines.append(
+            "Capability: " + ", ".join(physiological_evidence.get("capability_description", ()))
+        )
+        lines.append(
+            "Legacy limiter remains a compatibility heuristic; it is not a validated physiological diagnosis."
+        )
+        for item in physiological_evidence.get("measurements", ()):
+            lines.append(
+                f"{item['measurement_id']}: {item['protocol']} modality={item['modality']} "
+                f"date={item['assessment_date']} validity={item['validity']} intent={item['effort_intent']}"
+            )
+        for item in physiological_evidence.get("domains", ()):
+            lines.append(
+                f"{item['domain']}: {item['evidence_status']} "
+                f"measurements={item['measurement_ids']} age_days={item['ages_days']} "
+                f"comparability={item['comparability']}"
+            )
     for segment in report["r3"]["segments"]:
         lines.append(f"{segment['start_date']}–{segment['end_date']}: total={segment['recommended_physical_minutes']} rowing={segment['rowing_specific_minutes']} strength={segment['strength_minutes']} ({segment['recommended_strength_exposures']}×{segment['expected_strength_duration_minutes']}) general={segment['general_aerobic_minutes']} other={segment['other_physical_minutes']}")
     lines += ["", "DATED PHASE / RECOVERY CONTEXT"]
@@ -455,6 +476,7 @@ def generate_v3_diagnostic_report(
     performance_started = perf_counter()
     performance = build_athlete_performance_profile(profile, as_of=r2.planning_start)
     limiter = derive_performance_limiter(performance, coach_focus=profile.get("preferences", {}).get("development_focus"))
+    physiological_evidence = build_physiological_evidence_profile(profile, as_of=r2.planning_start)
     record_timing("performance_profile_focus", performance_started)
     r6_started = perf_counter()
     completed_quality = _completed_quality_exposures(normalized.historical_facts)
@@ -565,6 +587,19 @@ def generate_v3_diagnostic_report(
             "readiness_auto_adjustment": "not_applied",
         },
         "current_training": asdict(current), "r2_baseline_evidence": baseline_evidence,
+        "physiological_evidence": {
+            **physiological_evidence.to_dict(),
+            "legacy_limiter": {
+                "mode": limiter.mode,
+                "primary_focus": limiter.primary_focus,
+                "confidence": limiter.confidence,
+                "status": "legacy_compatibility_heuristic_not_physiological_diagnosis",
+                "limitations": [
+                    "heterogeneous_within_athlete_ratios_are_not_a_common_deficit_scale",
+                    "future_developmental_recommendation_belongs_to_r9f3c",
+                ],
+            },
+        },
         "r3_weekly_evidence": weekly_evidence_for_allocation(profile, current), "r2": asdict(r2), "r3": asdict(r3),
         "r3_cadence_feasibility": [
             {
@@ -629,7 +664,7 @@ def generate_v3_diagnostic_report(
 
 _PUBLIC_DIAGNOSTIC_KEYS = (
     "planning_date", "planning_end", "available_capacity_minutes",
-    "planning_goals", "training_preferences", "rowing_modalities", "r2_baseline_evidence", "r3_weekly_evidence",
+    "planning_goals", "training_preferences", "rowing_modalities", "r2_baseline_evidence", "physiological_evidence", "r3_weekly_evidence",
     "current_training", "dated_context", "recovery_context_summary", "r2", "r3", "r3_cadence_feasibility", "r6", "r6_results", "r4_status", "calendar", "workouts",
     "conservation", "structural_validation", "plausibility_reviews",
     "training_plausibility", "persisted_input_audit", "diagnostic_timing_ms",

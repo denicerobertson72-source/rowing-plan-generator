@@ -11,6 +11,7 @@
     "end_date": {"type": ["string", "null"], "format": "date"},
     "phase_id": {"type": ["string", "null"]},
     "notes": {"type": "string"},
+    "developmental_context": {"type": ["string", "null"]},
     "performance_tests": {"type": "array", "items": {"$ref": "performance_test.schema.json"}}
   }
 }

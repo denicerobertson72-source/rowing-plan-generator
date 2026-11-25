@@ -283,6 +283,14 @@
         "notes": {
           "type": "string"
         },
+        "testing_blocks": {
+          "type": "array",
+          "items": {"$ref": "testing_block.schema.json"}
+        },
+        "assessment_episodes": {
+          "type": "array",
+          "items": {"$ref": "assessment_episode.schema.json"}
+        },
         "multi_duration_power_tests": {
           "type": [
             "object",

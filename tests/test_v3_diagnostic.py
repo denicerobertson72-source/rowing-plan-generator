@@ -137,6 +137,10 @@ def test_persisted_diagnostic_consumes_the_canonical_completed_history_path():
     assert all(item["phase_provenance"] == "season_phase" for item in report["dated_context"])
     assert report["r6_results"]
     assert report["conservation"]["pass"]
+    evidence = report["physiological_evidence"]
+    assert evidence["legacy_limiter"]["status"] == "legacy_compatibility_heuristic_not_physiological_diagnosis"
+    assert public_v3_diagnostic_payload(report)["physiological_evidence"] == evidence
+    assert "private_readiness" not in json.dumps(evidence)
 
 
 def test_persisted_style_21_day_observation_is_reported_and_normalized_before_r3_allocation():
