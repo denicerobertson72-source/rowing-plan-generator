@@ -507,6 +507,7 @@ def reconcile_training_allocation_for_cadence_feasibility(
     restrictions: Mapping[date, tuple[str, ...]] | None = None,
     materialization_context: Any = None,
     current_training_state: CurrentTrainingState | None = None,
+    operational_sequence: Any = None,
 ) -> TrainingAllocationResult:
     """Keep R3's category partition unless actual dated envelopes reject it.
 
@@ -522,12 +523,142 @@ def reconcile_training_allocation_for_cadence_feasibility(
     from .training_days import (
         CombinedDayPreferences,
         evaluate_cadence_category_feasibility,
+        generate_training_days_v3,
     )
+    from .planning_domain import RowingQualityPlan
 
     capacity = tuple(capacity)
     preferences = preferences if preferences is not None else CombinedDayPreferences()
     materialization_context = materialization_context or MaterializationContext()
     authorities = tuple(authorities)
+
+    def cross_cadence_probe(target: TrainingAllocation):
+        """Run one bounded physical R4 pass across all cadence segments.
+
+        It intentionally uses empty R6 plans: quality-specific feasibility is
+        deferred until R6 owns composition, while ordinary rowing still has to
+        satisfy the real R4/R5 envelopes and continuous sequence policy.
+        """
+        ordinary_plans = tuple(
+            RowingQualityPlan(
+                allocation_segment_id=f"r3:{segment.start_date.isoformat()}:{segment.end_date.isoformat()}",
+                segment_start=segment.start_date,
+                segment_end=segment.end_date,
+                rowing_specific_minutes=segment.rowing_specific_minutes,
+                low_intensity_guard_minutes=0,
+                requirements=(),
+                dominant_focus="ordinary_aerobic",
+                secondary_focus=None,
+                performance_confidence="high",
+                policy_version="cadence-category-feasibility-v1",
+                performance_profile_version="cadence-category-feasibility-v1",
+                basis_fingerprint=f"r3:{segment.start_date.isoformat()}:{segment.end_date.isoformat()}",
+            )
+            for segment in target.segments
+        )
+        return generate_training_days_v3(
+            target, capacity, authorities=authorities,
+            preferences=preferences, restrictions=restrictions,
+            rowing_quality_plans=ordinary_plans,
+            materialization_context=materialization_context,
+            current_training_state=current_training_state,
+            operational_sequence=operational_sequence,
+        )
+
+    def apply_cross_cadence_outcome(target: TrainingAllocation, probe, *,
+                                    only_sequence_conflicts: bool) -> TrainingAllocation:
+        """Annotate a whole-allocation feasibility result without changing dose.
+
+        ``continuous_sequence_candidate_rejections`` records alternatives that
+        the shared R4 evaluator considered and rolled back.  It is useful
+        diagnostic evidence, but is deliberately not itself a terminal
+        sequence conflict: another already-authorized R3 category split may
+        still place successfully under the same sequence context.
+        """
+        rejection_codes = tuple(
+            item.source_lineage_id
+            for item in probe.diagnostics
+            if item.code == "continuous_sequence_candidate_rejections" and item.source_lineage_id
+        )
+        failures_by_segment: dict[str, list[Any]] = {}
+        for item in probe.infeasibilities:
+            if item.allocation_segment_id is not None:
+                failures_by_segment.setdefault(item.allocation_segment_id, []).append(item)
+        revised: list[TrainingAllocationSegment] = []
+        for segment in target.segments:
+            segment_id = f"r3:{segment.start_date.isoformat()}:{segment.end_date.isoformat()}"
+            failures = failures_by_segment.get(segment_id, [])
+            if probe.success or not failures:
+                revised.append(replace(
+                    segment,
+                    category_feasibility_original=True,
+                    category_feasibility_final=True,
+                    category_feasibility_classification="successful_physical_category_sequence_feasibility",
+                ))
+                continue
+            codes = tuple(item.code for item in failures)
+            direct_sequence_conflict = any(
+                item.code == "continuous_sequence_infeasible"
+                for item in failures
+            )
+            direct_sequence_codes = tuple(
+                item.detail for item in failures
+                if item.code == "continuous_sequence_infeasible" and item.detail
+            )
+            terminal_sequence_conflict = direct_sequence_conflict
+            diagnostic_codes = (*direct_sequence_codes, *rejection_codes)
+            if only_sequence_conflicts and not terminal_sequence_conflict:
+                revised.append(segment)
+                continue
+            classification = (
+                "existing_physiological_sequence_constraint_conflict"
+                if terminal_sequence_conflict else
+                "candidate_rejections_unresolved_requires_upstream_reconciliation"
+                if rejection_codes else
+                "physical_capacity_or_category_envelope_infeasibility"
+                if any("capacity" in code or "partition" in code or "conservation" in code for code in codes)
+                else "bounded_placement_search_exhausted"
+            )
+            revised.append(replace(
+                segment,
+                category_feasibility_original=False,
+                category_feasibility_final=False,
+                category_feasibility_classification=classification,
+                category_feasibility_codes=(*segment.category_feasibility_codes, *codes, *diagnostic_codes),
+                # A terminal sequence conflict must never be evaded by a
+                # category conversion.  A fully exhausted physical envelope
+                # likewise remains visible for upstream reconciliation, but
+                # candidate-rejection diagnostics alone do not take that
+                # terminal path.
+                category_feasibility_requires_upstream_reconciliation=True,
+            ))
+        return replace(target, segments=tuple(revised))
+
+    initial_sequence_candidate_rejections = False
+    if operational_sequence is not None:
+        initial_cross_cadence = cross_cadence_probe(allocation)
+        if initial_cross_cadence.success:
+            return TrainingAllocationResult(allocation=apply_cross_cadence_outcome(
+                allocation, initial_cross_cadence, only_sequence_conflicts=False,
+            ))
+        if any(
+            item.code == "continuous_sequence_infeasible"
+            for item in initial_cross_cadence.infeasibilities
+        ):
+            # A direct R4 sequence infeasibility is an actual hard-policy
+            # conflict, not merely an unsuccessful candidate attempt.  Do not
+            # use category reconciliation to evade the shared recovery policy.
+            return TrainingAllocationResult(allocation=apply_cross_cadence_outcome(
+                allocation, initial_cross_cadence, only_sequence_conflicts=True,
+            ))
+        # A later single-segment query cannot see candidate rollbacks caused
+        # by an accepted component in an earlier segment.  Retain this compact
+        # fact so exhaustion of approved category alternatives preserves the
+        # original allocation for final whole-calendar R4/R6 reporting.
+        initial_sequence_candidate_rejections = any(
+            item.code == "continuous_sequence_candidate_rejections"
+            for item in initial_cross_cadence.diagnostics
+        )
     reconciled: list[TrainingAllocationSegment] = []
 
     for segment in allocation.segments:
@@ -538,6 +669,7 @@ def reconcile_training_allocation_for_cadence_feasibility(
             segment, capacity, authorities=authorities, preferences=preferences,
             restrictions=restrictions, materialization_context=segment_context,
             current_training_state=current_training_state,
+            operational_sequence=operational_sequence,
         )
         if original.feasible:
             reconciled.append(replace(
@@ -545,6 +677,23 @@ def reconcile_training_allocation_for_cadence_feasibility(
                 category_feasibility_original=True,
                 category_feasibility_final=True,
                 category_feasibility_runtime_ms=original.runtime_ms,
+                category_feasibility_classification=original.classification,
+                category_feasibility_codes=original.infeasibility_codes,
+            ))
+            continue
+
+        if "continuous_sequence_infeasible" in original.infeasibility_codes:
+            # Sequence policy belongs to the shared evaluator, not to a new R3
+            # dose authority.  Preserve the requested category allocation and
+            # make the known conflict visible to final R4/upstream review.
+            reconciled.append(replace(
+                segment,
+                category_feasibility_original=False,
+                category_feasibility_final=False,
+                category_feasibility_runtime_ms=original.runtime_ms,
+                category_feasibility_classification=original.classification,
+                category_feasibility_codes=(*original.infeasibility_codes, *original.sequence_constraint_codes),
+                category_feasibility_requires_upstream_reconciliation=True,
             ))
             continue
 
@@ -583,11 +732,41 @@ def reconcile_training_allocation_for_cadence_feasibility(
                     candidate, capacity, authorities=authorities, preferences=preferences,
                     restrictions=restrictions, materialization_context=segment_context,
                     current_training_state=current_training_state,
+                    operational_sequence=operational_sequence,
                 )
                 if feasibility.feasible:
                     selected = (candidate, feasibility)
                     break
         if selected is None:
+            if operational_sequence is not None and (
+                original.sequence_constraint_codes or initial_sequence_candidate_rejections
+            ):
+                # Candidate rollbacks establish that this bounded R4 pass did
+                # not place the requested split.  They do *not* establish that
+                # R3 may alter category policy beyond the already-authorised
+                # alternatives above.  Preserve the upstream R2/R3 allocation
+                # verbatim, make the unresolved sequence-aware envelope
+                # visible, and let final R4/R6 report its exact placement
+                # outcome.  This is distinct from a direct
+                # ``continuous_sequence_infeasible`` (handled above), and
+                # from an ordinary no-sequence capacity failure (still an
+                # explicit R3 infeasibility below).
+                reconciled.append(replace(
+                    segment,
+                    category_feasibility_original=False,
+                    category_feasibility_final=False,
+                    category_feasibility_runtime_ms=original.runtime_ms,
+                    category_feasibility_classification=(
+                        "candidate_rejections_unresolved_requires_upstream_reconciliation"
+                    ),
+                    category_feasibility_codes=(
+                        *original.infeasibility_codes,
+                        "continuous_sequence_candidate_rejections",
+                        *original.sequence_constraint_codes,
+                    ),
+                    category_feasibility_requires_upstream_reconciliation=True,
+                ))
+                continue
             return TrainingAllocationResult(infeasibility=TrainingAllocationInfeasibility(
                 code="cadence_category_envelope_infeasible",
                 segment_start=segment.start_date,
@@ -608,10 +787,12 @@ def reconcile_training_allocation_for_cadence_feasibility(
             rationale_codes=(*candidate.rationale_codes, "category_reconciliation:cadence_envelope_feasibility"),
             category_feasibility_final=True,
             category_feasibility_runtime_ms=round(original.runtime_ms + final.runtime_ms, 3),
+            category_feasibility_classification=final.classification,
+            category_feasibility_codes=final.infeasibility_codes,
         ))
 
     ordered = tuple(reconciled)
-    return TrainingAllocationResult(allocation=TrainingAllocation(
+    result_allocation = TrainingAllocation(
         planning_start=allocation.planning_start,
         planning_end=allocation.planning_end,
         segments=ordered,
@@ -626,7 +807,20 @@ def reconcile_training_allocation_for_cadence_feasibility(
         constraints=tuple(code for item in ordered for code in item.constraints),
         confidence=allocation.confidence,
         policy_version=allocation.policy_version,
-    ))
+    )
+
+    if operational_sequence is not None:
+        # Segment-local envelope checks cannot see generated exposures selected
+        # by earlier cadence segments.  Re-run the same bounded R4 physical
+        # probe across the complete allocation so Sunday/Monday-style spacing
+        # and race recovery survive cadence boundaries.  This remains a query:
+        # R3 does not alter R2 dose or manufacture a replacement allocation.
+        cross_cadence = cross_cadence_probe(result_allocation)
+        if not cross_cadence.success:
+            result_allocation = apply_cross_cadence_outcome(
+                result_allocation, cross_cadence, only_sequence_conflicts=False,
+            )
+    return TrainingAllocationResult(allocation=result_allocation)
 
 
 def generate_training_allocation_v3(
@@ -640,6 +834,7 @@ def generate_training_allocation_v3(
     cadence_authorities: Iterable[Any] = (),
     cadence_restrictions: Mapping[date, tuple[str, ...]] | None = None,
     cadence_materialization_context: Any = None,
+    cadence_operational_sequence: Any = None,
 ) -> TrainingAllocationResult:
     """Clear R3 entry point; it consumes R2 directly and no legacy targets."""
     if recommended_dose is None:
@@ -660,6 +855,11 @@ def generate_training_allocation_v3(
         recent_actuals_sufficient=sufficient, observation_window_days=21,
     )
     state = reduce_physiological_state(context, profile=profile)
+    if cadence_operational_sequence is None and cadence_capacity is not None:
+        # Import locally: R3 uses the same pure R4 probe but does not own R4's
+        # module at import time.
+        from .training_days import OperationalSequenceContext
+        cadence_operational_sequence = OperationalSequenceContext(context, state)
     result = allocate_training_dose(recommended_dose, profile=profile, current_state=current, state=state)
     if not result.success or cadence_capacity is None:
         return result
@@ -671,4 +871,5 @@ def generate_training_allocation_v3(
         restrictions=cadence_restrictions,
         materialization_context=cadence_materialization_context,
         current_training_state=current,
+        operational_sequence=cadence_operational_sequence,
     )

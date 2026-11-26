@@ -391,6 +391,13 @@ class TrainingAllocationSegment:
     category_feasibility_original: bool | None = None
     category_feasibility_final: bool | None = None
     category_feasibility_runtime_ms: float | None = None
+    # R3 may preserve its authoritative category allocation even when the
+    # shared R4 feasibility probe finds an existing operational constraint.
+    # These fields make that distinction explicit without turning a placement
+    # conflict into a second dose or category authority.
+    category_feasibility_classification: str | None = None
+    category_feasibility_codes: tuple[str, ...] = ()
+    category_feasibility_requires_upstream_reconciliation: bool = False
     # Deliberate supplemental aerobic work is separate from a later
     # feasibility reconciliation.  Both remain inside the one R3 category
     # allocation and therefore charge physical dose exactly once.
@@ -423,6 +430,8 @@ class TrainingAllocationSegment:
             raise ValueError("training_allocation_segment_category_reconciliation_reason_is_required")
         if self.category_feasibility_runtime_ms is not None and self.category_feasibility_runtime_ms < 0:
             raise ValueError("training_allocation_segment_category_feasibility_runtime_is_invalid")
+        if self.category_feasibility_requires_upstream_reconciliation and self.category_feasibility_final is not False:
+            raise ValueError("training_allocation_segment_reconciliation_flag_requires_failed_feasibility")
         if self.deliberate_general_aerobic_minutes < 0 or self.deliberate_general_aerobic_minutes > self.general_aerobic_minutes:
             raise ValueError("training_allocation_segment_deliberate_general_aerobic_is_invalid")
         if self.general_aerobic_supplemental_max_minutes is not None and self.general_aerobic_supplemental_max_minutes <= 0:
@@ -439,6 +448,7 @@ class TrainingAllocationSegment:
         object.__setattr__(self, "constraints", tuple(sorted(set(self.constraints))))
         object.__setattr__(self, "other_provenance", tuple(sorted(set(self.other_provenance))))
         object.__setattr__(self, "general_aerobic_policy_provenance", tuple(sorted(set(self.general_aerobic_policy_provenance))))
+        object.__setattr__(self, "category_feasibility_codes", tuple(sorted(set(self.category_feasibility_codes))))
         capabilities = tuple(sorted(self.general_aerobic_capabilities, key=lambda item: item.modality.value))
         if len({item.modality for item in capabilities}) != len(capabilities):
             raise ValueError("training_allocation_segment_general_aerobic_modalities_must_be_unique")

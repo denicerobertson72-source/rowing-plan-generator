@@ -151,7 +151,22 @@ def _completed_facts(context: NormalizedPlanningContext) -> tuple[HistoricalFact
     """Facts that describe completed physiology, deduped by normalization."""
     result = []
     for fact in context.historical_facts:
-        if fact.type is HistoricalFactType.RACE_FACT or fact.physiological_credit.eligible:
+        # Credit describes a possible classification, not proof that a merely
+        # prescribed session happened.  The existing
+        # ``COMPLETED_PLANNED_SESSION`` fact type remains completion evidence
+        # for legacy/imported records that predate a separate actual payload;
+        # a ``PRESCRIBED_SESSION`` with no actual remains audit-only.  Races
+        # retain their existing explicit occurrence semantics.
+        actual = fact.completed_actual or {}
+        status = str(actual.get("status", "completed")).lower()
+        if fact.type is HistoricalFactType.RACE_FACT or (
+            fact.type is HistoricalFactType.COMPLETED_PLANNED_SESSION
+            and fact.physiological_credit.eligible
+            and status not in {"cancelled", "canceled", "missed", "skipped", "in_progress"}
+        ) or (
+            fact.completed_actual is not None
+            and status not in {"cancelled", "canceled", "missed", "skipped", "in_progress"}
+        ):
             result.append(fact)
     return tuple(sorted(result, key=lambda item: (item.date, item.id)))
 

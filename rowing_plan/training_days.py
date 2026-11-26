@@ -29,7 +29,14 @@ from .planning_domain import (
     TrainingDayInfeasibility,
     TrainingDayPlanResult,
     TrainingDayState,
+    PhysiologicalCredit,
+    PhysiologicalState,
+    ProjectedSequenceItem,
+    ProjectedSequenceState,
+    SequenceEligibility,
+    TrainingNeed,
     TrainingModality,
+    TrainingRole,
     CurrentTrainingState,
     QualityRequirementPriority,
     RowingQualityPlan,
@@ -41,6 +48,28 @@ from .materialization_v3 import (
     MaterializationContext, preflight_quality_duration_v3,
     preflight_rowing_duration_v3,
 )
+from .planning_normalization import NormalizedPlanningContext
+from .sequence_constraints import evaluate_sequence_constraint
+from .training_policy import DEFAULT_TRAINING_POLICY, TrainingPolicy
+
+
+@dataclass(frozen=True)
+class OperationalSequenceContext:
+    """The existing continuous policy context made available to R4.
+
+    R4 does not create a second recovery policy.  It receives the same
+    normalized completed-history state used by the replacement spine and keeps
+    a separate immutable projected state for authoritative and accepted
+    generated future exposures.
+    """
+
+    normalized_context: NormalizedPlanningContext
+    physiological_state: PhysiologicalState
+    policy: TrainingPolicy = DEFAULT_TRAINING_POLICY
+
+    def __post_init__(self) -> None:
+        if self.physiological_state.as_of_date != self.normalized_context.planning_date:
+            raise ValueError("operational_sequence_context_planning_date_mismatch")
 
 
 def allocation_segment_id(segment: TrainingAllocationSegment) -> str:
@@ -103,6 +132,10 @@ class AuthoritativeComponentFact:
     physiological_band: str | None = None
     quality_work_minutes: int | None = None
     user_fixed: bool = False
+    # Some carried legacy authorities retain a generic quality role without a
+    # safe concrete subtype.  Keep the sequence classification explicit rather
+    # than inventing AT/TR/AN/PP merely to seed the shared constraint state.
+    sequence_role: TrainingRole | None = None
 
     def __post_init__(self) -> None:
         if not self.authority_id or self.duration_minutes <= 0:
@@ -163,20 +196,24 @@ class CombinedDayPreferences:
 class CadenceCategoryFeasibility:
     """Read-only R4/R5-backed feasibility evidence for one R3 cadence segment.
 
-    It intentionally reports category-envelope feasibility only.  R6 still
-    owns quality composition and the final R4 pass remains responsible for
-    quality-aware calendar feasibility.
+    It reports physical-category feasibility under the same optional sequence
+    context used by R4.  R6 still owns quality composition, so it deliberately
+    does not claim quality-specific final feasibility before R6 is available.
     """
 
     allocation_segment_id: str
     feasible: bool
     runtime_ms: float
     infeasibility_codes: tuple[str, ...] = ()
+    classification: str = "successful_feasible_placement"
+    sequence_constraint_codes: tuple[str, ...] = ()
+    quality_specific_feasibility: str = "deferred_until_r6"
 
     def __post_init__(self) -> None:
         if self.runtime_ms < 0:
             raise ValueError("cadence_category_feasibility_runtime_is_invalid")
         object.__setattr__(self, "infeasibility_codes", tuple(sorted(set(self.infeasibility_codes))))
+        object.__setattr__(self, "sequence_constraint_codes", tuple(sorted(set(self.sequence_constraint_codes))))
 
 
 def _category_from_modality(modality: TrainingModality | None) -> PhysicalCategory | None:
@@ -234,6 +271,56 @@ _QUALITY_PURPOSE_BY_FAMILY = {
 }
 
 
+_ROLE_BY_PURPOSE = {
+    TrainingComponentPurpose.EASY_AEROBIC: TrainingRole.DEDICATED_UT2,
+    TrainingComponentPurpose.TECHNICAL: TrainingRole.TECHNICAL_REENTRY,
+    TrainingComponentPurpose.AEROBIC_STRENGTH: TrainingRole.UT1_AEROBIC_STRENGTH,
+    TrainingComponentPurpose.STRENGTH: TrainingRole.STRENGTH,
+    TrainingComponentPurpose.THRESHOLD: TrainingRole.THRESHOLD_AT,
+    TrainingComponentPurpose.RACE_SPECIFIC: TrainingRole.RACE_SPECIFIC_TR,
+    TrainingComponentPurpose.ANAEROBIC: TrainingRole.ANAEROBIC_AN,
+    TrainingComponentPurpose.POWER: TrainingRole.POWER_PP,
+    TrainingComponentPurpose.RACE: TrainingRole.RACE,
+    TrainingComponentPurpose.RECOVERY: TrainingRole.RECOVERY_AEROBIC,
+    TrainingComponentPurpose.COACHED: TrainingRole.COACHED_TRAINING,
+    TrainingComponentPurpose.PRIVATE_COACHING: TrainingRole.PRIVATE_COACHING,
+}
+
+
+def _sequence_role(category: PhysicalCategory, purpose: TrainingComponentPurpose) -> TrainingRole | None:
+    """Classify only established sequence-policy exposures.
+
+    General aerobic has no approved cross-category spacing policy in this
+    milestone, so it deliberately remains out of the projected sequence.
+    """
+    if category is PhysicalCategory.GENERAL_AEROBIC or category is PhysicalCategory.OTHER:
+        return None
+    return _ROLE_BY_PURPOSE.get(purpose)
+
+
+def _sequence_need(
+    *,
+    lineage: str,
+    role: TrainingRole,
+    minutes: int,
+    candidate_date: date,
+) -> TrainingNeed:
+    return TrainingNeed(
+        id=f"r4-sequence:{lineage}:{candidate_date.isoformat()}",
+        role=role,
+        target_credit=PhysiologicalCredit(role, 1, max(0, minutes), True),
+        earliest_date=candidate_date,
+        latest_date=candidate_date,
+        recovery_cost="hard" if role in {
+            TrainingRole.STRENGTH, TrainingRole.THRESHOLD_AT,
+            TrainingRole.RACE_SPECIFIC_TR, TrainingRole.ANAEROBIC_AN,
+            TrainingRole.POWER_PP, TrainingRole.RACE,
+        } else "low",
+        priority="r4_authoritative_allocation",
+        source_policy="r4_continuous_sequence_enforcement",
+    )
+
+
 def _rowing_component_requirements(plan: RowingQualityPlan) -> tuple[RowingComponentRequirement, ...]:
     result: list[RowingComponentRequirement] = []
     for item in plan.requirements:
@@ -273,6 +360,7 @@ def evaluate_cadence_category_feasibility(
     restrictions: Mapping[date, tuple[str, ...]] | None = None,
     materialization_context: MaterializationContext = MaterializationContext(),
     current_training_state: CurrentTrainingState | None = None,
+    operational_sequence: OperationalSequenceContext | None = None,
 ) -> CadenceCategoryFeasibility:
     """Ask whether one exact R3 category partition can become dated work.
 
@@ -326,12 +414,46 @@ def evaluate_cadence_category_feasibility(
         rowing_quality_plans=(ordinary_plan,),
         materialization_context=materialization_context,
         current_training_state=current_training_state,
+        operational_sequence=operational_sequence,
     )
+    codes = tuple(item.code for item in result.infeasibilities)
+    # Some exact-partition paths exhaust their candidates before returning a
+    # category-specific error (for example ``rowing_partition_infeasible``).
+    # Keep the shared sequence rejection provenance in that case instead of
+    # misclassifying a formal race/spacing conflict as an ordinary envelope
+    # failure.  The final R4 result remains the source of the exact failed
+    # category/conservation details.
+    has_direct_sequence_conflict = any(
+        item.code == "continuous_sequence_infeasible"
+        for item in result.infeasibilities
+    )
+    direct_sequence_codes = tuple(
+        item.detail for item in result.infeasibilities
+        if item.code == "continuous_sequence_infeasible" and item.detail
+    )
+    candidate_rejection_codes = tuple(
+        item.source_lineage_id
+        for item in result.diagnostics
+        if item.code == "continuous_sequence_candidate_rejections" and item.source_lineage_id
+    )
+    sequence_codes = (*direct_sequence_codes, *candidate_rejection_codes)
+    if result.success:
+        classification = "successful_physical_category_sequence_feasibility"
+    elif has_direct_sequence_conflict:
+        classification = "existing_physiological_sequence_constraint_conflict"
+    elif any("capacity" in code or "partition" in code or "conservation" in code for code in codes):
+        classification = "physical_capacity_or_category_envelope_infeasibility"
+    else:
+        # R4 is deterministic but bounded; do not claim a global proof when a
+        # remaining failure is only what this placement pass exhausted.
+        classification = "bounded_placement_search_exhausted"
     return CadenceCategoryFeasibility(
         allocation_segment_id=segment_id,
         feasible=result.success,
         runtime_ms=round((perf_counter() - started) * 1000, 3),
-        infeasibility_codes=tuple(item.code for item in result.infeasibilities),
+        infeasibility_codes=codes,
+        classification=classification,
+        sequence_constraint_codes=sequence_codes,
     )
 
 
@@ -419,14 +541,18 @@ def generate_training_days_v3(
     rowing_quality_plans: Iterable[RowingQualityPlan] = (),
     materialization_context: MaterializationContext = MaterializationContext(),
     current_training_state: CurrentTrainingState | None = None,
+    operational_sequence: OperationalSequenceContext | None = None,
 ) -> TrainingDayPlanResult:
     """Create a deterministic component calendar without catalog materialization.
 
     This foundation intentionally uses a simple capability-first date chooser.
-    R4B represents combined-day preferences and calendar-week limits, but does
-    not claim to be the future physiological placement scorer.
+    When the normalized physiological state is supplied, every generated
+    strength or rowing candidate is additionally checked against the existing
+    continuous sequence policy before it can consume dated capacity.
     """
     capacity_by_date = {item.date: item for item in capacity}
+    authorities = tuple(authorities)
+    race_context = tuple(race_context)
     expected_dates = _dates(allocation.planning_start, allocation.planning_end)
     diagnostics: list[TrainingDayDiagnostic] = []
     infeasibilities: list[TrainingDayInfeasibility] = []
@@ -439,6 +565,21 @@ def generate_training_days_v3(
     # Ignore unrelated capacity facts rather than manufacturing extra days.
     daily_components: dict[date, list[TrainingComponent]] = {day: [] for day in expected_dates}
     authority_ids: dict[date, set[str]] = {day: set() for day in expected_dates}
+    authority_sequence_roles: dict[str, TrainingRole] = {}
+    projected_sequence = ProjectedSequenceState()
+    sequence_rejection_counts: dict[str, int] = {}
+    sequence_authoritative_count = 0
+    sequence_generated_count = 0
+    # Formal races retain their priority in ``NormalizedPlanningContext`` and
+    # are therefore evaluated by the existing sequence policy from that source
+    # rather than being re-seeded here with an invented/default priority.
+    if operational_sequence is not None:
+        for race_day_text, priority, _event_name, _race_type in operational_sequence.normalized_context.race_context:
+            race_day = date.fromisoformat(race_day_text)
+            projected_sequence = projected_sequence.with_item(ProjectedSequenceItem(
+                f"race:{race_day.isoformat()}:{priority}", race_day, TrainingRole.RACE,
+                authoritative=True, source=f"race:{priority}",
+            ))
 
     authority_category_minutes: dict[tuple[str, PhysicalCategory], int] = {}
     authority_strength_counts: dict[str, int] = {}
@@ -470,11 +611,33 @@ def generate_training_days_v3(
             quality_work_minutes=fact.quality_work_minutes,
         )
         daily_components[fact.date].append(component)
+        if fact.sequence_role is not None:
+            authority_sequence_roles[component.component_id] = fact.sequence_role
         authority_ids[fact.date].add(fact.authority_id)
         key = (segment_id, category)
         authority_category_minutes[key] = authority_category_minutes.get(key, 0) + fact.duration_minutes
         if category is PhysicalCategory.STRENGTH:
             authority_strength_counts[segment_id] = authority_strength_counts.get(segment_id, 0) + 1
+
+    if operational_sequence is not None:
+        # Kept deliberately as aggregate diagnostics: candidate search may
+        # inspect many dates and a full trace would expose implementation noise
+        # rather than useful sequence evidence.
+        for current_day in expected_dates:
+            for component in daily_components[current_day]:
+                if component.authority is not ComponentAuthority.AUTHORITATIVE:
+                    continue
+                role = authority_sequence_roles.get(component.component_id) or _sequence_role(
+                    component.physical_category, component.purpose,
+                )
+                if role is None:
+                    continue
+                projected_sequence = projected_sequence.with_item(ProjectedSequenceItem(
+                    component.component_id, current_day, role,
+                    PhysiologicalCredit(role, 1, component.duration_minutes, True),
+                    authoritative=True, source="authoritative_component",
+                ))
+                sequence_authoritative_count += 1
 
     blocked_generated_dates: set[date] = set()
     for day in expected_dates:
@@ -487,7 +650,23 @@ def generate_training_days_v3(
     def remaining(day: date) -> int:
         return max(0, capacity_by_date[day].usable_minutes - sum(item.duration_minutes for item in daily_components[day]))
 
-    def eligible_days(segment: TrainingAllocationSegment, category: PhysicalCategory, minutes: int) -> list[date]:
+    def sequence_decision(day: date, *, lineage: str, category: PhysicalCategory,
+                          purpose: TrainingComponentPurpose, minutes: int):
+        if operational_sequence is None:
+            return None
+        role = _sequence_role(category, purpose)
+        if role is None:
+            return None
+        return evaluate_sequence_constraint(
+            operational_sequence.normalized_context,
+            operational_sequence.physiological_state,
+            _sequence_need(lineage=lineage, role=role, minutes=minutes, candidate_date=day),
+            day, operational_sequence.policy, projected=projected_sequence,
+        )
+
+    def eligible_days(segment: TrainingAllocationSegment, category: PhysicalCategory, minutes: int,
+                      *, purpose: TrainingComponentPurpose | None = None,
+                      lineage: str = "generated") -> list[date]:
         result=[]
         for day in _dates(segment.start_date, segment.end_date):
             fact=capacity_by_date[day]
@@ -496,6 +675,14 @@ def generate_training_days_v3(
             if restrictions.get(day):
                 continue
             if remaining(day) < minutes or not _can_combine(daily_components, day, preferences):
+                continue
+            decision = sequence_decision(
+                day, lineage=lineage, category=category,
+                purpose=purpose or _default_purpose(category), minutes=minutes,
+            )
+            if decision is not None and decision.eligibility is SequenceEligibility.PROHIBITED:
+                for code in decision.hard_rejection_reasons:
+                    sequence_rejection_counts[code] = sequence_rejection_counts.get(code, 0) + 1
                 continue
             result.append(day)
         return sorted(
@@ -510,15 +697,29 @@ def generate_training_days_v3(
             ),
         )
 
+    def sequence_conflict_detail(before: Mapping[str, int]) -> str | None:
+        changed = [
+            f"{code}:{count - before.get(code, 0)}"
+            for code, count in sorted(sequence_rejection_counts.items())
+            if count > before.get(code, 0)
+        ]
+        return ",".join(changed) if changed else None
+
     def append_generated(day: date, *, lineage: str, segment_id: str, category: PhysicalCategory,
                          minutes: int, purpose: TrainingComponentPurpose,
                          quality: RowingComponentRequirement | None = None,
                          modality: TrainingModality | None = None,
-                         capability_provenance: tuple[str, ...] = ()) -> None:
+                         capability_provenance: tuple[str, ...] = (),
+                         track_sequence: bool = True) -> None:
+        nonlocal projected_sequence, sequence_generated_count
         permitted = ((TrainingModality.ERG, TrainingModality.ON_WATER) if category is PhysicalCategory.ROWING_SPECIFIC
                      else (TrainingModality.BIKE, TrainingModality.ELLIPTICAL, TrainingModality.STAIR_CLIMBER, TrainingModality.RUNNING)
                      if category is PhysicalCategory.GENERAL_AEROBIC else ())
-        daily_components[day].append(_make_component(
+        accepted_decision = (
+            sequence_decision(day, lineage=lineage, category=category, purpose=purpose, minutes=minutes)
+            if operational_sequence is not None and track_sequence else None
+        )
+        component = _make_component(
             lineage=lineage, segment_id=segment_id, category=category, minutes=minutes,
             purpose=purpose, authority=ComponentAuthority.GENERATED,
             sequence=len(daily_components[day]) + 1, modality=modality, permitted_modalities=permitted,
@@ -530,7 +731,31 @@ def generate_training_days_v3(
             minimum_quality_work_minutes=quality.minimum_work_minutes if quality else None,
             maximum_quality_work_minutes=quality.maximum_work_minutes if quality else None,
             capability_provenance=capability_provenance,
-        ))
+        )
+        daily_components[day].append(component)
+        if accepted_decision is not None and accepted_decision.eligibility is not SequenceEligibility.ELIGIBLE:
+            reasons = (*accepted_decision.soft_constraints, *accepted_decision.authority_conflicts)
+            suggested = (
+                accepted_decision.recommended_credit_adjustment.minutes
+                if accepted_decision.recommended_credit_adjustment is not None else None
+            )
+            diagnostics.append(TrainingDayDiagnostic(
+                "continuous_sequence_accepted_constraint", day, lineage,
+                f"category={category.value};purpose={purpose.value};"
+                f"eligibility={accepted_decision.eligibility.value};"
+                f"recovery={accepted_decision.recovery_status};"
+                f"spacing={accepted_decision.spacing_status};"
+                f"reasons={','.join(reasons) or 'low_cost_exception'};"
+                f"suggested_minutes={suggested if suggested is not None else 'none'}",
+            ))
+        if operational_sequence is not None and track_sequence:
+            role = _sequence_role(category, purpose)
+            if role is not None:
+                projected_sequence = projected_sequence.with_item(ProjectedSequenceItem(
+                    component.component_id, day, role,
+                    PhysiologicalCredit(role, 1, minutes, True), source="generated_component",
+                ))
+                sequence_generated_count += 1
 
     def supplemental_general_aerobic_partition(
         segment: TrainingAllocationSegment,
@@ -646,7 +871,10 @@ def generate_training_days_v3(
             return True
         purpose = ordinary_rowing_purpose(segment_id)
         candidates = [
-            current_day for current_day in eligible_days(segment, PhysicalCategory.ROWING_SPECIFIC, 1)
+            current_day for current_day in eligible_days(
+                segment, PhysicalCategory.ROWING_SPECIFIC, 1, purpose=purpose,
+                lineage=f"{segment_id}:residual-rowing",
+            )
             if not any(item.physical_category is PhysicalCategory.ROWING_SPECIFIC for item in daily_components[current_day])
         ]
         totals = {0}
@@ -696,6 +924,7 @@ def generate_training_days_v3(
                 segment_id=segment_id, category=PhysicalCategory.STRENGTH,
                 minutes=segment.expected_strength_duration_minutes,
                 purpose=TrainingComponentPurpose.STRENGTH,
+                track_sequence=False,
             )
             try:
                 if future_strength_and_rowing_partition_exists(
@@ -714,6 +943,7 @@ def generate_training_days_v3(
             category=PhysicalCategory.STRENGTH,
             minutes=segment.expected_strength_duration_minutes,
             purpose=TrainingComponentPurpose.STRENGTH,
+            track_sequence=False,
         )
         try:
             return future_strength_and_rowing_partition_exists(
@@ -837,7 +1067,10 @@ def generate_training_days_v3(
             if requirement.exposure_id in satisfied:
                 continue
             possibilities: list[tuple[tuple[int, int, date, int], date, int, tuple[str, ...]]] = []
-            for current_day in eligible_days(segment, PhysicalCategory.ROWING_SPECIFIC, 1):
+            for current_day in eligible_days(
+                segment, PhysicalCategory.ROWING_SPECIFIC, 1,
+                purpose=requirement.purpose, lineage=requirement.exposure_id,
+            ):
                 if not spacing_ok(current_day, requirement):
                     continue
                 for duration in range(1, remaining(current_day) + 1):
@@ -855,7 +1088,10 @@ def generate_training_days_v3(
                         fixed_requirement.minimum_spacing_hours,
                     )
                     for fixed_day, fixed_requirement in user_fixed_quality_dates
-                    for current_day in eligible_days(segment, PhysicalCategory.ROWING_SPECIFIC, 1)
+                    for current_day in eligible_days(
+                        segment, PhysicalCategory.ROWING_SPECIFIC, 1,
+                        purpose=requirement.purpose, lineage=requirement.exposure_id,
+                    )
                 )
                 code = "hard_quality_requirement_unplaceable" if requirement.priority is QualityRequirementPriority.HARD else "quality_requirement_deferred"
                 if requirement.priority is QualityRequirementPriority.HARD:
@@ -907,7 +1143,10 @@ def generate_training_days_v3(
                        TrainingComponentPurpose.TECHNICAL if plan.technical_emphasis else
                        TrainingComponentPurpose.EASY_AEROBIC)
         low_candidates = [
-            day for day in eligible_days(segment, PhysicalCategory.ROWING_SPECIFIC, 1)
+            day for day in eligible_days(
+                segment, PhysicalCategory.ROWING_SPECIFIC, 1, purpose=low_purpose,
+                lineage=f"{segment_id}:quality-residual",
+            )
             if not any(item.physical_category is PhysicalCategory.ROWING_SPECIFIC for item in daily_components[day])
         ]
 
@@ -986,11 +1225,14 @@ def generate_training_days_v3(
                 PhysicalCategory.STRENGTH, 0,
             ))
         for exposure in range(committed_strength + 1, expected_strength + 1):
+            sequence_before = dict(sequence_rejection_counts)
             days = eligible_days(segment, PhysicalCategory.STRENGTH, segment.expected_strength_duration_minutes)
             if not days:
+                sequence_detail = sequence_conflict_detail(sequence_before)
                 infeasibilities.append(TrainingDayInfeasibility(
-                    "generated_component_capacity_infeasible", segment_id,
+                    "continuous_sequence_infeasible" if sequence_detail else "generated_component_capacity_infeasible", segment_id,
                     PhysicalCategory.STRENGTH, segment.expected_strength_duration_minutes,
+                    sequence_detail,
                 ))
                 break
             # Generic R4 rowing retains its legacy direct-placement contract.
@@ -1102,10 +1344,13 @@ def generate_training_days_v3(
                 continue
             index = 1
             while required:
+                sequence_before = dict(sequence_rejection_counts)
                 candidates = eligible_days(segment, category, 1)
                 if not candidates:
+                    sequence_detail = sequence_conflict_detail(sequence_before)
                     infeasibilities.append(TrainingDayInfeasibility(
-                        "generated_component_capacity_infeasible", segment_id, category, required,
+                        "continuous_sequence_infeasible" if sequence_detail else "generated_component_capacity_infeasible",
+                        segment_id, category, required, sequence_detail,
                     ))
                     break
                 chosen = candidates[0]
@@ -1160,6 +1405,37 @@ def generate_training_days_v3(
             infeasibilities.append(TrainingDayInfeasibility(
                 "r3_total_physical_conservation_mismatch", segment_id, None,
                 abs(segment.recommended_physical_minutes - total),
+            ))
+
+    if operational_sequence is not None:
+        rules = {item.key: item.value for item in operational_sequence.policy.rules}
+        diagnostics.append(TrainingDayDiagnostic(
+            "continuous_sequence_policy_applied", None, None,
+            "resolution=date_only;"
+            f"quality_spacing_days={rules.get('quality_minimum_spacing_days')};"
+            f"strength_spacing_days={rules.get('strength_minimum_spacing_days')};"
+            f"race_recovery={rules.get('race_recovery_days_by_priority')};"
+            f"race_soft_recovery={rules.get('race_soft_recovery_days_by_priority')}",
+        ))
+        historical_completed = sum(
+            1 for fact in operational_sequence.normalized_context.historical_facts
+            if fact.completed_actual is not None or fact.type.value == "race_fact"
+        )
+        diagnostics.append(TrainingDayDiagnostic(
+            "continuous_sequence_history_coverage", None, None,
+            f"completed_historical_exposures={historical_completed};"
+            "planned_uncompleted_excluded=true;reported_baseline_excluded=true",
+        ))
+        diagnostics.append(TrainingDayDiagnostic(
+            "continuous_sequence_context_summary", None, None,
+            f"authoritative_exposures={sequence_authoritative_count};"
+            f"accepted_generated_exposures={sequence_generated_count};"
+            f"projected_items={len(projected_sequence.items)}",
+        ))
+        for code, count in sorted(sequence_rejection_counts.items()):
+            diagnostics.append(TrainingDayDiagnostic(
+                "continuous_sequence_candidate_rejections", None, code,
+                f"count={count}",
             ))
 
     days=[]

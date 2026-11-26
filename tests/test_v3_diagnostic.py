@@ -56,7 +56,11 @@ def test_reset_spine_diagnostic_separates_capacity_conservation_and_plausibility
     assert report["diagnostic_counts"]["r5_result_count"] == len(report["workouts"])
     public = public_v3_diagnostic_payload(report)
     assert "r4" not in public and "r5" not in public
-    assert public["r4_status"] == {"success": True, "infeasibilities": [], "diagnostics": []}
+    assert public["r4_status"]["success"] is True
+    assert public["r4_status"]["infeasibilities"] == []
+    assert any(item["code"] == "continuous_sequence_policy_applied"
+               for item in public["r4_status"]["diagnostics"])
+    assert public["sequence_enforcement"]["status"] == "applied"
     assert public["calendar"] == report["calendar"]
     assert public["workouts"] == report["workouts"]
     assert public["r3_weekly_evidence"] == report["r3_weekly_evidence"]
@@ -251,7 +255,12 @@ def test_diagnostic_uses_each_segment_actual_phase_for_r6_r4_and_r5():
     assert threshold["plan"]["requirements"][0]["physiological_band"] == "AT"
     assert any(item["purpose"] == "threshold" and item["status"] == "success" for item in report["workouts"])
     assert len({item["phase_id"] for item in report["dated_context"]}) > 2
-    assert report["conservation"]["pass"]
+    # The final one-day race segment retains an R3 physical allocation from
+    # the existing dose stage.  R9F.4b must now expose, rather than silently
+    # place, the automatic rowing conflict on the formal race date.
+    assert not report["conservation"]["pass"]
+    assert any(item["code"] == "rowing_partition_infeasible"
+               for item in report["r4_status"]["infeasibilities"])
 
 
 def test_general_preparation_catalog_conflict_is_reported_not_disguised_as_successful_easy_quality():

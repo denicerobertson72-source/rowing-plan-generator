@@ -25,9 +25,13 @@ from .physiological_state import reduce_physiological_state
 from .training_exposure_ledger import build_continuous_training_exposure_ledger
 from .planning_domain import (
     HistoricalFactType, PhysicalCategory, RowingQualityInfeasibility,
-    RowingQualityPlanResult, TrainingModality, TrainingRole,
+    RowingQualityPlanResult, TrainingComponentPurpose, TrainingModality,
+    TrainingRole,
 )
-from .training_days import CombinedDayPreferences, DailyTrainingCapacity, generate_training_days_v3
+from .training_days import (
+    AuthoritativeComponentFact, CombinedDayPreferences, DailyTrainingCapacity, OperationalSequenceContext,
+    generate_training_days_v3,
+)
 
 
 @dataclass(frozen=True)
@@ -112,6 +116,63 @@ def load_persisted_diagnostic_input(
 
 def _enum(value: Any) -> Any:
     return value.value if hasattr(value, "value") else value
+
+
+def _input_value(item: Any, key: str, default: Any = None) -> Any:
+    return item.get(key, default) if isinstance(item, Mapping) else getattr(item, key, default)
+
+
+def _known_future_authoritative_components(
+    future_placements, *, planning_start: date,
+) -> tuple[AuthoritativeComponentFact, ...]:
+    """Adapt only user-fixed placement facts with reliable dated semantics.
+
+    Normalized authority deliberately carries less workout detail than an R4
+    component.  This diagnostic-only adapter therefore refuses to guess about
+    recurring/private/legacy locks that lack a known physical category.  A
+    user-fixed ``WindowPlacement`` retains role, minutes, identity and date,
+    so it can safely be represented in both the R3 probe and final R4 pass.
+    """
+    roles = {
+        "dedicated_ut2": (PhysicalCategory.ROWING_SPECIFIC, TrainingComponentPurpose.EASY_AEROBIC, TrainingRole.DEDICATED_UT2),
+        "long_aerobic": (PhysicalCategory.ROWING_SPECIFIC, TrainingComponentPurpose.EASY_AEROBIC, TrainingRole.LONG_AEROBIC),
+        "ut1_aerobic_strength": (PhysicalCategory.ROWING_SPECIFIC, TrainingComponentPurpose.AEROBIC_STRENGTH, TrainingRole.UT1_AEROBIC_STRENGTH),
+        # Generic quality remains generic in the carried sequence role.  The
+        # component purpose is only an R4 physical placeholder, not a subtype
+        # translation or a new R6 requirement.
+        "quality": (PhysicalCategory.ROWING_SPECIFIC, TrainingComponentPurpose.EASY_AEROBIC, TrainingRole.QUALITY),
+        "strength": (PhysicalCategory.STRENGTH, TrainingComponentPurpose.STRENGTH, TrainingRole.STRENGTH),
+    }
+    values: list[AuthoritativeComponentFact] = []
+    for item in future_placements:
+        if not bool(_input_value(item, "user_fixed", False)):
+            continue
+        raw_date = _input_value(item, "date")
+        try:
+            item_date = raw_date if isinstance(raw_date, date) else date.fromisoformat(str(raw_date))
+        except (TypeError, ValueError):
+            continue
+        if item_date < planning_start:
+            continue
+        role = str(_input_value(item, "role", ""))
+        resolved = roles.get(role)
+        try:
+            minutes = int(_input_value(item, "minutes", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        placement_id = str(_input_value(item, "placement_id", ""))
+        if not placement_id or minutes <= 0 or resolved is None:
+            continue
+        category, purpose, sequence_role = resolved
+        values.append(AuthoritativeComponentFact(
+            authority_id=f"user_fixed:{placement_id}", date=item_date,
+            duration_minutes=minutes, physical_category=category,
+            modality=TrainingModality.STRENGTH if category is PhysicalCategory.STRENGTH else None,
+            purpose=purpose, user_fixed=True, sequence_role=sequence_role,
+            rationale_codes=("normalized_future_user_fixed_authority",),
+            constraint_codes=("user_fixed",),
+        ))
+    return tuple(sorted(values, key=lambda item: (item.date, item.authority_id)))
 
 
 def _diagnostic_preferences(profile: Mapping[str, Any]) -> CombinedDayPreferences:
@@ -393,6 +454,13 @@ def render_v3_diagnostic_report(report: Mapping[str, Any]) -> str:
             f"scope_difference={race['scope_difference_explained']}."
         )
         lines.append("Ledger records evidence and uncertainty only; it does not alter dose, spacing, or prescription.")
+    sequence = report.get("sequence_enforcement", {})
+    if sequence:
+        lines += ["", "CONTINUOUS SEQUENCE ENFORCEMENT"]
+        lines.append(
+            f"Policy={sequence['policy_version']}; status={sequence['status']}; "
+            "resolution=date-only; candidate details are compact diagnostics."
+        )
     for segment in report["r3"]["segments"]:
         lines.append(f"{segment['start_date']}–{segment['end_date']}: total={segment['recommended_physical_minutes']} rowing={segment['rowing_specific_minutes']} strength={segment['strength_minutes']} ({segment['recommended_strength_exposures']}×{segment['expected_strength_duration_minutes']}) general={segment['general_aerobic_minutes']} other={segment['other_physical_minutes']}")
     lines += ["", "DATED PHASE / RECOVERY CONTEXT"]
@@ -475,6 +543,10 @@ def generate_v3_diagnostic_report(
         ), observation_window_days=21,
     )
     state = reduce_physiological_state(normalized, profile=profile)
+    sequence_context = OperationalSequenceContext(normalized, state)
+    authority_components = _known_future_authoritative_components(
+        future_placements, planning_start=r2.planning_start,
+    )
     baseline_evidence = r2_baseline_evidence(
         profile, current, normalized.historical_facts, planning_start=r2.planning_start,
     )
@@ -497,7 +569,9 @@ def generate_v3_diagnostic_report(
         locked_sessions=locked_sessions, future_placements=future_placements,
         cadence_capacity=days,
         cadence_preferences=preferences,
+        cadence_authorities=authority_components,
         cadence_materialization_context=materialization_context,
+        cadence_operational_sequence=sequence_context,
     )
     if r3_result.allocation is None:
         raise ValueError("r3_cadence_category_envelope_infeasible")
@@ -561,9 +635,16 @@ def generate_v3_diagnostic_report(
         materialization_context=materialization_context,
         current_training_state=current,
         preferences=preferences,
+        authorities=authority_components,
+        operational_sequence=sequence_context,
     )
     record_timing("r4_training_days", r4_started)
     r4_status = _r4_status_payload(r4)
+    sequence_diagnostics = [
+        item for item in r4_status["diagnostics"]
+        if item["code"].startswith("continuous_sequence_")
+        or item["code"] in {"authoritative_sequence_context_preserved", "generated_sequence_context_accepted"}
+    ]
     r5_started = perf_counter()
     r5 = materialize_training_days_v3(
         r4,
@@ -648,6 +729,28 @@ def generate_v3_diagnostic_report(
         },
         "development_recommendation": development_recommendation.to_dict(),
         "training_exposure_ledger": exposure_ledger,
+        "sequence_enforcement": {
+            "policy_version": "existing_training_policy_date_only",
+            "status": "applied",
+            "diagnostics": sequence_diagnostics,
+            "boundary": "R3 feasibility and final R4 share the same R4 candidate policy; R2/R3/R6 dose and composition remain authoritative",
+            "r6_quality_specific_feasibility": "deferred_until_r6",
+        },
+        "authority_integration": {
+            "represented_future_user_fixed_components": [
+                {
+                    "authority_id": item.authority_id,
+                    "date": item.date.isoformat(),
+                    "physical_category": item.physical_category.value if item.physical_category else None,
+                    "purpose": item.purpose.value if item.purpose else None,
+                    "sequence_role": item.sequence_role.value if item.sequence_role else None,
+                    "duration_minutes": item.duration_minutes,
+                    "provenance": list(item.rationale_codes),
+                }
+                for item in authority_components
+            ],
+            "boundary": "Only normalized future user-fixed placements with a reliable role and duration are represented as R4 component authorities; other commitments remain normalized context and are not fabricated as components.",
+        },
         "r3_weekly_evidence": weekly_evidence_for_allocation(profile, current), "r2": asdict(r2), "r3": asdict(r3),
         "r3_cadence_feasibility": [
             {
@@ -674,6 +777,10 @@ def generate_v3_diagnostic_report(
                 "strength_minutes": segment.strength_minutes,
                 "strength_exposures": segment.recommended_strength_exposures,
                 "runtime_ms": segment.category_feasibility_runtime_ms,
+                "classification": segment.category_feasibility_classification,
+                "constraint_codes": list(segment.category_feasibility_codes),
+                "requires_upstream_reconciliation": segment.category_feasibility_requires_upstream_reconciliation,
+                "quality_specific_feasibility": "deferred_until_r6",
             }
             for segment in r3.segments
         ],
@@ -713,7 +820,7 @@ def generate_v3_diagnostic_report(
 
 _PUBLIC_DIAGNOSTIC_KEYS = (
     "planning_date", "planning_end", "available_capacity_minutes",
-    "planning_goals", "training_preferences", "rowing_modalities", "r2_baseline_evidence", "physiological_evidence", "development_recommendation", "training_exposure_ledger", "r3_weekly_evidence",
+    "planning_goals", "training_preferences", "rowing_modalities", "r2_baseline_evidence", "physiological_evidence", "development_recommendation", "training_exposure_ledger", "sequence_enforcement", "authority_integration", "r3_weekly_evidence",
     "current_training", "dated_context", "recovery_context_summary", "r2", "r3", "r3_cadence_feasibility", "r6", "r6_results", "r4_status", "calendar", "workouts",
     "conservation", "structural_validation", "plausibility_reviews",
     "training_plausibility", "persisted_input_audit", "diagnostic_timing_ms",
