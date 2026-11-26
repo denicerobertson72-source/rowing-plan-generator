@@ -23,6 +23,7 @@ from .training_allocation import (
 from .periodization import build_season_phases, race_dates
 from .physiological_state import reduce_physiological_state
 from .training_exposure_ledger import build_continuous_training_exposure_ledger
+from .training_demand_characterization import characterize_training_demand
 from .planning_domain import (
     HistoricalFactType, PhysicalCategory, RowingQualityInfeasibility,
     RowingQualityPlanResult, TrainingComponentPurpose, TrainingModality,
@@ -692,6 +693,15 @@ def generate_v3_diagnostic_report(
         planning_end=r2.planning_end,
         profile=profile,
     )
+    demand_characterization = characterize_training_demand(
+        planning_start=r2.planning_start,
+        planning_end=r2.planning_end,
+        training_days=r4,
+        materialization=r5,
+        exposure_ledger=exposure_ledger,
+        allocation_segments=r3.segments,
+        sequence_diagnostics=sequence_diagnostics,
+    )
     reviews = {
         "TOTAL_LOAD": {"rating": "GOOD" if r2_total <= capacity.total_available_minutes else "PROBLEM", "facts": f"{r2_total} recommended vs {current.approximate_total_physical_minutes} current evidence and {capacity.total_available_minutes} capacity"},
         "STRENGTH": {"rating": "QUESTIONABLE" if len(strength) < (current.strength_exposures or 0) else "GOOD", "facts": f"{len(strength)} planned exposures vs {current.strength_exposures} current"},
@@ -729,6 +739,7 @@ def generate_v3_diagnostic_report(
         },
         "development_recommendation": development_recommendation.to_dict(),
         "training_exposure_ledger": exposure_ledger,
+        "training_demand_characterization": demand_characterization,
         "sequence_enforcement": {
             "policy_version": "existing_training_policy_date_only",
             "status": "applied",
@@ -820,7 +831,7 @@ def generate_v3_diagnostic_report(
 
 _PUBLIC_DIAGNOSTIC_KEYS = (
     "planning_date", "planning_end", "available_capacity_minutes",
-    "planning_goals", "training_preferences", "rowing_modalities", "r2_baseline_evidence", "physiological_evidence", "development_recommendation", "training_exposure_ledger", "sequence_enforcement", "authority_integration", "r3_weekly_evidence",
+    "planning_goals", "training_preferences", "rowing_modalities", "r2_baseline_evidence", "physiological_evidence", "development_recommendation", "training_exposure_ledger", "training_demand_characterization", "sequence_enforcement", "authority_integration", "r3_weekly_evidence",
     "current_training", "dated_context", "recovery_context_summary", "r2", "r3", "r3_cadence_feasibility", "r6", "r6_results", "r4_status", "calendar", "workouts",
     "conservation", "structural_validation", "plausibility_reviews",
     "training_plausibility", "persisted_input_audit", "diagnostic_timing_ms",
