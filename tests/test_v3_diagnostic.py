@@ -222,6 +222,40 @@ def test_persisted_style_sparse_actuals_do_not_dilute_explicit_r2_weekly_total_b
     assert report["conservation"]["pass"]
 
 
+def test_production_shaped_baseline_and_tolerance_diagnostic_is_additive_and_does_not_gate_existing_allocation():
+    profile = synthetic_profile()
+    profile["season"] = {"start_date": "2026-11-18", "end_date": "2026-12-25"}
+    profile["weekly_availability"] = [
+        {"weekday": day, "available": True, "max_training_minutes": 90, "rowing_modes": ["erg"]}
+        for day in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    ]
+    profile["athlete"].update({"current_weekly_training_minutes": 500, "current_approx_weekly_rowing_minutes": 240})
+    profile["training_context"] = {"current_strength_sessions_per_week": 3}
+    sparse = {
+        f"actual:{day}:erg": {"status": "completed", "activity_type": "erg", "actual_duration_min": 60}
+        for day in ("2026-10-29", "2026-11-02", "2026-11-06", "2026-11-10")
+    }
+
+    report = generate_v3_diagnostic_report(profile, planning_date=date(2026, 11, 18), history_actuals=sparse)
+    evidence = report["baseline_and_tolerance_evidence"]
+    reported = evidence["baseline"]["reported_observations"]
+
+    assert report["r2"]["recommended_physical_minutes"] == 2_714
+    comparison = evidence["prospective_comparison"]
+    assert comparison["prospective_rowing_specific_minutes"] == report["r3"]["rowing_specific_minutes"]
+    assert comparison["established_reported_rowing_minutes"] == 240
+    assert comparison["status"] == "descriptive_prospective_comparison_not_progression_gate"
+    assert comparison["established_tolerance_for_prospective_rowing"] == "not_established_by_total_volume_or_completion_alone"
+    assert {item["value"] for item in reported if item["metric"] == "total_physical_minutes" and item["known"]} == {500}
+    assert {item["value"] for item in reported if item["metric"] == "rowing_minutes" and item["known"]} == {240}
+    assert {item["value"] for item in reported if item["metric"] == "strength_exposures" and item["known"]} == {3}
+    assert any(item["metric"] == "strength_minutes" and not item["known"] for item in reported)
+    assert evidence["baseline"]["prescription_behavior"] == "unchanged"
+    assert evidence["tolerance"]["completion_alone_establishes_favorable_tolerance"] is False
+    assert evidence["tolerance"]["private_readiness_used"] is False
+    assert public_v3_diagnostic_payload(report)["baseline_and_tolerance_evidence"] == evidence
+
+
 def _quality_context_profile(*, planning_end="2026-12-27", races=True):
     profile = synthetic_profile()
     profile["season"] = {

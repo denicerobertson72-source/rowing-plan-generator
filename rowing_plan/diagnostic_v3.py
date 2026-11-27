@@ -23,6 +23,7 @@ from .training_allocation import (
 from .periodization import build_season_phases, race_dates
 from .physiological_state import reduce_physiological_state
 from .training_exposure_ledger import build_continuous_training_exposure_ledger
+from .training_baseline_evidence import build_training_baseline_and_tolerance_evidence
 from .training_demand_characterization import characterize_training_demand
 from .planning_domain import (
     HistoricalFactType, PhysicalCategory, RowingQualityInfeasibility,
@@ -693,6 +694,12 @@ def generate_v3_diagnostic_report(
         planning_end=r2.planning_end,
         profile=profile,
     )
+    baseline_started = perf_counter()
+    characterized_baseline_evidence, tolerance_evidence = build_training_baseline_and_tolerance_evidence(
+        profile, exposure_ledger=exposure_ledger, current_training_state=current,
+        planning_date=r2.planning_start,
+    )
+    record_timing("baseline_and_tolerance_evidence", baseline_started)
     demand_characterization = characterize_training_demand(
         planning_start=r2.planning_start,
         planning_end=r2.planning_end,
@@ -724,6 +731,27 @@ def generate_v3_diagnostic_report(
             "readiness_auto_adjustment": "not_applied",
         },
         "current_training": asdict(current), "r2_baseline_evidence": baseline_evidence,
+        "baseline_and_tolerance_evidence": {
+            "baseline": characterized_baseline_evidence.to_dict(),
+            "tolerance": tolerance_evidence.to_dict(),
+            "prospective_comparison": {
+                "status": "descriptive_prospective_comparison_not_progression_gate",
+                "prospective_rowing_specific_minutes": r3.rowing_specific_minutes,
+                "planning_days": (r3.planning_end - r3.planning_start).days + 1,
+                "prospective_rowing_weekly_equivalent": round(
+                    r3.rowing_specific_minutes * 7 / ((r3.planning_end - r3.planning_start).days + 1)
+                ),
+                "established_reported_rowing_minutes": next(
+                    (
+                        item.value for item in characterized_baseline_evidence.reported_observations
+                        if item.metric == "rowing_minutes" and item.known
+                    ),
+                    None,
+                ),
+                "established_tolerance_for_prospective_rowing": "not_established_by_total_volume_or_completion_alone",
+                "prescription_behavior": "unchanged",
+            },
+        },
         "physiological_evidence": {
             **physiological_evidence.to_dict(),
             "legacy_limiter": {
@@ -831,7 +859,7 @@ def generate_v3_diagnostic_report(
 
 _PUBLIC_DIAGNOSTIC_KEYS = (
     "planning_date", "planning_end", "available_capacity_minutes",
-    "planning_goals", "training_preferences", "rowing_modalities", "r2_baseline_evidence", "physiological_evidence", "development_recommendation", "training_exposure_ledger", "training_demand_characterization", "sequence_enforcement", "authority_integration", "r3_weekly_evidence",
+    "planning_goals", "training_preferences", "rowing_modalities", "r2_baseline_evidence", "baseline_and_tolerance_evidence", "physiological_evidence", "development_recommendation", "training_exposure_ledger", "training_demand_characterization", "sequence_enforcement", "authority_integration", "r3_weekly_evidence",
     "current_training", "dated_context", "recovery_context_summary", "r2", "r3", "r3_cadence_feasibility", "r6", "r6_results", "r4_status", "calendar", "workouts",
     "conservation", "structural_validation", "plausibility_reviews",
     "training_plausibility", "persisted_input_audit", "diagnostic_timing_ms",

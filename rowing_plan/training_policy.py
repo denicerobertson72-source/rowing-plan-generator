@@ -183,6 +183,7 @@ DEFAULT_TRAINING_POLICY = TrainingPolicy(
         _rule("no_automatic_demographic_multiplier", True, RuleClass.RESEARCH_CONSTRAINED, ("S026",), "No sex, menstrual-cycle, contraception, menopause, or age multiplier is applied without athlete-specific evidence.", "not_applicable"),
     ),
     implementation_policy=(
+        _rule("baseline_evidence_observation_windows_days", (7, 14, 28, 56, 84), RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "Versioned diagnostic review windows for immediate, accumulated, emerging-baseline, and longer-term evidence characterization; they are not biological recovery thresholds.", "coach_override"),
         _rule("deterministic_lexical_tie_break", True, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "Determinism is an execution property, not physiology.", "not_applicable"),
         _rule("beam_search_width", "implementation_config", RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "Search width belongs to solver configuration, not training policy.", "not_applicable"),
         _rule("serialization_is_deterministic", True, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, (), "Stable serialization supports auditability without making physiological claims.", "not_applicable"),
