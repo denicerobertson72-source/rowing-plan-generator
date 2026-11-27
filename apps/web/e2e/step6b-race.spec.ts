@@ -1,4 +1,23 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, Page, Route } from "@playwright/test";
+
+const developerDiagnostic={
+  planning_date:"2026-11-18",planning_end:"2026-12-25",
+  r2:{recommended_physical_minutes:2714},
+  r3:{rowing_specific_minutes:2084,strength_minutes:630,general_aerobic_minutes:0},
+  r4_status:{success:true,infeasibilities:[]},conservation:{r2:2714,r3:2714,r4:2714,r5:2714,pass:true},
+  structural_validation:"PASS",training_plausibility:"GOOD",r6_results:[],
+  baseline_and_tolerance_evidence:{baseline:{version:"r9f5b1-baseline-tolerance-evidence-v1",reported_observations:[{metric:"strength_minutes",value:null,known:false}]},tolerance:{private_readiness_used:false},prospective_comparison:{status:"descriptive_prospective_comparison_not_progression_gate"}},
+  diagnostic_timing_ms:{baseline_and_tolerance_evidence:0.3},
+  calendar:[{date:"2026-11-18",components:[]}],workouts:[],future_diagnostic_field:{preserved:true},
+};
+
+async function developerRoutes(page:Page,{authorized=true,delay=false}:{authorized?:boolean,delay?:boolean}={}) {
+  await page.route("**/api/v1/account/developer-diagnostics-access",(route:Route)=>route.fulfill({contentType:"application/json",body:JSON.stringify({developer_diagnostics_authorized:authorized})}));
+  await page.route("**/api/v1/account/athlete",(route:Route)=>route.fulfill({contentType:"application/json",body:JSON.stringify({athlete_id:"developer-athlete",plan_id:"developer-plan",athlete_profile:{}})}));
+  let runs=0;
+  await page.route("**/api/v1/athletes/developer-athlete/diagnostics/v3-persisted",async (route:Route)=>{runs++;if(delay)await new Promise(resolve=>setTimeout(resolve,250));await route.fulfill({contentType:"application/json",headers:{"Cache-Control":"no-store"},body:JSON.stringify(developerDiagnostic)});});
+  return()=>runs;
+}
 
 test("Account login uses password-manager fields without app password storage", async ({page}) => {
   await page.goto("/account");
@@ -8,6 +27,133 @@ test("Account login uses password-manager fields without app password storage", 
   await password.fill("never-store-this-password");
   expect(await page.evaluate(() => Object.keys(localStorage).every(key => !localStorage.getItem(key)?.includes("never-store-this-password")))).toBeTruthy();
   expect(await page.evaluate(() => Object.keys(sessionStorage).every(key => !sessionStorage.getItem(key)?.includes("never-store-this-password")))).toBeTruthy();
+});
+
+test("Developer Diagnostics is explicitly authorized, read-only, and preserves the approved response", async ({page,context}) => {
+  await context.grantPermissions(["clipboard-read","clipboard-write"]);
+  const runs=await developerRoutes(page,{delay:true});
+  let writes=0,planGeneration=0;
+  page.on("request",request=>{if(["POST","PUT","PATCH","DELETE"].includes(request.method()))writes++;if(request.url().includes("/plans/generate"))planGeneration++;});
+  await page.goto("/developer-diagnostics");
+  await expect(page.getByRole("link",{name:"Developer diagnostics"})).toBeVisible();
+  await expect(page.getByText("Developer access authorized for the selected athlete.")).toBeVisible();
+  expect(runs()).toBe(0);
+  await page.getByLabel("Snapshot label (optional)").fill("Winter review / 2026");
+  await page.getByRole("button",{name:"Run persisted V3 diagnostic"}).dblclick();
+  await expect(page.getByText("200 OK · read-only diagnostic captured")).toBeVisible();
+  expect(runs()).toBe(1);
+  expect(writes).toBe(0);expect(planGeneration).toBe(0);
+  await expect(page.getByText("2714").first()).toBeVisible();
+  await page.locator(".diagnostic-section",{hasText:"Training baseline and tolerance evidence"}).locator("summary").click();
+  await expect(page.getByText("r9f5b1-baseline-tolerance-evidence-v1").first()).toBeVisible();
+  await page.locator(".diagnostic-section",{hasText:"Additional response fields"}).locator("summary").click();
+  await expect(page.getByText("future_diagnostic_field")).toBeVisible();
+  await page.getByRole("button",{name:"Clear all"}).click();
+  await page.locator(".diagnostic-section",{hasText:"Training baseline and tolerance evidence"}).getByRole("checkbox").check();
+  await page.getByRole("button",{name:"Copy selected summary"}).click();
+  const selectedClipboard=await page.evaluate(()=>navigator.clipboard.readText());
+  expect(selectedClipboard).toContain("Training baseline and tolerance evidence");
+  expect(selectedClipboard).not.toContain('"calendar"');
+  const download=page.waitForEvent("download");
+  await page.getByRole("button",{name:"Download full JSON"}).click();
+  const downloaded=await download;
+  expect(downloaded.suggestedFilename()).toMatch(/^winter-review-2026-.*\.json$/);
+  const stream=await downloaded.createReadStream();let downloadedJson="";
+  for await (const chunk of stream!) downloadedJson+=chunk.toString();
+  expect(downloadedJson).toContain('"diagnostic"');
+  expect(downloadedJson).toContain("future_diagnostic_field");
+  await page.getByRole("button",{name:"Copy full JSON"}).click();
+  const clipboard=await page.evaluate(()=>navigator.clipboard.readText());
+  expect(clipboard).toContain("future_diagnostic_field");
+  expect(clipboard).not.toContain("access_token");
+  expect(clipboard).toContain('"private_readiness_used": false');
+});
+
+test("Developer Diagnostics denies direct page use when server access status is false", async ({page}) => {
+  const runs=await developerRoutes(page,{authorized:false});
+  await page.goto("/developer-diagnostics");
+  await expect(page.getByText("Developer Diagnostics is not enabled for this account.")).toBeVisible();
+  await expect(page.getByRole("button",{name:"Run persisted V3 diagnostic"})).toBeDisabled();
+  expect(runs()).toBe(0);
+});
+
+test("Developer Diagnostics clears stale output and gives an actionable unrecoverable-auth message", async ({page}) => {
+  await developerRoutes(page);
+  await page.route("**/api/v1/athletes/developer-athlete/diagnostics/v3-persisted",route=>route.fulfill({status:401,contentType:"application/json",body:JSON.stringify({detail:"expired"})}));
+  await page.goto("/developer-diagnostics");
+  await page.getByRole("button",{name:"Run persisted V3 diagnostic"}).click();
+  await expect(page.getByRole("alert").filter({hasText:"session has expired"})).toBeVisible();
+  await expect(page.getByText("2714")).toHaveCount(0);
+});
+
+test("Developer Diagnostics retries its read-only request once after a mocked Supabase refresh", async ({page}) => {
+  test.skip(!process.env.NEXT_PUBLIC_SUPABASE_URL,"requires the isolated mocked-Supabase browser runner");
+  const expiresAt=Math.floor(Date.now()/1000)+3600;
+  await page.addInitScript(({expiresAt})=>{
+    localStorage.setItem("sb-diagnostic-auth-auth-token",JSON.stringify({
+      access_token:"stale-access-token",refresh_token:"test-refresh-token",expires_at:expiresAt,
+      user:{id:"developer-user",aud:"authenticated",role:"authenticated",email:"developer@example.invalid"},
+    }));
+  },{expiresAt});
+  let refreshes=0;const diagnosticAuthorizations:string[]=[];
+  await page.route("**/auth/v1/token**",async(route:Route)=>{
+    refreshes++;
+    await route.fulfill({contentType:"application/json",body:JSON.stringify({
+      access_token:"fresh-access-token",refresh_token:"rotated-refresh-token",expires_in:3600,expires_at:expiresAt,
+      token_type:"bearer",user:{id:"developer-user",aud:"authenticated",role:"authenticated",email:"developer@example.invalid"},
+    })});
+  });
+  await page.route("**/api/v1/account/developer-diagnostics-access",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({developer_diagnostics_authorized:true})}));
+  await page.route("**/api/v1/account/athlete",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({athlete_id:"developer-athlete",plan_id:"developer-plan",athlete_profile:{}})}));
+  await page.route("**/api/v1/athletes/developer-athlete/diagnostics/v3-persisted",async(route:Route)=>{
+    diagnosticAuthorizations.push(route.request().headers().authorization||"");
+    if(diagnosticAuthorizations.length===1){await route.fulfill({status:401,contentType:"application/json",body:JSON.stringify({detail:"expired"})});return;}
+    await route.fulfill({contentType:"application/json",headers:{"Cache-Control":"no-store"},body:JSON.stringify(developerDiagnostic)});
+  });
+  await page.goto("/developer-diagnostics");
+  await page.getByRole("button",{name:"Run persisted V3 diagnostic"}).click();
+  await expect(page.getByText("200 OK · read-only diagnostic captured")).toBeVisible();
+  expect(diagnosticAuthorizations).toEqual(["Bearer stale-access-token","Bearer fresh-access-token"]);
+  expect(refreshes).toBe(1);
+  expect((await page.content())).not.toContain("fresh-access-token");
+  expect((await page.content())).not.toContain("test-refresh-token");
+});
+
+test("Developer Diagnostics does not refresh a forbidden response", async ({page}) => {
+  test.skip(!process.env.NEXT_PUBLIC_SUPABASE_URL,"requires the isolated mocked-Supabase browser runner");
+  const expiresAt=Math.floor(Date.now()/1000)+3600;
+  await page.addInitScript(({expiresAt})=>localStorage.setItem("sb-diagnostic-auth-auth-token",JSON.stringify({
+    access_token:"valid-access-token",refresh_token:"test-refresh-token",expires_at:expiresAt,
+    user:{id:"developer-user",aud:"authenticated",role:"authenticated",email:"developer@example.invalid"},
+  })),{expiresAt});
+  let refreshes=0,requests=0;
+  await page.route("**/auth/v1/token**",route=>{refreshes++;return route.abort();});
+  await page.route("**/api/v1/account/developer-diagnostics-access",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({developer_diagnostics_authorized:true})}));
+  await page.route("**/api/v1/account/athlete",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({athlete_id:"developer-athlete",plan_id:"developer-plan",athlete_profile:{}})}));
+  await page.route("**/api/v1/athletes/developer-athlete/diagnostics/v3-persisted",route=>{requests++;return route.fulfill({status:403,contentType:"application/json",body:JSON.stringify({detail:"forbidden"})});});
+  await page.goto("/developer-diagnostics");
+  await page.getByRole("button",{name:"Run persisted V3 diagnostic"}).click();
+  await expect(page.getByRole("alert").filter({hasText:"cannot make that change"})).toBeVisible();
+  expect(requests).toBe(1);expect(refreshes).toBe(0);
+});
+
+test("Developer Diagnostics discards an in-flight response after the selected athlete changes", async ({page}) => {
+  let accountReads=0;
+  await page.route("**/api/v1/account/developer-diagnostics-access",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({developer_diagnostics_authorized:true})}));
+  await page.route("**/api/v1/account/athlete",route=>{
+    accountReads++;
+    return route.fulfill({contentType:"application/json",body:JSON.stringify({athlete_id:accountReads===1?"developer-athlete":"different-athlete",plan_id:"developer-plan",athlete_profile:{}})});
+  });
+  await page.route("**/api/v1/athletes/developer-athlete/diagnostics/v3-persisted",async(route:Route)=>{
+    await new Promise(resolve=>setTimeout(resolve,200));
+    await route.fulfill({contentType:"application/json",body:JSON.stringify(developerDiagnostic)});
+  });
+  await page.goto("/developer-diagnostics");
+  await page.getByRole("button",{name:"Run persisted V3 diagnostic"}).click();
+  await page.evaluate(()=>window.dispatchEvent(new Event("focus")));
+  await expect.poll(()=>accountReads).toBeGreaterThan(1);
+  await page.waitForTimeout(250);
+  await expect(page.getByText("2714")).toHaveCount(0);
 });
 
 test("Profile accepts an empty preferred long-session day through save and generation", async ({page}) => {

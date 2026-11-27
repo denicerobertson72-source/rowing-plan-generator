@@ -122,6 +122,19 @@ def replacement_planner_live_athlete_ids() -> frozenset[str]:
     )
 
 
+def developer_diagnostic_user_ids() -> frozenset[str]:
+    """Explicit, diagnostic-only developer access; absent configuration denies."""
+
+    return frozenset(
+        item.strip() for item in os.getenv("DEVELOPER_DIAGNOSTIC_USER_IDS", "").split(",")
+        if item.strip()
+    )
+
+
+def developer_diagnostics_authorized(user_id: str) -> bool:
+    return user_id in developer_diagnostic_user_ids()
+
+
 def replacement_planner_emergency_v2_rollback_enabled() -> bool:
     """Operator-only override for the explicitly opted-in V3 cohort."""
 
@@ -971,6 +984,13 @@ def require_coach_admin(user_id: str = Depends(current_user_id)) -> str:
     if user_id not in allowed: raise HTTPException(403,"Coach/admin access is required for race postings.")
     return user_id
 
+
+@app.get("/api/v1/account/developer-diagnostics-access")
+def developer_diagnostics_access(user_id: str = Depends(current_user_id)) -> dict:
+    """Non-sensitive status for navigation only; the diagnostic route re-checks it."""
+
+    return {"developer_diagnostics_authorized": developer_diagnostics_authorized(user_id)}
+
 @app.get("/api/v1/health", response_model=ApiHealth)
 def health() -> ApiHealth:
     return ApiHealth(
@@ -1036,6 +1056,8 @@ def persisted_v3_diagnostic(athlete_id: str, user_id: str = Depends(current_user
 
     try:
         persisted_v3_diagnostic_checkpoint(reference, "request_start")
+        if not developer_diagnostics_authorized(user_id):
+            raise HTTPException(403, "Developer diagnostics access is required.")
         database_url=os.getenv("SUPABASE_DB_URL")
         if not database_url:
             raise HTTPException(503,"Persisted V3 diagnostic database access is not configured.")
@@ -1061,7 +1083,10 @@ def persisted_v3_diagnostic(athlete_id: str, user_id: str = Depends(current_user
                 ),
             )
             failure_stage="response_serialization"
-            return JSONResponse(content=jsonable_encoder(public_v3_diagnostic_payload(report)))
+            return JSONResponse(
+                content=jsonable_encoder(public_v3_diagnostic_payload(report)),
+                headers={"Cache-Control": "private, no-store"},
+            )
     except HTTPException:
         raise
     except Exception as error:

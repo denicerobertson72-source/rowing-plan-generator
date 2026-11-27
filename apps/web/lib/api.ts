@@ -9,11 +9,53 @@ export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? (process.env.NOD
 export class ApiRequestError extends Error { constructor(public readonly status:number, public readonly endpoint:string, public readonly code:string, message:string){super(message);} }
 export function apiErrorMessage(error:unknown, fallback:string):string { if (error instanceof ApiRequestError) { if (error.status===401) return "Your session has expired. Sign in again, then retry."; if (error.status===403) return "This account cannot make that change."; if (error.status===409) return "Your profile changed in another tab or session. Reload it, then try again."; if (error.status===422) return "Review the invalid profile details and try again."; if (error.status>=500) return "The rowing-plan service had a problem. Your changes are still on this screen."; return fallback; } if (error instanceof TypeError) return "The rowing-plan service could not be reached. Check your connection and try again."; return fallback; }
 export function planGenerationError(error:unknown):string { if (!(error instanceof ApiRequestError)) return "Your profile was saved, but the plan couldn't be updated. Please try again. If this continues, contact support."; try { const detail=JSON.parse(error.message).detail; if (error.status!==422) { const reference=typeof detail?.error_id==="string" ? ` Reference: ${detail.error_id}` : ""; return `Your profile was saved, but the plan couldn't be updated. Please try again. If this continues, contact support.${reference}`; } const reason=detail?.planning_conflicts?.[0]??detail?.constraint_errors?.[0]??detail?.diagnostic?.reason??detail?.validation_errors?.[0]; if (reason) return `Your profile was saved, but we couldn't update your plan. ${reason}`; } catch {} return "Your profile was saved, but the plan couldn't be updated. Please try again. If this continues, contact support."; }
-async function request<T>(path:string, init?:RequestInit): Promise<T> { const {supabase}=await import("./supabase");const token=(await supabase?.auth.getSession())?.data.session?.access_token;const response=await fetch(`${API_BASE}${path}`,{cache:"no-store",headers:{"Content-Type":"application/json",...(token?{Authorization:`Bearer ${token}`}:{}),...(init?.headers ?? {})},...init}); if (!response.ok) { const body=await response.text(); let detail:any; try { detail=JSON.parse(body).detail; } catch { detail=undefined; } const code=typeof detail?.error_code==="string"?detail.error_code:response.status===409?"conflict":response.status===422?"validation":response.status>=500?"server_error":"request_error"; console.error("Rowing Plan API request failed",{status:response.status,endpoint:path,code}); throw new ApiRequestError(response.status,path,code,body || "Request failed"); } return response.json() as Promise<T>; }
+type RequestOptions={retryAfterUnauthorized?:boolean};
+type RefreshedSession={userId:string;accessToken:string};
+let refreshInFlight:Promise<RefreshedSession|null>|null=null;
+let refreshInFlightUserId:string|null=null;
+
+/**
+ * Coalesce a refresh for one signed-in user.  A refresh is deliberately not
+ * shared across identities: a logout/account switch while a request is
+ * pending must never authorize a retry for the new account.
+ */
+async function refreshSessionForUser(supabase:NonNullable<typeof import("./supabase").supabase>, userId:string):Promise<RefreshedSession|null>{
+  if(refreshInFlight){return refreshInFlightUserId===userId?refreshInFlight:null;}
+  refreshInFlightUserId=userId;
+  refreshInFlight=supabase.auth.refreshSession().then(({data})=>{
+    const session=data.session;
+    return session&&session.user.id===userId?{userId,accessToken:session.access_token}:null;
+  }).catch(()=>null).finally(()=>{refreshInFlight=null;refreshInFlightUserId=null;});
+  return refreshInFlight;
+}
+
+async function request<T>(path:string, init?:RequestInit, options:RequestOptions={}): Promise<T> {
+  const {supabase}=await import("./supabase");
+  const send=async(token?:string)=>fetch(`${API_BASE}${path}`,{
+    cache:"no-store",
+    headers:{"Content-Type":"application/json",...(token?{Authorization:`Bearer ${token}`}:{}),...(init?.headers ?? {})},
+    ...init,
+  });
+  const initialSession=(await supabase?.auth.getSession())?.data.session;
+  let token=initialSession?.access_token;
+  let response=await send(token);
+  // Only explicitly opt-in, read-only requests retry.  Retrying a mutation
+  // after an ambiguous 401 could apply a completed server operation twice.
+  if(response.status===401&&options.retryAfterUnauthorized&&supabase&&initialSession){
+    const refreshed=await refreshSessionForUser(supabase,initialSession.user.id);
+    const currentSession=(await supabase.auth.getSession()).data.session;
+    if(refreshed&&currentSession?.user.id===initialSession.user.id&&currentSession.access_token===refreshed.accessToken){
+      response=await send(refreshed.accessToken);
+    }
+  }
+  if (!response.ok) { const body=await response.text(); let detail:any; try { detail=JSON.parse(body).detail; } catch { detail=undefined; } const code=typeof detail?.error_code==="string"?detail.error_code:response.status===409?"conflict":response.status===422?"validation":response.status>=500?"server_error":"request_error"; console.error("Rowing Plan API request failed",{status:response.status,endpoint:path,code}); throw new ApiRequestError(response.status,path,code,body || "Request failed"); } return response.json() as Promise<T>;
+}
 export function createAthlete(athlete_profile: Record<string, unknown>): Promise<AthleteResponse> { return request("/athletes",{method:"POST",body:JSON.stringify({athlete_profile})}); }
 export function createOnboardingAthlete(athlete_profile: Record<string, unknown>): Promise<AthleteResponse> { return request("/account/onboarding-athlete",{method:"POST",body:JSON.stringify({athlete_profile})}); }
 export function getAthlete(athleteId:string): Promise<AthleteResponse> { return request(`/athletes/${athleteId}`); }
 export function getCurrentAthlete(): Promise<AthleteResponse & {plan_id:string|null}> { return request("/account/athlete"); }
+export function getDeveloperDiagnosticsAccess(): Promise<{developer_diagnostics_authorized:boolean}> { return request("/account/developer-diagnostics-access"); }
+export function getPersistedV3Diagnostic(athleteId:string): Promise<Record<string, unknown>> { return request(`/athletes/${encodeURIComponent(athleteId)}/diagnostics/v3-persisted`,undefined,{retryAfterUnauthorized:true}); }
 export function getAccountAthletes(): Promise<{athletes:AthleteCandidate[]}> { return request("/account/athletes"); }
 export function deleteAccountAthlete(athleteId:string, selectedAthleteId?:string): Promise<{status:string;athlete_id:string}> { const query=selectedAthleteId?`?selected_athlete_id=${encodeURIComponent(selectedAthleteId)}`:""; return request(`/account/athletes/${encodeURIComponent(athleteId)}${query}`,{method:"DELETE"}); }
 export function updateAthlete(athleteId:string, athlete_profile:Record<string,unknown>, expected_revision:number): Promise<AthleteResponse> { return request(`/athletes/${athleteId}`,{method:"PUT",body:JSON.stringify({athlete_profile,expected_revision})}); }

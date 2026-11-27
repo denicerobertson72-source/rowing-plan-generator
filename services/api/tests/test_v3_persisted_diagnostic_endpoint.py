@@ -1,6 +1,7 @@
 from datetime import date
 from contextlib import contextmanager
 
+import pytest
 from fastapi.testclient import TestClient
 
 from services.api.app import main
@@ -8,6 +9,12 @@ from services.api.app.main import app
 
 
 PRODUCTION_PWA_ORIGIN = "https://rowing-plan-pwa.vercel.app"
+
+
+@pytest.fixture(autouse=True)
+def _developer_diagnostic_access(monkeypatch):
+    """Existing endpoint cases exercise an explicitly authorized developer."""
+    monkeypatch.setenv("DEVELOPER_DIAGNOSTIC_USER_IDS", "development-user")
 
 
 class _ReadOnlyDiagnosticRepository:
@@ -62,6 +69,39 @@ def test_persisted_v3_diagnostic_requires_existing_auth(monkeypatch):
     monkeypatch.setenv("REQUIRE_AUTH", "true")
     response = TestClient(app).get("/api/v1/athletes/athlete-1/diagnostics/v3-persisted")
     assert response.status_code == 401
+
+
+def test_developer_diagnostics_access_status_is_authenticated_but_non_sensitive(monkeypatch):
+    app.dependency_overrides[main.current_user_id] = lambda: "development-user"
+    try:
+        response = TestClient(app).get("/api/v1/account/developer-diagnostics-access")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json() == {"developer_diagnostics_authorized": True}
+
+
+def test_developer_diagnostics_access_fails_closed_when_not_configured(monkeypatch):
+    monkeypatch.delenv("DEVELOPER_DIAGNOSTIC_USER_IDS", raising=False)
+    app.dependency_overrides[main.current_user_id] = lambda: "development-user"
+    try:
+        response = TestClient(app).get("/api/v1/account/developer-diagnostics-access")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json() == {"developer_diagnostics_authorized": False}
+
+
+def test_persisted_v3_diagnostic_requires_explicit_developer_access(monkeypatch):
+    _ReadOnlyDiagnosticRepository.instances.clear()
+    monkeypatch.delenv("DEVELOPER_DIAGNOSTIC_USER_IDS", raising=False)
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://configured")
+    monkeypatch.setenv("REPLACEMENT_PLANNER_LIVE_ATHLETE_IDS", "athlete-1")
+    monkeypatch.setattr(main, "DiagnosticPostgresReadRepository", _ReadOnlyDiagnosticRepository)
+    response = TestClient(app).get("/api/v1/athletes/athlete-1/diagnostics/v3-persisted")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Developer diagnostics access is required."
+    assert not _ReadOnlyDiagnosticRepository.instances
 
 
 def test_persisted_v3_diagnostic_rejects_wrong_athlete_owner(monkeypatch):
@@ -127,6 +167,7 @@ def test_persisted_v3_diagnostic_uses_only_read_repository_and_wrapper(monkeypat
 
     assert response.status_code == 200
     assert response.json() == expected
+    assert "no-store" in response.headers["cache-control"]
     repository = _ReadOnlyDiagnosticRepository.instances[-1]
     assert repository.database_url == "postgresql://configured"
     assert repository.calls == [("get", "athlete-1"), ("athlete_owner", "athlete-1")]
