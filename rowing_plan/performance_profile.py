@@ -116,7 +116,8 @@ def build_athlete_performance_profile(profile: Mapping[str, Any], *, as_of: date
         for raw in block.get("performance_tests", ()):
             if raw.get("protocol") not in _PROTOCOLS:
                 continue
-            valid = raw.get("valid_for_profile") is not False and raw.get("validity") in (None, "valid")
+            invalid_r20_review_value = raw.get("protocol") == "thirty_min_rate_capped_optional" and raw.get("average_watts") is not None and float(raw["average_watts"]) > 2000
+            valid = raw.get("valid_for_profile") is not False and raw.get("validity") in (None, "valid") and not invalid_r20_review_value
             provenance = ["profile.tests.testing_blocks"]
             if (
                 raw.get("protocol") == "seven_stroke_peak"

@@ -801,14 +801,10 @@ function RaceEditor({
 }
 
 const TESTS = [
-  { protocol: "two_k", label: "2k time (optional)", watts: false },
-  {
-    protocol: "thirty_min_rate_capped_optional",
-    label: "30 min @ 20 spm power (optional)",
-    watts: true,
-  },
-  { protocol: "sixty_second", label: "60-second power (optional)", watts: true },
-  { protocol: "seven_stroke_peak", label: "7-stroke peak power (optional)", watts: true },
+  { protocol: "two_k", label: "2,000 m", measurements: [{field:"time_seconds",label:"Completion time",placeholder:"m:ss"},{field:"average_watts",label:"Average watts",placeholder:"Watts"},{field:"average_split_seconds",label:"Average split",placeholder:"m:ss"}] },
+  { protocol: "thirty_min_rate_capped_optional", label: "30-minute R20", measurements: [{field:"distance_meters",label:"Distance",placeholder:"Meters"},{field:"average_watts",label:"Average watts",placeholder:"Watts"},{field:"average_split_seconds",label:"Average split",placeholder:"m:ss"}] },
+  { protocol: "sixty_second", label: "60-second maximal", measurements: [{field:"average_watts",label:"Average watts",placeholder:"Watts"},{field:"distance_meters",label:"Distance",placeholder:"Meters"},{field:"average_split_seconds",label:"Average split",placeholder:"m:ss"}] },
+  { protocol: "seven_stroke_peak", label: "Seven-stroke peak power", measurements: [{field:"peak_watts",label:"Peak watts",placeholder:"Watts"}] },
 ];
 type AssessmentDraft = {
   episodeId: string;
@@ -817,16 +813,15 @@ type AssessmentDraft = {
   isNewEpisode: boolean;
   measurementId: string | null;
   protocol: string;
+  measurementType: string;
   result: string;
   testDate: string;
 };
 const testDefinition = (protocol: string) =>
   TESTS.find((item) => item.protocol === protocol) ?? TESTS[0];
-const assessmentResultText = (measurement: any) => {
-  if (measurement?.time_seconds != null)
-    return secondsToTime(Number(measurement.time_seconds));
-  return String(measurement?.peak_watts ?? measurement?.average_watts ?? "");
-};
+const assessmentProtocolLabel=(protocol:string)=>TESTS.find(item=>item.protocol===protocol)?.label ?? label(protocol);
+const measurementType=(measurement:any)=>["time_seconds","peak_watts","average_watts","distance_meters","average_split_seconds"].find(field=>measurement?.[field]!=null)??"";
+const assessmentResultText = (measurement: any) => { const field=measurementType(measurement); const value=measurement?.[field]; if(value==null)return ""; if(field==="time_seconds"||field==="average_split_seconds")return secondsToTime(Number(value)); return `${value}${field==="distance_meters"?" m":field.includes("watts")?" W":""}`; };
 const timeToSeconds = (value: string) => {
   const match = value.match(/^(\d+):(\d{1,2})$/);
   return match ? Number(match[1]) * 60 + Number(match[2]) : null;
@@ -1177,6 +1172,7 @@ export default function ProfilePage() {
       isNewEpisode: !block,
       measurementId: null,
       protocol: TESTS[0].protocol,
+      measurementType: TESTS[0].measurements[0].field,
       result: "",
       testDate: "",
     });
@@ -1188,15 +1184,22 @@ export default function ProfilePage() {
       isNewEpisode: false,
       measurementId: String(measurement.id),
       protocol: String(measurement.protocol ?? TESTS[0].protocol),
+      measurementType: measurementType(measurement) || testDefinition(String(measurement.protocol ?? TESTS[0].protocol)).measurements[0].field,
       result: assessmentResultText(measurement),
       testDate: String(measurement.test_date ?? ""),
     });
+  const deleteAssessment = async (block: any, episodeIndex: number, measurement: any) => {
+    const result=assessmentResultText(measurement) || "no measurable result";
+    if (!window.confirm(`Delete ${label(String(measurement.protocol ?? "assessment"))} on ${measurement.test_date ?? "undated"}: ${result}? This cannot be undone.`)) return;
+    const updatedBlock={...block,performance_tests:(block.performance_tests ?? []).filter((item:any)=>item.id !== measurement.id)};
+    const nextBlocks=blocks.map((item:any,index:number)=>index===episodeIndex?updatedBlock:item);
+    if(await persist({...profile,tests:{...tests,testing_blocks:nextBlocks}},"Assessment result deleted.")) setAssessmentDraft(null);
+  };
   const saveAssessment = async () => {
     if (!assessmentDraft) return;
     const definition = testDefinition(assessmentDraft.protocol);
-    const measurementValue = definition.watts
-      ? Number(assessmentDraft.result)
-      : timeToSeconds(assessmentDraft.result);
+    const selectedType=definition.measurements.find(item=>item.field===assessmentDraft.measurementType) ?? definition.measurements[0];
+    const measurementValue = selectedType.field === "time_seconds" || selectedType.field === "average_split_seconds" ? timeToSeconds(assessmentDraft.result) : Number(assessmentDraft.result);
     if (!assessmentDraft.result || measurementValue == null || Number.isNaN(measurementValue))
       return;
     const existingBlock = assessmentDraft.episodeIndex == null
@@ -1212,11 +1215,9 @@ export default function ProfilePage() {
       test_date: assessmentDraft.testDate || null,
       valid_for_profile: existingMeasurement?.valid_for_profile ?? true,
       source: existingMeasurement?.source ?? "manual",
-      ...(definition.watts
-        ? definition.protocol === "seven_stroke_peak"
-          ? { peak_watts: measurementValue }
-          : { average_watts: measurementValue }
-        : { time_seconds: measurementValue }),
+      ...Object.fromEntries(["time_seconds","peak_watts","average_watts","distance_meters","average_split_seconds"].map(field=>[field,undefined])),
+      [selectedType.field]: measurementValue,
+      ...(definition.protocol === "thirty_min_rate_capped_optional" ? {duration_seconds:1800,rate_cap_spm:20} : {}),
     };
     const updatedBlock = existingBlock
       ? {
@@ -1750,7 +1751,7 @@ export default function ProfilePage() {
                 {(block.performance_tests ?? []).map((measurement: any) => (
                   <li key={measurement.id} data-testid="assessment-measurement">
                     <span>
-                      {label(String(measurement.protocol ?? "assessment"))}: {assessmentResultText(measurement) || "No measurable result"}
+                      {assessmentProtocolLabel(String(measurement.protocol ?? "assessment"))}: {assessmentResultText(measurement) || "No measurable result"}
                       {measurement.test_date ? ` · ${measurement.test_date}` : ""}
                     </span>
                     <button
@@ -1758,10 +1759,11 @@ export default function ProfilePage() {
                       className="quiet"
                       onClick={() => editAssessment(block, index, measurement)}
                       disabled={saving}
-                      aria-label={`Edit ${label(String(measurement.protocol ?? "assessment"))} result`}
+                      aria-label={`Edit ${assessmentProtocolLabel(String(measurement.protocol ?? "assessment"))} result`}
                     >
                       Edit
                     </button>
+                    <button type="button" className="danger" onClick={() => void deleteAssessment(block,index,measurement)} disabled={saving} aria-label={`Delete ${assessmentProtocolLabel(String(measurement.protocol ?? "assessment"))} result`}>Delete</button>
                   </li>
                 ))}
               </ul>
@@ -1814,10 +1816,15 @@ export default function ProfilePage() {
               <select
                 aria-label="Assessment protocol"
                 value={assessmentDraft.protocol}
-                disabled={Boolean(assessmentDraft.measurementId)}
-                onChange={(event) => setAssessmentDraft({ ...assessmentDraft, protocol: event.target.value, result: "" })}
+                onChange={(event) => { const protocol=event.target.value, definition=testDefinition(protocol); setAssessmentDraft({ ...assessmentDraft, protocol, measurementType:definition.measurements[0].field, result: "" }); }}
               >
                 {TESTS.map((test) => <option key={test.protocol} value={test.protocol}>{test.label}</option>)}
+              </select>
+            </label>
+            <label>
+              Measurement type
+              <select aria-label="Assessment measurement type" value={assessmentDraft.measurementType} onChange={(event) => setAssessmentDraft({ ...assessmentDraft, measurementType:event.target.value, result:"" })}>
+                {testDefinition(assessmentDraft.protocol).measurements.map((item) => <option key={item.field} value={item.field}>{item.label}</option>)}
               </select>
             </label>
             <label>
@@ -1825,7 +1832,7 @@ export default function ProfilePage() {
               <input
                 aria-label="Assessment result"
                 value={assessmentDraft.result}
-                placeholder={testDefinition(assessmentDraft.protocol).watts ? "Watts" : "m:ss"}
+                placeholder={testDefinition(assessmentDraft.protocol).measurements.find(item=>item.field===assessmentDraft.measurementType)?.placeholder ?? "Result"}
                 onChange={(event) => setAssessmentDraft({ ...assessmentDraft, result: event.target.value })}
               />
             </label>

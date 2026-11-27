@@ -3,7 +3,41 @@ from __future__ import annotations
 from datetime import date
 from .recurring_activities import validate_recurring_activities
 
-def validate_profile(profile: dict) -> list[str]:
+_ASSESSMENT_FIELDS={
+    "seven_stroke_peak":{"peak_watts","average_watts"},
+    "twenty_second_optional":{"average_watts"},
+    "sixty_second":{"average_watts","distance_meters","average_split_seconds"},
+    "two_k":{"time_seconds","average_watts","average_split_seconds"},
+    "thirty_min_rate_capped_optional":{"distance_meters","average_watts","average_split_seconds"},
+}
+_MAX_REVIEW_VALUES={"average_watts":2000,"peak_watts":3000,"distance_meters":20000,"time_seconds":7200,"average_split_seconds":1200}
+
+def _assessment_errors(profile: dict, preserved_ids: set[str] | None = None) -> list[str]:
+    errors=[]
+    blocks=profile.get("tests",{}).get("testing_blocks",[]) if isinstance(profile.get("tests"),dict) else []
+    for block in blocks if isinstance(blocks,list) else []:
+        if not isinstance(block,dict): continue
+        for row in block.get("performance_tests",[]) if isinstance(block.get("performance_tests"),list) else []:
+            if not isinstance(row,dict): continue
+            if row.get("id") in (preserved_ids or set()): continue
+            protocol=row.get("protocol")
+            allowed=_ASSESSMENT_FIELDS.get(protocol)
+            if not allowed: continue
+            present=[field for field in allowed if row.get(field) is not None]
+            if len(present) != 1:
+                errors.append(f"{protocol} needs exactly one compatible primary measurement.")
+                continue
+            field=present[0]; value=row[field]
+            if not isinstance(value,(int,float)) or isinstance(value,bool) or value <= 0 or value != value or value in (float("inf"),float("-inf")):
+                errors.append(f"{protocol} {field} must be a positive finite number.")
+            elif value > _MAX_REVIEW_VALUES[field]:
+                errors.append(f"{protocol} {field} is outside this app's data-entry review range; check the measurement type and units before saving.")
+            if protocol=="thirty_min_rate_capped_optional":
+                if row.get("duration_seconds") not in (None,1800): errors.append("30-minute R20 duration must be 1800 seconds.")
+                if row.get("rate_cap_spm") not in (None,20): errors.append("30-minute R20 rate cap must be 20 spm.")
+    return errors
+
+def validate_profile(profile: dict, preserved_assessment_ids: set[str] | None = None) -> list[str]:
     errors=[]
     try:
         if date.fromisoformat(profile["season"]["end_date"]) < date.fromisoformat(profile["season"]["start_date"]): errors.append("Season end date must be after the start date.")
@@ -23,6 +57,7 @@ def validate_profile(profile: dict) -> list[str]:
     for t in (profile.get("tests",{}).get("multi_duration_power_tests") or {}).values():
         if isinstance(t,dict) and t.get("value_watts") is not None and t["value_watts"] <= 0: errors.append("Test watts must be positive.")
     athlete=profile.get("athlete",{})
+    errors.extend(_assessment_errors(profile, preserved_assessment_ids))
     for key in ("current_rowing_sessions_per_week","desired_rowing_sessions_per_week","longest_comfortable_continuous_row_minutes","current_approx_weekly_rowing_minutes","current_weekly_training_minutes"):
         if athlete.get(key) is not None and (not isinstance(athlete[key],int) or athlete[key] < 0): errors.append(f"{key.replace('_',' ').capitalize()} must be a non-negative whole number.")
     if athlete.get("recent_training_consistency") not in (None,"consistent","building","inconsistent","returning"): errors.append("Recent training consistency must be consistent, building, inconsistent, or returning.")

@@ -253,6 +253,8 @@ def _modality(raw: Mapping[str, Any], raw_protocol: str) -> str:
 def _validity(raw: Mapping[str, Any]) -> str:
     if raw.get("valid_for_profile") is False or raw.get("validity") == "invalid":
         return "invalid"
+    if raw.get("protocol") == "thirty_min_rate_capped_optional" and raw.get("average_watts") is not None and float(raw["average_watts"]) > 2000:
+        return "invalid"
     value = str(raw.get("validity") or "valid")
     return value if value in {"valid", "questionable", "invalid", "unknown"} else "unknown"
 

@@ -1121,7 +1121,9 @@ def delete_account_athlete(athlete_id: str, selected_athlete_id: Optional[str] =
 def update_athlete(athlete_id: str, request: AthleteUpdateRequest, user_id: str = Depends(current_user_id)) -> AthleteResponse:
     current=owned_athlete(athlete_id,user_id)
     updated_profile=normalize_recurring_schedule_for_planning(request.athlete_profile)
-    errors=validate_profile(updated_profile)
+    previous_rows={str(row.get("id")):row for block in current.get("tests",{}).get("testing_blocks",[]) if isinstance(block,dict) for row in block.get("performance_tests",[]) if isinstance(row,dict) and row.get("id")}
+    unchanged_ids={str(row.get("id")) for block in updated_profile.get("tests",{}).get("testing_blocks",[]) if isinstance(block,dict) for row in block.get("performance_tests",[]) if isinstance(row,dict) and row.get("id") and previous_rows.get(str(row.get("id"))) == row}
+    errors=validate_profile(updated_profile, preserved_assessment_ids=unchanged_ids)
     if errors: raise HTTPException(status_code=422, detail={"validation_errors":errors})
     current_revision=profile_revision(current)
     if request.expected_revision != current_revision: raise HTTPException(status_code=409, detail={"message":"This profile was updated in another tab or session.","current_revision":current_revision})

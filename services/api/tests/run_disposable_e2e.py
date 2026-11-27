@@ -22,7 +22,9 @@ def main() -> int:
         except httpx.HTTPError: pass
         time.sleep(.1)
       else: raise RuntimeError("E2E web server did not start")
-      return subprocess.run(["npx","playwright","test"],cwd=WEB,env=env).returncode
+      command=["npx","playwright","test"]
+      if os.environ.get("PLAYWRIGHT_GREP"): command.extend(["--grep",os.environ["PLAYWRIGHT_GREP"]])
+      return subprocess.run(command,cwd=WEB,env=env).returncode
     finally:
       web.terminate()
       try: web.wait(timeout=5)

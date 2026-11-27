@@ -31,6 +31,8 @@ def profile_test_rejection_reason(test: dict | None, today: date, recency: int) 
         return "missing test"
     if test.get("valid_for_profile") is False or test.get("validity") not in (None, "valid"):
         return "marked invalid for profile"
+    if test.get("protocol") == "thirty_min_rate_capped_optional" and test.get("average_watts") is not None and float(test["average_watts"]) > 2000:
+        return "outside the app's data-entry review range; check measurement type and units"
     if not (_value(test) or test.get("time_seconds")):
         return "missing measurable result"
     test_date = _date(test.get("test_date"))
