@@ -57,7 +57,9 @@ const PLANNING_GOALS = [
   ["race_preparation", "Prepare for racing"],
   ["build_consistency", "Build consistency"],
 ] as const;
-const uid = () => crypto.randomUUID?.() ?? `item-${Date.now()}`;
+const uid = () =>
+  crypto.randomUUID?.() ??
+  `item-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const label = (value: string) =>
   value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 const dayValues = (value: unknown): string[] =>
@@ -808,6 +810,23 @@ const TESTS = [
   { protocol: "sixty_second", label: "60-second power (optional)", watts: true },
   { protocol: "seven_stroke_peak", label: "7-stroke peak power (optional)", watts: true },
 ];
+type AssessmentDraft = {
+  episodeId: string;
+  episodeLabel: string;
+  episodeIndex: number | null;
+  isNewEpisode: boolean;
+  measurementId: string | null;
+  protocol: string;
+  result: string;
+  testDate: string;
+};
+const testDefinition = (protocol: string) =>
+  TESTS.find((item) => item.protocol === protocol) ?? TESTS[0];
+const assessmentResultText = (measurement: any) => {
+  if (measurement?.time_seconds != null)
+    return secondsToTime(Number(measurement.time_seconds));
+  return String(measurement?.peak_watts ?? measurement?.average_watts ?? "");
+};
 const timeToSeconds = (value: string) => {
   const match = value.match(/^(\d+):(\d{1,2})$/);
   return match ? Number(match[1]) * 60 + Number(match[2]) : null;
@@ -826,7 +845,8 @@ export default function ProfilePage() {
     [raceDraft, setRaceDraft] = useState<Draft | null>(null),
     [saving, setSaving] = useState(false),
     [conflict, setConflict] = useState(false),
-    [capacityPreview, setCapacityPreview] = useState<Record<string, number>>({});
+    [capacityPreview, setCapacityPreview] = useState<Record<string, number>>({}),
+    [assessmentDraft, setAssessmentDraft] = useState<AssessmentDraft | null>(null);
   const saved = useMemo(() => getSavedSession(), []),
     { showSaveSuccess, showSaveError } = useSaveFeedback();
   const loadLatest = async () => {
@@ -887,8 +907,8 @@ export default function ProfilePage() {
     races = [...persistedRaces].sort((a, b) =>
       (a.start_date ?? "").localeCompare(b.start_date ?? ""),
     ),
-    blocks = tests.testing_blocks ?? [],
-    latest = blocks.at(-1) ?? { id: uid(), performance_tests: [] };
+    blocks = Array.isArray(tests.testing_blocks) ? tests.testing_blocks : [],
+    latest = blocks.at(-1) ?? null;
   const totalAvailableMinutes = (profile.weekly_availability ?? []).reduce(
     (total: number, entry: any) =>
       total + (entry.available !== false && entry.fixed_rest !== true
@@ -1146,51 +1166,84 @@ export default function ProfilePage() {
       "Scheduling preferences saved.",
     );
   };
-  const saveTests = () => {
-    const rows = TESTS.map((test) => {
-      const input =
-          (document.getElementById(`test-${test.protocol}`) as HTMLInputElement)
-            ?.value ?? "",
-        testDate =
-          (
-            document.getElementById(
-              `test-date-${test.protocol}`,
-            ) as HTMLInputElement
-          )?.value ?? "";
-      if (!input) return null;
-      return {
-        id: uid(),
-        protocol: test.protocol,
-        test_date: testDate || null,
-        valid_for_profile: true,
-        source: "manual",
-        ...(test.watts
-          ? test.protocol === "seven_stroke_peak"
-            ? { peak_watts: Number(input) }
-            : { average_watts: Number(input) }
-          : { time_seconds: timeToSeconds(input) }),
-      };
-    }).filter(Boolean);
-    const unrelated = (latest.performance_tests ?? []).filter(
-      (test: any) => !TESTS.some((known) => known.protocol === test.protocol),
+  const startAssessment = (
+    block: any | null = latest,
+    episodeIndex: number | null = latest ? blocks.length - 1 : null,
+  ) =>
+    setAssessmentDraft({
+      episodeId: String(block?.id ?? uid()),
+      episodeLabel: String(block?.label ?? "Winter testing episode"),
+      episodeIndex: block ? episodeIndex : null,
+      isNewEpisode: !block,
+      measurementId: null,
+      protocol: TESTS[0].protocol,
+      result: "",
+      testDate: "",
+    });
+  const editAssessment = (block: any, episodeIndex: number, measurement: any) =>
+    setAssessmentDraft({
+      episodeId: String(block.id ?? `legacy-testing-block-${episodeIndex}`),
+      episodeLabel: String(block.label ?? "Testing episode"),
+      episodeIndex,
+      isNewEpisode: false,
+      measurementId: String(measurement.id),
+      protocol: String(measurement.protocol ?? TESTS[0].protocol),
+      result: assessmentResultText(measurement),
+      testDate: String(measurement.test_date ?? ""),
+    });
+  const saveAssessment = async () => {
+    if (!assessmentDraft) return;
+    const definition = testDefinition(assessmentDraft.protocol);
+    const measurementValue = definition.watts
+      ? Number(assessmentDraft.result)
+      : timeToSeconds(assessmentDraft.result);
+    if (!assessmentDraft.result || measurementValue == null || Number.isNaN(measurementValue))
+      return;
+    const existingBlock = assessmentDraft.episodeIndex == null
+      ? undefined
+      : blocks[assessmentDraft.episodeIndex];
+    const existingMeasurement = existingBlock?.performance_tests?.find(
+      (measurement: any) => measurement.id === assessmentDraft.measurementId,
     );
-    return persist(
+    const measurement = {
+      ...(existingMeasurement ?? {}),
+      id: assessmentDraft.measurementId ?? uid(),
+      protocol: definition.protocol,
+      test_date: assessmentDraft.testDate || null,
+      valid_for_profile: existingMeasurement?.valid_for_profile ?? true,
+      source: existingMeasurement?.source ?? "manual",
+      ...(definition.watts
+        ? definition.protocol === "seven_stroke_peak"
+          ? { peak_watts: measurementValue }
+          : { average_watts: measurementValue }
+        : { time_seconds: measurementValue }),
+    };
+    const updatedBlock = existingBlock
+      ? {
+          ...existingBlock,
+          label: existingBlock.label ?? assessmentDraft.episodeLabel,
+          performance_tests: assessmentDraft.measurementId
+            ? (existingBlock.performance_tests ?? []).map((item: any) =>
+                item.id === assessmentDraft.measurementId ? measurement : item,
+              )
+            : [...(existingBlock.performance_tests ?? []), measurement],
+        }
+      : {
+          id: assessmentDraft.episodeId,
+          label: assessmentDraft.episodeLabel || "Testing episode",
+          performance_tests: [measurement],
+        };
+    const nextBlocks = existingBlock
+      ? blocks.map((block: any, index: number) => index === assessmentDraft.episodeIndex ? updatedBlock : block)
+      : [...blocks, updatedBlock];
+    if (await persist(
       {
         ...profile,
-        tests: {
-          ...tests,
-          testing_blocks: [
-            ...blocks.slice(0, -1),
-            {
-              ...latest,
-              id: latest.id || uid(),
-              performance_tests: [...rows, ...unrelated],
-            },
-          ],
-        },
+        tests: { ...tests, testing_blocks: nextBlocks },
       },
-      "Testing history saved.",
-    );
+      assessmentDraft.measurementId ? "Assessment result updated." : "Assessment result added.",
+    ))
+      setAssessmentDraft(null);
   };
   const refresh = async () => {
     if (!athleteId || saving) return;
@@ -1684,38 +1737,115 @@ export default function ProfilePage() {
       </section>
       <section className="session-card">
         <h2>Performance testing</h2>
-        {TESTS.map((test) => {
-          const old = latest.performance_tests?.find(
-            (item: any) => item.protocol === test.protocol,
-          );
-          return (
-            <div className="test-row" key={test.protocol}>
-              <b>{test.label}</b>
+        <p className="field-help">
+          Each result is kept in its testing episode. Add a new result when
+          you repeat a protocol; editing changes only the selected result.
+        </p>
+        {blocks.length ? blocks.map((block: any, index: number) => (
+          <article className="activity-card" key={block.id ?? `legacy-testing-block-${index}`} data-testid="assessment-episode">
+            <b>{block.label ?? "Testing episode"}</b>
+            <span className="field-help">Episode ID: {block.id}</span>
+            {(block.performance_tests ?? []).length ? (
+              <ul className="assessment-history">
+                {(block.performance_tests ?? []).map((measurement: any) => (
+                  <li key={measurement.id} data-testid="assessment-measurement">
+                    <span>
+                      {label(String(measurement.protocol ?? "assessment"))}: {assessmentResultText(measurement) || "No measurable result"}
+                      {measurement.test_date ? ` · ${measurement.test_date}` : ""}
+                    </span>
+                    <button
+                      type="button"
+                      className="quiet"
+                      onClick={() => editAssessment(block, index, measurement)}
+                      disabled={saving}
+                      aria-label={`Edit ${label(String(measurement.protocol ?? "assessment"))} result`}
+                    >
+                      Edit
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="field-help">No results recorded in this episode yet.</p>}
+          </article>
+        )) : <p>No assessment results recorded yet.</p>}
+        <div className="inline-actions">
+          <button type="button" onClick={() => startAssessment()} disabled={saving}>
+            Add assessment result
+          </button>
+          <button type="button" className="quiet" onClick={() => startAssessment(null, null)} disabled={saving}>
+            New testing episode
+          </button>
+        </div>
+        {assessmentDraft && (
+          <div className="test-row" data-testid="assessment-editor">
+            <b>{assessmentDraft.measurementId ? "Edit assessment result" : "Add assessment result"}</b>
+            {!assessmentDraft.measurementId && (
               <label>
-                Result
+                Testing episode
+                <select
+                  aria-label="Testing episode"
+                  value={assessmentDraft.isNewEpisode ? "__new__" : assessmentDraft.episodeId}
+                  onChange={(event) => {
+                    if (event.target.value === "__new__") {
+                      setAssessmentDraft({ ...assessmentDraft, episodeId: uid(), episodeLabel: "Winter testing episode", episodeIndex: null, isNewEpisode: true });
+                      return;
+                    }
+                    const block = blocks.find((item: any) => item.id === event.target.value);
+                    setAssessmentDraft({ ...assessmentDraft, episodeId: String(block?.id ?? `legacy-testing-block-${blocks.indexOf(block)}`), episodeLabel: String(block?.label ?? "Testing episode"), episodeIndex: blocks.indexOf(block), isNewEpisode: false });
+                  }}
+                >
+                  {blocks.map((block: any, index: number) => <option key={block.id ?? `legacy-testing-block-${index}`} value={block.id ?? `legacy-testing-block-${index}`}>{block.label ?? `Testing episode ${index + 1}`}</option>)}
+                  <option value="__new__">New testing episode</option>
+                </select>
+              </label>
+            )}
+            {assessmentDraft.isNewEpisode && (
+              <label>
+                Episode name
                 <input
-                  id={`test-${test.protocol}`}
-                  defaultValue={
-                    test.watts
-                      ? (old?.peak_watts ?? old?.average_watts ?? "")
-                      : secondsToTime(old?.time_seconds)
-                  }
+                  aria-label="Episode name"
+                  value={assessmentDraft.episodeLabel}
+                  onChange={(event) => setAssessmentDraft({ ...assessmentDraft, episodeLabel: event.target.value })}
                 />
               </label>
-              <label>
-                Date
-                <input
-                  id={`test-date-${test.protocol}`}
-                  type="date"
-                  defaultValue={old?.test_date ?? ""}
-                />
-              </label>
+            )}
+            <label>
+              Protocol
+              <select
+                aria-label="Assessment protocol"
+                value={assessmentDraft.protocol}
+                disabled={Boolean(assessmentDraft.measurementId)}
+                onChange={(event) => setAssessmentDraft({ ...assessmentDraft, protocol: event.target.value, result: "" })}
+              >
+                {TESTS.map((test) => <option key={test.protocol} value={test.protocol}>{test.label}</option>)}
+              </select>
+            </label>
+            <label>
+              Result
+              <input
+                aria-label="Assessment result"
+                value={assessmentDraft.result}
+                placeholder={testDefinition(assessmentDraft.protocol).watts ? "Watts" : "m:ss"}
+                onChange={(event) => setAssessmentDraft({ ...assessmentDraft, result: event.target.value })}
+              />
+            </label>
+            <label>
+              Assessment date
+              <input
+                aria-label="Assessment date"
+                type="date"
+                value={assessmentDraft.testDate}
+                onChange={(event) => setAssessmentDraft({ ...assessmentDraft, testDate: event.target.value })}
+              />
+            </label>
+            <div className="inline-actions">
+              <button type="button" onClick={saveAssessment} disabled={saving || !assessmentDraft.result}>
+                {assessmentDraft.measurementId ? "Save assessment changes" : "Add result"}
+              </button>
+              <button type="button" className="quiet" onClick={() => setAssessmentDraft(null)} disabled={saving}>Cancel</button>
             </div>
-          );
-        })}
-        <button type="button" onClick={saveTests} disabled={saving}>
-          {saving ? "Saving…" : "Save testing history"}
-        </button>
+          </div>
+        )}
       </section>
       <section className="session-card">
         <h2>Weekly schedule & flexibility</h2>

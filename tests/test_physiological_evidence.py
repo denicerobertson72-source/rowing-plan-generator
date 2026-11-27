@@ -194,6 +194,29 @@ def test_episodes_are_additive_can_span_days_and_keep_historical_measurements():
     assert integrated.interpretive_confidence == "protocol_context_only_not_prescriptive"
 
 
+def test_repeated_protocols_and_partial_winter_episode_remain_additive_for_evidence_and_ledger():
+    profile = _profile((
+        _test("seven-historical", "seven_stroke_peak", "2026-01-14", average_watts=287,
+              drag_factor=112, notes="original baseline"),
+        _test("sixty-historical", "sixty_second", "2026-01-16", average_watts=220),
+        _test("two-k-historical", "two_k", "2026-01-20", time_seconds=496),
+        _test("seven-winter-repeat", "seven_stroke_peak", "2026-02-02", peak_watts=300),
+    ), episodes=({
+        "id": "winter-2026", "purpose": "winter_reassessment",
+        "start_date": "2026-02-02", "end_date": "2026-02-05",
+        "measurement_ids": ["seven-winter-repeat"],
+    },))
+    evidence = build_physiological_evidence_profile(profile, as_of=AS_OF)
+    assert [item.measurement_id for item in evidence.measurements] == [
+        "seven-historical", "sixty-historical", "two-k-historical", "seven-winter-repeat",
+    ]
+    peak_rows = [item for item in evidence.measurements if item.protocol == "seven_stroke_peak_power"]
+    assert [(item.measurement_id, dict((outcome.key, outcome.value) for outcome in item.outcomes)["peak_watts"])
+            for item in peak_rows] == [("seven-historical", 287), ("seven-winter-repeat", 300)]
+    assert "seven_stroke_protocol_declares_peak_power_from_legacy_average_watts_storage" in peak_rows[0].provenance
+    assert {item.episode_id for item in evidence.episodes} == {"winter-baseline", "winter-2026"}
+
+
 def test_evidence_output_excludes_private_readiness_or_free_text_and_does_not_change_legacy_consumers():
     profile = _profile((_test("2k", "two_k", time_seconds=496),))
     profile["private_readiness"] = {"notes": "private health detail", "hrv": 12}

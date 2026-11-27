@@ -77,6 +77,58 @@ def test_cross_training_capability_round_trips_without_affecting_legacy_profiles
     assert reloaded.json()["athlete_profile"]["cross_training"] == updated["cross_training"]
 
 
+def test_profile_save_preserves_append_safe_assessment_history_and_metadata():
+    """The generic profile update must never reinterpret omitted test rows as deletes."""
+    historical = {
+        "id": "seven-historical", "protocol": "seven_stroke_peak",
+        "test_date": "2026-01-14", "average_watts": 287,
+        "valid_for_profile": True, "source": "manual",
+        "drag_factor": 112, "notes": "original winter baseline",
+    }
+    unknown = {
+        "id": "custom-monitor", "protocol": "club_custom_protocol",
+        "test_date": "2026-01-16", "average_watts": 180,
+        "conditions": "cold water", "custom_metadata": {"preserve": True},
+    }
+    appended = {
+        "id": "seven-repeat", "protocol": "seven_stroke_peak",
+        "test_date": "2026-02-02", "peak_watts": 300,
+        "valid_for_profile": True, "source": "manual",
+    }
+    with TemporaryDirectory() as directory:
+        client, previous = _client(Path(directory) / "assessment-history.sqlite3")
+        try:
+            profile = synthetic_profile()
+            profile["tests"] = {"testing_blocks": [{
+                "id": "winter-baseline", "label": "Winter baseline",
+                "performance_tests": [historical, unknown],
+            }]}
+            created = client.post("/api/v1/athletes", json={"athlete_profile": profile})
+            athlete_id = created.json()["athlete_id"]
+            loaded = client.get(f"/api/v1/athletes/{athlete_id}").json()
+
+            unrelated = loaded["athlete_profile"]
+            unrelated["preferences"] = {**unrelated.get("preferences", {}), "workout_structure_preference": "varied"}
+            saved_unrelated = client.put(f"/api/v1/athletes/{athlete_id}", json={
+                "athlete_profile": unrelated, "expected_revision": loaded["profile_revision"],
+            })
+            after_unrelated = saved_unrelated.json()
+
+            profile_with_append = after_unrelated["athlete_profile"]
+            profile_with_append["tests"]["testing_blocks"][0]["performance_tests"].append(appended)
+            saved_append = client.put(f"/api/v1/athletes/{athlete_id}", json={
+                "athlete_profile": profile_with_append,
+                "expected_revision": after_unrelated["profile_revision"],
+            })
+            reloaded = client.get(f"/api/v1/athletes/{athlete_id}")
+        finally:
+            REPOSITORIES._instance = previous
+
+    assert created.status_code == saved_unrelated.status_code == saved_append.status_code == reloaded.status_code == 200
+    rows = reloaded.json()["athlete_profile"]["tests"]["testing_blocks"][0]["performance_tests"]
+    assert rows == [historical, unknown, appended]
+
+
 def test_r1b_current_state_goals_strength_override_and_combined_preferences_round_trip():
     with TemporaryDirectory() as directory:
         client, previous = _client(Path(directory) / "r1b-profile.sqlite3")

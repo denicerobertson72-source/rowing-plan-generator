@@ -17,3 +17,8 @@ body:before{background-image:url("/icons/rowing-wallpaper.png");background-size:
 @media(max-width:430px){body:before{background-size:92vw}}
 .server-invalid { border: 2px solid #b42318 !important; }
 .field-error { margin: .3rem 0; font-size: .9rem; font-weight: 600; color: #b42318; }
+.inline-actions { display: flex; gap: .6rem; flex-wrap: wrap; }
+.assessment-history { display: grid; gap: .45rem; padding: 0; margin: .75rem 0; list-style: none; }
+.assessment-history li { display: flex; align-items: center; justify-content: space-between; gap: .65rem; padding: .55rem .65rem; border-radius: 10px; background: #f4fbf9; }
+.assessment-history .quiet { min-height: 36px; padding: .45rem .65rem; }
+@media(max-width:430px) { .assessment-history li { align-items: flex-start; flex-direction: column; } }

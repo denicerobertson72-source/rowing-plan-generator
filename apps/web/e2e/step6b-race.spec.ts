@@ -24,6 +24,51 @@ test("Profile accepts an empty preferred long-session day through save and gener
   expect(await days.evaluateAll(items=>items.every(item=>!(item as HTMLInputElement).checked))).toBeTruthy();
 });
 
+test("Profile assessment history appends and edits one measurement without replacing prior evidence", async ({page}) => {
+  await page.goto("/profile");
+  const writes:any[]=[]; let generationRequests=0;
+  page.on("request", request => {
+    if (request.method()==="PUT" && request.url().includes("/athletes/")) writes.push(JSON.parse(request.postData()||"{}"));
+    if (request.method()==="POST" && request.url().includes("/plans/generate")) generationRequests++;
+  });
+
+  await page.getByRole("button", {name:"New testing episode"}).click();
+  await page.getByLabel("Episode name").fill("Winter 2026 battery");
+  await page.getByLabel("Assessment protocol").selectOption("thirty_min_rate_capped_optional");
+  await page.getByLabel("Assessment result").fill("165");
+  await page.getByLabel("Assessment date").fill("2026-11-20");
+  await page.getByRole("button", {name:"Add result"}).click();
+  await expect(page.getByText(/Thirty Min Rate Capped Optional: 165/)).toBeVisible();
+
+  await page.getByRole("button", {name:"Add assessment result"}).click();
+  await page.getByLabel("Assessment protocol").selectOption("seven_stroke_peak");
+  await page.getByLabel("Assessment result").fill("287");
+  await page.getByLabel("Assessment date").fill("2026-11-23");
+  await page.getByRole("button", {name:"Add result"}).click();
+  await expect(page.getByText(/Seven Stroke Peak: 287/)).toBeVisible();
+
+  const firstPayload=writes[0].athlete_profile;
+  const firstBlock=firstPayload.tests.testing_blocks.at(-1);
+  const firstMeasurement=firstBlock.performance_tests.find((item:any)=>item.protocol==="thirty_min_rate_capped_optional");
+  const secondPayload=writes[1].athlete_profile;
+  const secondBlock=secondPayload.tests.testing_blocks.at(-1);
+  const sevenMeasurement=secondBlock.performance_tests.find((item:any)=>item.protocol==="seven_stroke_peak");
+  expect(secondBlock.performance_tests).toHaveLength(2);
+  expect(secondBlock.performance_tests.find((item:any)=>item.protocol==="thirty_min_rate_capped_optional").id).toBe(firstMeasurement.id);
+  expect(secondBlock.performance_tests.find((item:any)=>item.protocol==="seven_stroke_peak").id).toBe(sevenMeasurement.id);
+  expect(secondBlock.performance_tests.find((item:any)=>item.protocol==="seven_stroke_peak").peak_watts).toBe(287);
+
+  await page.getByRole("button", {name:"Edit Thirty Min Rate Capped Optional result"}).click();
+  await page.getByLabel("Assessment result").fill("170");
+  await page.getByRole("button", {name:"Save assessment changes"}).click();
+  const edited=writes[2].athlete_profile.tests.testing_blocks.at(-1).performance_tests;
+  expect(edited).toHaveLength(2);
+  expect(edited.find((item:any)=>item.protocol==="thirty_min_rate_capped_optional").id).toBe(firstMeasurement.id);
+  expect(edited.find((item:any)=>item.protocol==="thirty_min_rate_capped_optional").average_watts).toBe(170);
+  expect(edited.find((item:any)=>item.protocol==="seven_stroke_peak").id).toBe(sevenMeasurement.id);
+  expect(generationRequests).toBe(0);
+});
+
 test("Profile saves optional cross-training capability without scheduling it", async ({page}) => {
   await page.goto("/profile");
   await expect(page.getByText("Cross-training options")).toBeVisible();
