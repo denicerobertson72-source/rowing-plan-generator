@@ -223,6 +223,8 @@ class TrainingToleranceEvidence:
             "explicit_restriction_codes": list(self.explicit_restriction_codes),
             "uncertainty": list(self.uncertainty),
             "private_readiness_used": self.private_readiness_used,
+            "favorable_tolerance_by_pathway": {},
+            "favorable_tolerance_contract_status": "not_yet_populated_by_current_partial_pathways",
             "completion_alone_establishes_favorable_tolerance": False,
             "missing_feedback_establishes_adequate_recovery": False,
             "progression_tolerance_decision": self.progression_tolerance_decision,

@@ -174,6 +174,7 @@ DEFAULT_TRAINING_POLICY = TrainingPolicy(
         _rule("strength_minimum_spacing_days", 1, RuleClass.SOFTWARE_IMPLEMENTATION_CHOICE, ("scheduler_v2:strength_spacing",), "Mirror the current continuous no-next-day strength guard; this is an implementation guard, not a physiological duration.", "coach_override"),
     ),
     progression_policy=(
+        _rule("pilot_progression_guidance", {"easy_session_additional_minutes_range": (5, 10), "weekly_overall_relative_range_percent": (2, 5)}, RuleClass.EVIDENCE_INFORMED_HEURISTIC, ("S010",), "OP-01 pilot guidance is advisory, requires relevant tolerance and capacity, and never automatically compounds or progresses every dimension.", "coach_override"),
         _rule("two_k_is_integrated_performance_anchor", True, RuleClass.RESEARCH_CONSTRAINED, ("S012", "S013", "S026", "S029"), "Actual 2K remains the principal integrated rowing-performance anchor.", "athlete_test_update"),
         _rule("short_power_tests_are_supplemental", ("60_second", "short_peak"), RuleClass.RESEARCH_CONSTRAINED, ("S021", "S022", "S023", "S026", "S027", "S028"), "Short power tests refine within-athlete profiling and do not replace an actual 2K.", "athlete_test_update"),
         _rule("progression_overload_unload_are_contextual", True, RuleClass.EVIDENCE_INFORMED_HEURISTIC, ("S010",), "Progression and unloading depend on completed work, race context, and athlete response rather than a fixed stencil.", "coach_override"),

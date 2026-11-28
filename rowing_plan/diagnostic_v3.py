@@ -24,6 +24,7 @@ from .periodization import build_season_phases, race_dates
 from .physiological_state import reduce_physiological_state
 from .training_exposure_ledger import build_continuous_training_exposure_ledger
 from .training_baseline_evidence import build_training_baseline_and_tolerance_evidence
+from .sustainable_training_dose import build_sustainable_dose_decision
 from .training_demand_characterization import characterize_training_demand
 from .planning_domain import (
     HistoricalFactType, PhysicalCategory, RowingQualityInfeasibility,
@@ -709,6 +710,16 @@ def generate_v3_diagnostic_report(
         allocation_segments=r3.segments,
         sequence_diagnostics=sequence_diagnostics,
     )
+    sustainable_dose_decision = build_sustainable_dose_decision(
+        profile, r2_baseline=baseline_evidence, baseline=characterized_baseline_evidence.to_dict(),
+        tolerance=tolerance_evidence.to_dict(), development_recommendation=development_recommendation.to_dict(),
+        # R2's date-aware capacity includes temporary dated availability;
+        # recurring diagnostic-day capacity is only an R4 placement adapter.
+        capacity_minutes=r2.available_capacity_minutes, prescribed_physical_minutes=r2.recommended_physical_minutes,
+        prescribed_rowing_minutes=r3.rowing_specific_minutes,
+        planning_days=(r2.planning_end - r2.planning_start).days + 1,
+        recovery_active=bool(state.recovery_constraints),
+    )
     reviews = {
         "TOTAL_LOAD": {"rating": "GOOD" if r2_total <= capacity.total_available_minutes else "PROBLEM", "facts": f"{r2_total} recommended vs {current.approximate_total_physical_minutes} current evidence and {capacity.total_available_minutes} capacity"},
         "STRENGTH": {"rating": "QUESTIONABLE" if len(strength) < (current.strength_exposures or 0) else "GOOD", "facts": f"{len(strength)} planned exposures vs {current.strength_exposures} current"},
@@ -752,6 +763,7 @@ def generate_v3_diagnostic_report(
                 "prescription_behavior": "unchanged",
             },
         },
+        "sustainable_dose_decision": sustainable_dose_decision.to_dict(),
         "physiological_evidence": {
             **physiological_evidence.to_dict(),
             "legacy_limiter": {
@@ -859,7 +871,7 @@ def generate_v3_diagnostic_report(
 
 _PUBLIC_DIAGNOSTIC_KEYS = (
     "planning_date", "planning_end", "available_capacity_minutes",
-    "planning_goals", "training_preferences", "rowing_modalities", "r2_baseline_evidence", "baseline_and_tolerance_evidence", "physiological_evidence", "development_recommendation", "training_exposure_ledger", "training_demand_characterization", "sequence_enforcement", "authority_integration", "r3_weekly_evidence",
+    "planning_goals", "training_preferences", "rowing_modalities", "r2_baseline_evidence", "baseline_and_tolerance_evidence", "sustainable_dose_decision", "physiological_evidence", "development_recommendation", "training_exposure_ledger", "training_demand_characterization", "sequence_enforcement", "authority_integration", "r3_weekly_evidence",
     "current_training", "dated_context", "recovery_context_summary", "r2", "r3", "r3_cadence_feasibility", "r6", "r6_results", "r4_status", "calendar", "workouts",
     "conservation", "structural_validation", "plausibility_reviews",
     "training_plausibility", "persisted_input_audit", "diagnostic_timing_ms",
