@@ -116,6 +116,23 @@ def test_observation_windows_are_half_open_and_prospective_calendar_is_not_compl
     assert seven["observed_completed_dates"] == ["2026-11-11"]
 
 
+def test_completed_unknown_duration_occurrences_count_as_training_days_but_not_minutes_or_category_frequency():
+    unknown_race = _actual("2026-11-16", minutes=None, category=None, modality="on_water")
+    unknown_race["race_exposure"] = True
+    baseline, _ = _contracts(exposures=(
+        _actual("2026-11-10", minutes=40),
+        _actual("2026-11-12", minutes=35),
+        unknown_race,
+    ))
+    window = _window(baseline, 14)
+    overall_days = _observation(window, "overall_training_days")
+    assert (window["completed_exposure_count"], window["known_duration_exposure_count"]) == (3, 2)
+    assert window["observed_completed_dates"] == ["2026-11-10", "2026-11-12", "2026-11-16"]
+    assert overall_days["value"] == 3
+    assert "duration_not_required_for_occurrence_day_count" in overall_days["provenance"]
+    assert _observation(window, "rowing_minutes")["value"] == 75
+
+
 def test_modality_and_category_evidence_only_exist_when_completed_records_support_them():
     baseline, _ = _contracts(exposures=(
         _actual("2026-11-15", minutes=30, category="general_aerobic", modality="bike"),

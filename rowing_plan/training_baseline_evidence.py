@@ -351,9 +351,12 @@ def _window_evidence(rows: tuple[Mapping[str, Any], ...], *, planning_date: date
                 tuple(item["_date"] for item in category_rows), "observed_incomplete", ("completed_actual_only", f"category:{category}"),
             ))
     observations.append(BaselineObservation(
-        "overall_training_days", "days", len({item["_date"] for item in known}),
+        # This is an occurrence-day metric, not a minute-based metric.  A
+        # completed race with unknown duration is therefore counted here but
+        # remains excluded from all known-duration minute/category metrics.
+        "overall_training_days", "days", len({item["_date"] for item in in_window}),
         "canonical_completed_exposure_ledger", "completed", days, start, planning_date,
-        dates, "observed_incomplete", ("completed_actual_only",),
+        dates, "observed_incomplete", ("completed_actual_only", "duration_not_required_for_occurrence_day_count"),
     ))
     for modality in TrainingModality:
         modality_rows = tuple(item for item in known if item.get("modality") == modality.value)

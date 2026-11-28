@@ -88,6 +88,14 @@ def _daily_record(day: date, training_day: Any | None, components: list[dict[str
         "prospective_generated_physical_minutes": sum(item["physical_minutes"] for item in components if item["authority"] != "authoritative"),
         "prospective_component_count": len(components),
         "physical_minutes_by_category": categories,
+        "category_session_durations": {
+            category.value: [item["physical_minutes"] for item in components if item["category"] == category.value]
+            for category in PhysicalCategory
+        },
+        "category_modalities": {
+            category.value: sorted({item["modality"] for item in components if item["category"] == category.value and item["modality"]})
+            for category in PhysicalCategory
+        },
         "modalities": sorted({item["modality"] for item in components if item["modality"]}),
         "purposes": purposes,
         "known_endurance_minutes": sum(item["physical_minutes"] for item in components if item["category"] in {"rowing_specific", "general_aerobic"}),
